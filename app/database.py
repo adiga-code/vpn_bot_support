@@ -1,16 +1,24 @@
 import asyncpg
 from typing import Optional
+from app.config import Settings
 
 
 class DatabaseManager:
     """Маппинг chat_id ↔ topic_id через PostgreSQL"""
 
-    def __init__(self, dsn: str):
-        self.dsn = dsn
+    def __init__(self, settings: Settings):
+        self.settings = settings
         self.pool: asyncpg.Pool = None
 
     async def init_db(self):
-        self.pool = await asyncpg.create_pool(self.dsn)
+        s = self.settings
+        self.pool = await asyncpg.create_pool(
+            host=s.POSTGRES_HOST,
+            port=s.POSTGRES_PORT,
+            database=s.POSTGRES_DB,
+            user=s.POSTGRES_USER,
+            password=s.POSTGRES_PASSWORD,
+        )
         await self.pool.execute("""
             CREATE TABLE IF NOT EXISTS chat_topics (
                 id         SERIAL PRIMARY KEY,

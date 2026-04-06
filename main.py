@@ -9,7 +9,7 @@ from app.redis_consumer import RedisConsumer
 async def main():
     settings = Settings()
 
-    db = DatabaseManager(settings.POSTGRES_URL)
+    db = DatabaseManager(settings)
     await db.init_db()
 
     redis = aioredis.from_url(settings.REDIS_URL)

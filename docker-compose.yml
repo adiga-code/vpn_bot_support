@@ -13,7 +13,8 @@ services:
     environment:
       - TZ=Europe/Moscow
       - REDIS_URL=redis://redis:6379
-      - POSTGRES_URL=postgresql://${POSTGRES_USER:-vpnbot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-vpnbot}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
     logging:
       driver: "json-file"
       options:

@@ -12,7 +12,11 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
 
     # PostgreSQL
-    POSTGRES_URL: str
+    POSTGRES_HOST: str = "postgres"
+    POSTGRES_PORT: int = 5432
+    POSTGRES_DB: str = "vpnbot"
+    POSTGRES_USER: str = "vpnbot"
+    POSTGRES_PASSWORD: str
 
     # Custom Emoji IDs для иконок топиков
     ICON_AI_ENABLED: str = "5417915203100613993"
