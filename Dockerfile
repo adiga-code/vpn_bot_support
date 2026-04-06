@@ -20,4 +20,6 @@ RUN mkdir -p /app
 EXPOSE 8009
 
 # Запускаем приложение
+ENV PYTHONUNBUFFERED=1
+
 CMD ["python", "main.py"]
