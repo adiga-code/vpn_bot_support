@@ -1,0 +1,41 @@
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+
+# База данных (будет прокинута через volume)
+bot.db
+*.db
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Документация
+*.md
+docs/
+
+# Тесты
+tests/
+test*.py
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Env файл (будет прокинут через volume)
+.env
+.env.example
