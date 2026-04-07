@@ -33,7 +33,7 @@ class RedisConsumer:
 
                 data = json.loads(result[1])
                 msg_type = data.get("type")
-
+                print(data)
                 if msg_type == "user_message":
                     await self.telegram_bot.send_user_message(
                         dialog_id=data["dialog_id"],
