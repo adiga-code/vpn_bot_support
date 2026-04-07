@@ -11,7 +11,7 @@ class N8NClient:
 
     async def send_manager_message(self, chat_id: str, message: str) -> bool:
         try:
-            await self.redis.lpush("vpn_bot:outgoing", json.dumps({
+            await self.redis.publish("vpn_bot:outgoing", json.dumps({
                 "type": "manager_message",
                 "chat_id": chat_id,
                 "message": message,
@@ -25,7 +25,7 @@ class N8NClient:
     async def toggle_ai_status(self, chat_id: str) -> dict:
         print(f"🔄 Toggle AI for chat_id: {chat_id}")
         try:
-            await self.redis.lpush("vpn_bot:outgoing", json.dumps({
+            await self.redis.publish("vpn_bot:outgoing", json.dumps({
                 "type": "toggle_ai",
                 "chat_id": chat_id
             }))
