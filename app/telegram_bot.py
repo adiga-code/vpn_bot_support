@@ -47,13 +47,15 @@ class TelegramBot:
             if not message.text and not message.photo and not message.video:
                 return
             
-            # Получаем chat_id по topic_id
-            chat_id = await self.db.get_chat_id_by_topic(message.message_thread_id)
-            
-            if not chat_id:
+            # Получаем dialog_id и chat_id по topic_id
+            row = await self.db.get_dialog_id_by_topic(message.message_thread_id)
+
+            if not row:
                 await message.reply("⚠️ Топик не найден в базе данных")
                 return
-            
+
+            dialog_id, chat_id = row
+
             # Формируем текст
             if message.text:
                 text = message.text
@@ -63,9 +65,9 @@ class TelegramBot:
                 text = f"[Видео{': ' + message.caption if message.caption else ''}]"
             else:
                 text = "[Медиа]"
-            
+
             # Отправляем в n8n
-            success = await self.n8n_client.send_manager_message(chat_id, text)
+            success = await self.n8n_client.send_manager_message(dialog_id, chat_id, text)
             
             if success:
                 try:
@@ -86,21 +88,20 @@ class TelegramBot:
                 except Exception:
                     pass
                 return
-            
-            # Извлечение chat_id
+
             parts = callback.data.split(":")
-            if len(parts) != 2:
+            if len(parts) != 3:
                 try:
                     await callback.answer("❌ Некорректный формат данных", show_alert=True)
                 except Exception:
                     pass
                 return
             
-            chat_id = parts[1]
-            print(f"🔘 Button pressed for chat_id: {chat_id}")
-            
+            dialog_id, chat_id = parts[1], parts[2]
+            print(f"🔘 Button pressed for dialog_id: {dialog_id}")
+
             # Отправка запроса в n8n
-            result = await self.n8n_client.toggle_ai_status(chat_id)
+            result = await self.n8n_client.toggle_ai_status(dialog_id, chat_id)
             
             # Обработка результата
             if result is None:
@@ -134,7 +135,7 @@ class TelegramBot:
                 new_state = result["ai_enabled"]
                 
                 # Обновляем иконку топика
-                topic_id = await self.db.get_topic_id(chat_id)
+                topic_id = await self.db.get_topic_id(dialog_id)
                 if topic_id:
                     icon_updated = await self._update_topic_icon(topic_id, new_state)
                     if not icon_updated:
@@ -200,40 +201,33 @@ class TelegramBot:
             return False
     
     async def send_user_message(
-        self, 
-        chat_id: str, 
-        message: str, 
+        self,
+        dialog_id: str,
+        chat_id: str,
+        message: str,
         ai_enabled: bool = True
     ) -> bool:
         """Отправить сообщение от пользователя в топик"""
         try:
-            topic_id = await self.db.get_topic_id(chat_id)
-            
-            # Создаем топик если нет
+            topic_id = await self.db.get_topic_id(dialog_id)
+
             if not topic_id:
-                topic_name = chat_id
                 icon_emoji_id = (
-                    self.settings.ICON_AI_ENABLED if ai_enabled 
+                    self.settings.ICON_AI_ENABLED if ai_enabled
                     else self.settings.ICON_AI_DISABLED
                 )
-                
+
                 topic = await self.bot.create_forum_topic(
                     chat_id=self.settings.TELEGRAM_GROUP_ID,
-                    name=topic_name,
+                    name=dialog_id,
                     icon_custom_emoji_id=icon_emoji_id
                 )
                 topic_id = topic.message_thread_id
-                
-                # Сохраняем только маппинг (без ai_enabled)
-                await self.db.save_chat_topic(
-                    chat_id=chat_id,
-                    topic_id=topic_id,
-                    topic_name=topic_name
-                )
-                
-                print(f"✅ Created topic: {topic_name} (ID: {topic_id}, AI: {ai_enabled})")
+
+                await self.db.save_chat_topic(dialog_id=dialog_id, chat_id=chat_id, topic_id=topic_id)
+
+                print(f"✅ Created topic: {dialog_id} (ID: {topic_id}, AI: {ai_enabled})")
             else:
-                # Топик существует - обновляем иконку по статусу из n8n
                 await self._update_topic_icon(topic_id, ai_enabled)
             
             # Отправляем сообщение
@@ -250,20 +244,19 @@ class TelegramBot:
             print(f"❌ Error sending user message: {e}")
             return False
     
-    async def send_ai_response(self, chat_id: str, message: str) -> bool:
+    async def send_ai_response(self, dialog_id: str, chat_id: str, message: str) -> bool:
         """Отправить ответ AI с кнопкой переключения"""
         try:
-            topic_id = await self.db.get_topic_id(chat_id)
-            
+            topic_id = await self.db.get_topic_id(dialog_id)
+
             if not topic_id:
-                print(f"⚠️ Topic not found for chat_id: {chat_id}")
+                print(f"⚠️ Topic not found for dialog_id: {dialog_id}")
                 return False
-            
-            # Кнопка переключения AI
+
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(
                     text="🔄 Переключить AI",
-                    callback_data=f"toggle_ai:{chat_id}"
+                    callback_data=f"toggle_ai:{dialog_id}:{chat_id}"
                 )]
             ])
             

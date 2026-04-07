@@ -21,35 +21,35 @@ class DatabaseManager:
         )
         await self.pool.execute("""
             CREATE TABLE IF NOT EXISTS chat_topics (
-                id         SERIAL PRIMARY KEY,
-                chat_id    TEXT UNIQUE NOT NULL,
-                topic_id   INTEGER NOT NULL,
-                topic_name TEXT,
-                created_at TIMESTAMP DEFAULT NOW()
+                id          SERIAL PRIMARY KEY,
+                dialog_id   TEXT UNIQUE NOT NULL,
+                chat_id     TEXT NOT NULL,
+                topic_id    INTEGER NOT NULL,
+                created_at  TIMESTAMP DEFAULT NOW()
             )
         """)
         print("✅ Database initialized (PostgreSQL)")
 
-    async def save_chat_topic(self, chat_id: str, topic_id: int, topic_name: str) -> None:
+    async def save_chat_topic(self, dialog_id: str, chat_id: str, topic_id: int) -> None:
         await self.pool.execute("""
-            INSERT INTO chat_topics (chat_id, topic_id, topic_name)
+            INSERT INTO chat_topics (dialog_id, chat_id, topic_id)
             VALUES ($1, $2, $3)
-            ON CONFLICT (chat_id) DO UPDATE SET
-                topic_id   = EXCLUDED.topic_id,
-                topic_name = EXCLUDED.topic_name
-        """, chat_id, topic_id, topic_name)
+            ON CONFLICT (dialog_id) DO UPDATE SET
+                chat_id  = EXCLUDED.chat_id,
+                topic_id = EXCLUDED.topic_id
+        """, dialog_id, chat_id, topic_id)
 
-    async def get_topic_id(self, chat_id: str) -> Optional[int]:
+    async def get_topic_id(self, dialog_id: str) -> Optional[int]:
         row = await self.pool.fetchrow(
-            "SELECT topic_id FROM chat_topics WHERE chat_id = $1", chat_id
+            "SELECT topic_id FROM chat_topics WHERE dialog_id = $1", dialog_id
         )
         return row["topic_id"] if row else None
 
-    async def get_chat_id_by_topic(self, topic_id: int) -> Optional[str]:
+    async def get_dialog_id_by_topic(self, topic_id: int) -> Optional[tuple[str, str]]:
         row = await self.pool.fetchrow(
-            "SELECT chat_id FROM chat_topics WHERE topic_id = $1", topic_id
+            "SELECT dialog_id, chat_id FROM chat_topics WHERE topic_id = $1", topic_id
         )
-        return row["chat_id"] if row else None
+        return (row["dialog_id"], row["chat_id"]) if row else None
 
     async def close(self):
         if self.pool:

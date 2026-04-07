@@ -9,10 +9,11 @@ class N8NClient:
     def __init__(self, settings: Settings, redis: aioredis.Redis):
         self.redis = redis
 
-    async def send_manager_message(self, chat_id: str, message: str) -> bool:
+    async def send_manager_message(self, dialog_id: str, chat_id: str, message: str) -> bool:
         try:
             await self.redis.publish("vpn_bot:outgoing", json.dumps({
                 "type": "manager_message",
+                "dialog_id": dialog_id,
                 "chat_id": chat_id,
                 "message": message,
                 "from": "manager"
@@ -22,15 +23,16 @@ class N8NClient:
             print(f"❌ Error sending to Redis: {e}")
             return False
 
-    async def toggle_ai_status(self, chat_id: str) -> dict:
-        print(f"🔄 Toggle AI for chat_id: {chat_id}")
+    async def toggle_ai_status(self, dialog_id: str, chat_id: str) -> dict:
+        print(f"🔄 Toggle AI for dialog_id: {dialog_id}")
         try:
             await self.redis.publish("vpn_bot:outgoing", json.dumps({
                 "type": "toggle_ai",
-                "chat_id": chat_id
+                "dialog_id": dialog_id,
+                "chat_id": chat_id,
             }))
 
-            result = await self.redis.blpop(f"vpn_bot:toggle:{chat_id}", timeout=10)
+            result = await self.redis.blpop(f"vpn_bot:toggle:{dialog_id}", timeout=10)
 
             if not result:
                 return {"error": "Таймаут: n8n не ответил за 10 секунд"}

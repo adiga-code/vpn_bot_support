@@ -36,13 +36,15 @@ class RedisConsumer:
 
                 if msg_type == "user_message":
                     await self.telegram_bot.send_user_message(
-                        chat_id=data["chat_id"],
+                        dialog_id=data["dialog_id"],
+                        chat_id=str(data["chat_id"]),
                         message=data["message"],
                         ai_enabled=data.get("ai_enabled", True)
                     )
                 elif msg_type == "ai_response":
                     await self.telegram_bot.send_ai_response(
-                        chat_id=data["chat_id"],
+                        dialog_id=data["dialog_id"],
+                        chat_id=str(data["chat_id"]),
                         message=data["message"]
                     )
                 else:
