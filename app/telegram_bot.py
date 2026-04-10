@@ -268,13 +268,7 @@ class TelegramBot:
                 reply_markup=keyboard
             )
 
-            await self.bot.send_message(
-                chat_id=chat_id,
-                text=message,
-                parse_mode=ParseMode.HTML
-            )
-
-            print(f"✅ AI response sent to topic {topic_id} and user {chat_id} (dialog_id: {dialog_id})")
+            print(f"✅ AI response sent to topic {topic_id} (dialog_id: {dialog_id})")
             return True
 
         except Exception as e:
