@@ -240,6 +240,9 @@ class TelegramBot:
                 parse_mode=ParseMode.HTML
             )
 
+            is_url = file_id and file_id.startswith("http")
+            print(f"📎 File: {'URL' if is_url else 'file_id'} type={file_type}")
+
             if file_type == "text" or not file_id:
                 await self.bot.send_message(
                     chat_id=self.settings.TELEGRAM_GROUP_ID,
