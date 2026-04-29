@@ -9,15 +9,27 @@ class N8NClient:
     def __init__(self, settings: Settings, redis: aioredis.Redis):
         self.redis = redis
 
-    async def send_manager_message(self, dialog_id: str, chat_id: str, message: str) -> bool:
+    async def send_manager_message(
+        self,
+        dialog_id: str,
+        chat_id: str,
+        message: str,
+        file_id: str = None,
+        file_type: str = None
+    ) -> bool:
         try:
-            await self.redis.publish("vpn_bot:messages", json.dumps({
+            payload = {
                 "type": "manager_message",
                 "dialog_id": dialog_id,
                 "chat_id": chat_id,
                 "message": message,
                 "from": "manager"
-            }))
+            }
+            if file_id:
+                payload["file_id"] = file_id
+            if file_type:
+                payload["file_type"] = file_type
+            await self.redis.publish("vpn_bot:messages", json.dumps(payload))
             return True
         except Exception as e:
             print(f"❌ Error sending to Redis: {e}")

@@ -44,10 +44,35 @@ class TelegramBot:
             if message.from_user and message.from_user.is_bot:
                 return
             
-            # Игнорируем пустые сообщения
-            if not message.text and not message.photo and not message.video:
+            # Определяем тип и file_id
+            file_id = None
+            file_type = None
+
+            if message.text:
+                file_type = "text"
+            elif message.photo:
+                file_id = message.photo[-1].file_id
+                file_type = "photo"
+            elif message.video:
+                file_id = message.video.file_id
+                file_type = "video"
+            elif message.audio:
+                file_id = message.audio.file_id
+                file_type = "audio"
+            elif message.voice:
+                file_id = message.voice.file_id
+                file_type = "voice"
+            elif message.sticker:
+                file_id = message.sticker.file_id
+                file_type = "sticker"
+            elif message.document:
+                file_id = message.document.file_id
+                file_type = "document"
+            else:
                 return
-            
+
+            text = message.text or message.caption or ""
+
             # Получаем dialog_id и chat_id по topic_id
             row = await self.db.get_dialog_id_by_topic(message.message_thread_id)
 
@@ -57,18 +82,10 @@ class TelegramBot:
 
             dialog_id, chat_id = row
 
-            # Формируем текст
-            if message.text:
-                text = message.text
-            elif message.photo:
-                text = f"[Фото{': ' + message.caption if message.caption else ''}]"
-            elif message.video:
-                text = f"[Видео{': ' + message.caption if message.caption else ''}]"
-            else:
-                text = "[Медиа]"
-
             # Отправляем в n8n
-            success = await self.n8n_client.send_manager_message(dialog_id, chat_id, text)
+            success = await self.n8n_client.send_manager_message(
+                dialog_id, chat_id, text, file_id, file_type
+            )
             
             if success:
                 try:
