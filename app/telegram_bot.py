@@ -1,7 +1,8 @@
+import aiohttp
 import redis.asyncio as aioredis
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton, Message
 from app.config import Settings
 from app.database import DatabaseManager
 from app.n8n_client import N8NClient
@@ -199,7 +200,16 @@ class TelegramBot:
             
             print(f"❌ Error updating topic icon: {e}")
             return False
-    
+
+    async def _resolve_file(self, url: str, file_type: str) -> BufferedInputFile:
+        """Download a Telegram file URL and return it as BufferedInputFile."""
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                resp.raise_for_status()
+                data = await resp.read()
+        ext = {"photo": "jpg", "video": "mp4", "audio": "mp3", "voice": "ogg", "document": "bin"}.get(file_type, "bin")
+        return BufferedInputFile(data, filename=f"file.{ext}")
+
     async def send_user_message(
         self,
         dialog_id: str,
@@ -240,8 +250,10 @@ class TelegramBot:
                 parse_mode=ParseMode.HTML
             )
 
-            is_url = file_id and file_id.startswith("http")
-            print(f"📎 File: {'URL' if is_url else 'file_id'} type={file_type}")
+            is_tg_url = file_id and "api.telegram.org/file/bot" in file_id
+            print(f"📎 File: {'tg-url' if is_tg_url else ('url' if file_id and file_id.startswith('http') else 'file_id')} type={file_type}")
+
+            input_file = await self._resolve_file(file_id, file_type) if is_tg_url else file_id
 
             if file_type == "text" or not file_id:
                 await self.bot.send_message(
@@ -251,18 +263,18 @@ class TelegramBot:
                     parse_mode=ParseMode.HTML
                 )
             elif file_type == "photo":
-                await self.bot.send_photo(photo=file_id, **kwargs)
+                await self.bot.send_photo(photo=input_file, **kwargs)
             elif file_type == "video":
-                await self.bot.send_video(video=file_id, **kwargs)
+                await self.bot.send_video(video=input_file, **kwargs)
             elif file_type == "audio":
-                await self.bot.send_audio(audio=file_id, **kwargs)
+                await self.bot.send_audio(audio=input_file, **kwargs)
             elif file_type == "voice":
-                await self.bot.send_voice(voice=file_id, **kwargs)
+                await self.bot.send_voice(voice=input_file, **kwargs)
             elif file_type == "sticker":
                 await self.bot.send_sticker(
                     chat_id=self.settings.TELEGRAM_GROUP_ID,
                     message_thread_id=topic_id,
-                    sticker=file_id
+                    sticker=input_file
                 )
                 if message:
                     await self.bot.send_message(
@@ -272,7 +284,7 @@ class TelegramBot:
                         parse_mode=ParseMode.HTML
                     )
             else:
-                await self.bot.send_document(document=file_id, **kwargs)
+                await self.bot.send_document(document=input_file, **kwargs)
 
             return True
 
