@@ -205,7 +205,9 @@ class TelegramBot:
         dialog_id: str,
         chat_id: str,
         message: str,
-        ai_enabled: bool = True
+        ai_enabled: bool = True,
+        file_id: str = None,
+        file_type: str = None
     ) -> bool:
         """Отправить сообщение от пользователя в топик"""
         try:
@@ -229,17 +231,49 @@ class TelegramBot:
                 print(f"✅ Created topic: {dialog_id} (ID: {topic_id}, AI: {ai_enabled})")
             else:
                 await self._update_topic_icon(topic_id, ai_enabled)
-            
-            # Отправляем сообщение
-            await self.bot.send_message(
+
+            caption = f"👤 Пользователь: {message}" if message else None
+            kwargs = dict(
                 chat_id=self.settings.TELEGRAM_GROUP_ID,
                 message_thread_id=topic_id,
-                text=f"👤 Пользователь: {message}",
+                caption=caption,
                 parse_mode=ParseMode.HTML
             )
-            
+
+            if file_id and file_type:
+                if file_type == "photo":
+                    await self.bot.send_photo(photo=file_id, **kwargs)
+                elif file_type == "video":
+                    await self.bot.send_video(video=file_id, **kwargs)
+                elif file_type == "audio":
+                    await self.bot.send_audio(audio=file_id, **kwargs)
+                elif file_type == "voice":
+                    await self.bot.send_voice(voice=file_id, **kwargs)
+                elif file_type == "sticker":
+                    await self.bot.send_sticker(
+                        chat_id=self.settings.TELEGRAM_GROUP_ID,
+                        message_thread_id=topic_id,
+                        sticker=file_id
+                    )
+                    if message:
+                        await self.bot.send_message(
+                            chat_id=self.settings.TELEGRAM_GROUP_ID,
+                            message_thread_id=topic_id,
+                            text=f"👤 Пользователь: {message}",
+                            parse_mode=ParseMode.HTML
+                        )
+                else:
+                    await self.bot.send_document(document=file_id, **kwargs)
+            else:
+                await self.bot.send_message(
+                    chat_id=self.settings.TELEGRAM_GROUP_ID,
+                    message_thread_id=topic_id,
+                    text=f"👤 Пользователь: {message}",
+                    parse_mode=ParseMode.HTML
+                )
+
             return True
-            
+
         except Exception as e:
             print(f"❌ Error sending user message: {e}")
             return False

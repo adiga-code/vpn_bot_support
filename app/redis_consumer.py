@@ -38,8 +38,10 @@ class RedisConsumer:
                     await self.telegram_bot.send_user_message(
                         dialog_id=data["dialog_id"],
                         chat_id=str(data["chat_id"]),
-                        message=data["message"],
-                        ai_enabled=data.get("ai_enabled", True)
+                        message=data.get("message", ""),
+                        ai_enabled=data.get("ai_enabled", True),
+                        file_id=data.get("file_id"),
+                        file_type=data.get("file_type")
                     )
                 elif msg_type == "ai_response":
                     await self.telegram_bot.send_ai_response(
