@@ -87,12 +87,7 @@ class TelegramBot:
                 dialog_id, chat_id, text, file_id, file_type
             )
             
-            if success:
-                try:
-                    await message.react([types.ReactionTypeEmoji(emoji="👍")])
-                except Exception as e:
-                    print(f"⚠️ Could not add reaction: {e}")
-            else:
+            if not success:
                 await message.reply("❌ Ошибка отправки в n8n")
         
         @self.dp.callback_query()
