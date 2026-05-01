@@ -222,6 +222,22 @@ class TelegramBot:
         ext = {"photo": "jpg", "video": "mp4", "audio": "mp3", "voice": "ogg", "document": "bin"}.get(file_type, "bin")
         return BufferedInputFile(data, filename=f"file.{ext}")
 
+    def _build_keyboard(self, buttons: list) -> InlineKeyboardMarkup | None:
+        """Построить InlineKeyboardMarkup из списка кнопок n8n формата."""
+        if not buttons:
+            return None
+        rows = []
+        for row in buttons:
+            kb_row = []
+            for btn in row:
+                if "url" in btn:
+                    kb_row.append(InlineKeyboardButton(text=btn["text"], url=btn["url"]))
+                elif "callback_data" in btn:
+                    kb_row.append(InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"]))
+            if kb_row:
+                rows.append(kb_row)
+        return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
     async def send_user_message(
         self,
         dialog_id: str,
@@ -229,7 +245,8 @@ class TelegramBot:
         message: str,
         ai_enabled: bool = True,
         file_id: str = None,
-        file_type: str = None
+        file_type: str = None,
+        buttons: list = None
     ) -> bool:
         """Отправить сообщение от пользователя в топик"""
         try:
@@ -255,11 +272,13 @@ class TelegramBot:
                 await self._update_topic_icon(topic_id, ai_enabled)
 
             caption = f"👤 Пользователь: {message}" if message else None
+            keyboard = self._build_keyboard(buttons)
             kwargs = dict(
                 chat_id=self.settings.TELEGRAM_GROUP_ID,
                 message_thread_id=topic_id,
                 caption=caption,
-                parse_mode=ParseMode.HTML
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
             )
 
             is_tg_url = file_id and "api.telegram.org/file/bot" in file_id
@@ -272,7 +291,8 @@ class TelegramBot:
                     chat_id=self.settings.TELEGRAM_GROUP_ID,
                     message_thread_id=topic_id,
                     text=f"👤 Пользователь: {message}",
-                    parse_mode=ParseMode.HTML
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard
                 )
             elif file_type == "photo":
                 await self.bot.send_photo(photo=input_file, **kwargs)
