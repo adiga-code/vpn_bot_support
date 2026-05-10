@@ -1,30 +1,22 @@
 import json
 import asyncio
 import redis.asyncio as aioredis
-from app.telegram_bot import TelegramBot
+
+from app.database import DatabaseManager
+from app.ws_manager import WebSocketManager
+from app.web_server import _fmt_dialog, _fmt_message
 
 
 class RedisConsumer:
-    """Читает входящие сообщения от n8n из Redis"""
+    """Читает входящие сообщения от n8n из Redis и транслирует в веб-интерфейс"""
 
-    def __init__(self, redis: aioredis.Redis, telegram_bot: TelegramBot):
+    def __init__(self, redis: aioredis.Redis, db: DatabaseManager, ws: WebSocketManager):
         self.redis = redis
-        self.telegram_bot = telegram_bot
-        self._task = None
+        self.db = db
+        self.ws = ws
 
-    async def start(self):
-        self._task = asyncio.create_task(self._consume())
+    async def consume(self):
         print("✅ Redis consumer started")
-
-    async def stop(self):
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-
-    async def _consume(self):
         while True:
             try:
                 result = await self.redis.blpop("vpn_bot:incoming", timeout=0)
@@ -33,23 +25,12 @@ class RedisConsumer:
 
                 data = json.loads(result[1])
                 msg_type = data.get("type")
-                print(data)
+                print(f"📨 Redis message: {msg_type} dialog={data.get('dialog_id')}")
+
                 if msg_type == "user_message":
-                    await self.telegram_bot.send_user_message(
-                        dialog_id=data["dialog_id"],
-                        chat_id=str(data["chat_id"]),
-                        message=data.get("message", ""),
-                        ai_enabled=data.get("ai_enabled", True),
-                        file_id=data.get("file_id"),
-                        file_type=data.get("file_type"),
-                        buttons=data.get("buttons")
-                    )
+                    await self._handle_user_message(data)
                 elif msg_type == "ai_response":
-                    await self.telegram_bot.send_ai_response(
-                        dialog_id=data["dialog_id"],
-                        chat_id=str(data["chat_id"]),
-                        message=data["message"]
-                    )
+                    await self._handle_ai_response(data)
                 else:
                     print(f"⚠️ Unknown message type: {msg_type}")
 
@@ -58,3 +39,53 @@ class RedisConsumer:
             except Exception as e:
                 print(f"❌ Consumer error: {e}")
                 await asyncio.sleep(1)
+
+    async def _handle_user_message(self, data: dict):
+        dialog_id = data["dialog_id"]
+        chat_id = str(data["chat_id"])
+        text = data.get("message", "")
+        file_id = data.get("file_id")
+        file_type = data.get("file_type", "text")
+        ai_enabled = data.get("ai_enabled", True)
+
+        user_info = {k: data.get(k) for k in (
+            "user_name", "user_username", "user_plan", "user_sub_status",
+            "user_next_payment", "user_traffic_used", "user_traffic_total",
+            "user_last_payment_amount", "user_last_payment_date",
+        )}
+
+        dialog_row = await self.db.upsert_dialog(dialog_id, chat_id, ai_enabled, user_info)
+        is_new_dialog = dialog_row["unread_count"] == 1  # first message → new dialog
+
+        msg_row = await self.db.save_message(
+            dialog_id, "user", text if file_type == "text" else None,
+            file_id=file_id if file_type != "text" else None,
+            file_type=file_type if file_type != "text" else None,
+        )
+        await self.db.update_last_message(dialog_id, text or f"[{file_type}]")
+
+        updated_dialog = await self.db.get_dialog(dialog_id)
+        msg_payload = _fmt_message(msg_row)
+        dialog_payload = _fmt_dialog(updated_dialog)
+
+        if is_new_dialog:
+            await self.ws.broadcast({"type": "new_dialog", "dialog": dialog_payload})
+        else:
+            await self.ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": msg_payload})
+            await self.ws.broadcast({"type": "dialog_updated", "dialog": dialog_payload})
+
+    async def _handle_ai_response(self, data: dict):
+        dialog_id = data["dialog_id"]
+        text = data.get("message", "")
+
+        dialog = await self.db.get_dialog(dialog_id)
+        if not dialog:
+            print(f"⚠️ AI response for unknown dialog: {dialog_id}")
+            return
+
+        msg_row = await self.db.save_message(dialog_id, "ai", text)
+        await self.db.update_last_message(dialog_id, f"ИИ: {text}")
+
+        updated_dialog = await self.db.get_dialog(dialog_id)
+        await self.ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+        await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated_dialog)})

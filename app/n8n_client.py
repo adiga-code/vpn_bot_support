@@ -15,7 +15,7 @@ class N8NClient:
         chat_id: str,
         message: str,
         file_id: str = None,
-        file_type: str = None
+        file_type: str = None,
     ) -> bool:
         try:
             payload = {
@@ -23,7 +23,7 @@ class N8NClient:
                 "dialog_id": dialog_id,
                 "chat_id": chat_id,
                 "message": message,
-                "from": "manager"
+                "from": "manager",
             }
             if file_id:
                 payload["file_id"] = file_id
@@ -32,7 +32,7 @@ class N8NClient:
             await self.redis.publish("vpn_bot:messages", json.dumps(payload))
             return True
         except Exception as e:
-            print(f"❌ Error sending to Redis: {e}")
+            print(f"❌ Error sending manager message to Redis: {e}")
             return False
 
     async def toggle_ai_status(self, dialog_id: str, chat_id: str) -> dict:
@@ -45,15 +45,12 @@ class N8NClient:
             }))
 
             result = await self.redis.blpop(f"vpn_bot:toggle:{dialog_id}", timeout=10)
-
             if not result:
                 return {"error": "Таймаут: n8n не ответил за 10 секунд"}
 
             data = json.loads(result[1])
-
             if "ai_enabled" not in data:
                 return {"error": "n8n не вернул поле 'ai_enabled'"}
-
             if not isinstance(data["ai_enabled"], bool):
                 return {"error": "Неверный тип данных в ответе n8n"}
 
@@ -61,5 +58,22 @@ class N8NClient:
             return {"ai_enabled": data["ai_enabled"]}
 
         except Exception as e:
-            print(f"❌ Unexpected error: {e}")
+            print(f"❌ Unexpected error in toggle_ai: {e}")
             return {"error": f"{type(e).__name__}: {str(e)}"}
+
+    async def send_billing_action(self, dialog_id: str, chat_id: str, action: str) -> bool:
+        """Отправить биллинговое действие в n8n через Redis.
+
+        action: renew | buy_traffic | reset_key
+        """
+        try:
+            await self.redis.publish("vpn_bot:billing", json.dumps({
+                "type": "billing_action",
+                "dialog_id": dialog_id,
+                "chat_id": chat_id,
+                "action": action,
+            }))
+            return True
+        except Exception as e:
+            print(f"❌ Error sending billing action to Redis: {e}")
+            return False

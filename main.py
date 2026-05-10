@@ -1,8 +1,12 @@
 import asyncio
+import uvicorn
 import redis.asyncio as aioredis
+
 from app.config import Settings
 from app.database import DatabaseManager
-from app.telegram_bot import TelegramBot
+from app.ws_manager import WebSocketManager
+from app.n8n_client import N8NClient
+from app.web_server import build_app
 from app.redis_consumer import RedisConsumer
 
 
@@ -13,22 +17,28 @@ async def main():
     await db.init_db()
 
     redis = aioredis.from_url(settings.REDIS_URL)
+    ws_manager = WebSocketManager()
+    n8n_client = N8NClient(settings, redis)
+    consumer = RedisConsumer(redis, db, ws_manager)
 
-    telegram_bot = TelegramBot(settings, db, redis)
-    consumer = RedisConsumer(redis, telegram_bot)
+    app = build_app(settings, db, ws_manager, n8n_client)
 
-    await telegram_bot.start()
-    await consumer.start()
+    config = uvicorn.Config(
+        app,
+        host=settings.WEB_HOST,
+        port=settings.WEB_PORT,
+        log_level="info",
+    )
+    server = uvicorn.Server(config)
 
-    print("✅ Bot running")
+    print(f"✅ Helpdesk starting on http://{settings.WEB_HOST}:{settings.WEB_PORT}")
 
     try:
-        await asyncio.Event().wait()
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        pass
+        await asyncio.gather(
+            server.serve(),
+            consumer.consume(),
+        )
     finally:
-        await consumer.stop()
-        await telegram_bot.stop()
         await redis.aclose()
         await db.close()
 

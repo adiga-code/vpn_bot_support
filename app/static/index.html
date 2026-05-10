@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Хелпдеск · VPN Support</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    html, body, #root { height: 100%; margin: 0; }
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: #0d0d12;
+      color: #f1f1f5;
+      -webkit-font-smoothing: antialiased;
+    }
+    .font-mono, .tabular-nums { font-variant-numeric: tabular-nums; }
+    code, .font-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+    .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 999px; }
+    .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #3a3a4a; }
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    input[type=range] { height: 4px; }
+  </style>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" src="/static/components.jsx"></script>
+  <script type="text/babel" src="/static/dialogs.jsx"></script>
+  <script type="text/babel" src="/static/statistics.jsx"></script>
+  <script type="text/babel" src="/static/settings.jsx"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // Mock stats data (подключить к /api/stats при необходимости)
+    const dailyConversations = [38, 42, 51, 47, 39, 28, 33, 56, 62, 49, 71, 68, 74, 82];
+    const hourly = [4,2,1,1,0,2,5,9,18,27,34,41,38,42,47,52,49,44,38,29,22,18,12,7];
+    const topQuestions = [
+      { q: "Как настроить VPN на iPhone", count: 142 },
+      { q: "Не работает оплата криптой", count: 118 },
+      { q: "Как поменять сервер", count: 96 },
+      { q: "Сменить тариф на Pro", count: 81 },
+      { q: "Сбросить ключ доступа", count: 73 },
+      { q: "Закончился трафик", count: 64 },
+      { q: "VPN тормозит / низкая скорость", count: 58 },
+      { q: "Подключение на macOS", count: 49 },
+      { q: "Как продлить подписку", count: 41 },
+      { q: "Не приходит уведомление", count: 32 },
+    ];
+
+    // Mock VPN server statuses (будут заменены на /api/servers)
+    const DEFAULT_SERVERS = [
+      { name: "Frankfurt-01", status: "ok",   load: "—" },
+      { name: "Amsterdam-03", status: "ok",   load: "—" },
+      { name: "Moscow-02",    status: "down", load: "—" },
+      { name: "Warsaw-01",    status: "high", load: "—" },
+      { name: "Stockholm-01", status: "ok",   load: "—" },
+    ];
+
+    // Mock operators for Settings screen
+    const DEFAULT_OPERATORS = [
+      { id: 1, name: "Мария Иванова",  tg: "@maria_op", role: "admin", online: true,  closed: 0, avgTime: "—", initials: "МИ", color: "#A855F7" },
+      { id: 2, name: "Денис Петров",   tg: "@denisp",   role: "agent", online: true,  closed: 0, avgTime: "—", initials: "ДП", color: "#4F8EF7" },
+    ];
+
+    // ── API helpers ───────────────────────────────────────────────────────────
+
+    async function apiPost(path, body) {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return res.json();
+    }
+
+    // ── TopBar ────────────────────────────────────────────────────────────────
+
+    function TopBar({ screen, setScreen, activeName, notifCount, onNotifClick, notifOpen, onProfileClick, profileOpen, onCloseMenus }) {
+      const screens = [
+        { id: "dialogs",  label: "Диалоги",    icon: "chat"     },
+        { id: "stats",    label: "Статистика", icon: "chart"    },
+        { id: "settings", label: "Настройки",  icon: "settings" },
+      ];
+      const breadcrumbMap = {
+        dialogs:  ["Диалоги", activeName ? "@" + activeName : null],
+        stats:    ["Статистика"],
+        settings: ["Настройки"],
+      };
+      const crumbs = breadcrumbMap[screen].filter(Boolean);
+
+      return (
+        <header className="h-[56px] shrink-0 bg-[#13131a] border-b border-[#2a2a3a] flex items-center px-3 gap-2 relative z-30">
+          <div className="flex items-center gap-2 pr-3 mr-1 border-r border-[#2a2a3a]">
+            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#4F8EF7] to-[#A855F7] flex items-center justify-center text-white text-xs font-bold">Х</div>
+            <div className="font-semibold text-[#f1f1f5]">Хелпдеск</div>
+          </div>
+
+          <nav className="flex items-center gap-0.5">
+            {screens.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => setScreen(s.id)}
+                className={
+                  "px-3 py-1.5 rounded-lg text-sm font-medium transition flex items-center gap-1.5 " +
+                  (screen === s.id
+                    ? "bg-[#1a1a24] text-[#f1f1f5]"
+                    : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]/60")
+                }
+              >
+                <Icon name={s.icon} className="w-3.5 h-3.5" />
+                {s.label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="flex items-center gap-2 ml-4 text-sm">
+            {crumbs.map((c, i) => (
+              <React.Fragment key={i}>
+                {i > 0 && <Icon name="chevronRight" className="w-3 h-3 text-[#6b7280]" />}
+                <span className={i === crumbs.length - 1 ? "text-[#f1f1f5]" : "text-[#6b7280]"}>{c}</span>
+              </React.Fragment>
+            ))}
+          </div>
+
+          <div className="flex-1" />
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onNotifClick}
+              className="relative p-2 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded-lg transition"
+            >
+              <Icon name="bell" className="w-5 h-5" />
+              {notifCount > 0 && (
+                <span className="absolute top-1 right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-[#ef4444] text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-[#13131a]">
+                  {notifCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={onProfileClick}
+              className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg hover:bg-[#1a1a24] transition"
+            >
+              <div className="relative">
+                <Avatar initials="МИ" color="#A855F7" size={28} />
+                <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#22c55e] ring-2 ring-[#13131a]"></span>
+              </div>
+              <div className="text-left">
+                <div className="text-xs font-medium text-[#f1f1f5] leading-tight">Мария И.</div>
+                <div className="flex items-center gap-1 text-[10px] text-[#22c55e]">
+                  <span className="w-1 h-1 rounded-full bg-[#22c55e]"></span>
+                  Онлайн
+                </div>
+              </div>
+              <Icon name="chevronDown" className="w-3.5 h-3.5 text-[#6b7280]" />
+            </button>
+          </div>
+
+          {notifOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={onCloseMenus}></div>
+              <div className="absolute top-[52px] right-[80px] w-[340px] bg-[#13131a] border border-[#2a2a3a] rounded-xl shadow-2xl z-50 overflow-hidden">
+                <div className="px-4 py-3 border-b border-[#2a2a3a] flex items-center justify-between">
+                  <div className="font-medium text-sm text-[#f1f1f5]">Уведомления</div>
+                  <button onClick={onCloseMenus} className="text-[10px] text-[#7BA8F9] hover:underline">Прочитать все</button>
+                </div>
+                <div className="divide-y divide-[#2a2a3a]/60 max-h-[400px] overflow-y-auto scrollbar-thin">
+                  {[
+                    { t: "Сервер Moscow-02 недоступен", time: "12 мин назад", color: "#ef4444" },
+                  ].map((n, i) => (
+                    <div key={i} className="px-4 py-3 hover:bg-[#1a1a24]/60 cursor-pointer">
+                      <div className="flex gap-2.5">
+                        <span className="w-2 h-2 mt-1.5 rounded-full shrink-0" style={{ background: n.color }}></span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm text-[#f1f1f5]">{n.t}</div>
+                          <div className="text-[10px] text-[#6b7280] mt-0.5">{n.time}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {profileOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={onCloseMenus}></div>
+              <div className="absolute top-[52px] right-3 w-[220px] bg-[#13131a] border border-[#2a2a3a] rounded-xl shadow-2xl z-50 overflow-hidden py-1">
+                <div className="px-4 py-3 border-b border-[#2a2a3a]">
+                  <div className="text-sm font-medium text-[#f1f1f5]">Мария Иванова</div>
+                  <div className="text-[10px] text-[#6b7280] font-mono">@maria_op</div>
+                </div>
+                {["Профиль", "Выйти"].map((it, i) => (
+                  <button
+                    key={i}
+                    onClick={onCloseMenus}
+                    className={"w-full text-left px-4 py-2 text-sm hover:bg-[#1a1a24] " + (i === 1 ? "text-[#ef4444]" : "text-[#f1f1f5]")}
+                  >
+                    {it}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </header>
+      );
+    }
+
+    // ── App ───────────────────────────────────────────────────────────────────
+
+    function App() {
+      const [screen, setScreen]           = useState("dialogs");
+      const [conversations, setConversations] = useState([]);
+      const [activeId, setActiveId]       = useState(null);
+      const [opsState, setOpsState]       = useState(DEFAULT_OPERATORS);
+      const [servers, setServers]         = useState(DEFAULT_SERVERS);
+      const [loading, setLoading]         = useState(true);
+      const [notifOpen, setNotifOpen]     = useState(false);
+      const [profileOpen, setProfileOpen] = useState(false);
+      const [toast, setToast]             = useState(null);
+
+      const loadedRef = useRef(new Set());
+
+      function showToast(msg) {
+        setToast(msg);
+        setTimeout(() => setToast(null), 2500);
+      }
+
+      // Load initial dialogs
+      useEffect(() => {
+        fetch("/api/dialogs")
+          .then((r) => r.json())
+          .then((data) => {
+            const withMessages = data.map((d) => ({ ...d, messages: [], tickets: [] }));
+            setConversations(withMessages);
+            if (withMessages.length > 0) setActiveId(withMessages[0].id);
+          })
+          .catch((e) => console.error("Failed to load dialogs:", e))
+          .finally(() => setLoading(false));
+      }, []);
+
+      // WebSocket for real-time updates
+      useEffect(() => {
+        const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        const ws = new WebSocket(`${protocol}//${location.host}/ws`);
+
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+
+          if (data.type === "new_message") {
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === data.dialog_id
+                  ? { ...c, messages: [...c.messages, data.message] }
+                  : c
+              )
+            );
+          } else if (data.type === "dialog_updated") {
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === data.dialog.id
+                  ? { ...data.dialog, messages: c.messages, tickets: c.tickets }
+                  : c
+              )
+            );
+          } else if (data.type === "new_dialog") {
+            setConversations((prev) => [
+              { ...data.dialog, messages: [], tickets: [] },
+              ...prev,
+            ]);
+          }
+        };
+
+        ws.onerror = (e) => console.warn("WebSocket error", e);
+        return () => ws.close();
+      }, []);
+
+      // Lazy-load messages when a dialog is first opened
+      useEffect(() => {
+        if (!activeId || loadedRef.current.has(activeId)) return;
+        loadedRef.current.add(activeId);
+        fetch(`/api/dialogs/${activeId}/messages`)
+          .then((r) => r.json())
+          .then((msgs) =>
+            setConversations((prev) =>
+              prev.map((c) => (c.id === activeId ? { ...c, messages: msgs } : c))
+            )
+          )
+          .catch((e) => console.error("Failed to load messages:", e));
+      }, [activeId]);
+
+      // ── API callbacks ─────────────────────────────────────────────────────
+
+      async function handleReply(dialog_id, text, operator_name) {
+        try {
+          await apiPost(`/api/dialogs/${dialog_id}/reply`, { text, operator_name });
+        } catch (e) {
+          console.error("Reply failed:", e);
+          showToast("Ошибка отправки сообщения");
+        }
+      }
+
+      async function handleToggleAI(dialog_id) {
+        try {
+          return await apiPost(`/api/dialogs/${dialog_id}/toggle_ai`);
+        } catch (e) {
+          console.error("Toggle AI failed:", e);
+          showToast("Ошибка переключения ИИ");
+          return null;
+        }
+      }
+
+      async function handleClose(dialog_id) {
+        try {
+          await apiPost(`/api/dialogs/${dialog_id}/close`);
+        } catch (e) {
+          console.error("Close failed:", e);
+        }
+      }
+
+      async function handleHandoff(dialog_id, operator_name) {
+        try {
+          await apiPost(`/api/dialogs/${dialog_id}/handoff`, { operator_name });
+        } catch (e) {
+          console.error("Handoff failed:", e);
+        }
+      }
+
+      async function handleBillingAction(dialog_id, action) {
+        try {
+          await apiPost(`/api/dialogs/${dialog_id}/billing/${action}`);
+          const labels = { renew: "Подписка продлена", buy_traffic: "Трафик докуплен", reset_key: "Ключ сброшен" };
+          showToast(labels[action] || "Готово");
+        } catch (e) {
+          console.error("Billing action failed:", e);
+          showToast("Ошибка выполнения действия");
+        }
+      }
+
+      // ─────────────────────────────────────────────────────────────────────
+
+      const active = conversations.find((c) => c.id === activeId);
+      const notifCount = conversations.filter((c) => c.operatorCalled && c.status !== "closed").length;
+
+      if (loading) {
+        return (
+          <div className="h-full flex items-center justify-center bg-[#0d0d12]">
+            <div className="text-[#6b7280] text-sm">Загрузка...</div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="h-full flex flex-col">
+          <TopBar
+            screen={screen}
+            setScreen={setScreen}
+            activeName={screen === "dialogs" && active ? active.username.replace("@", "") : null}
+            notifCount={notifCount}
+            onNotifClick={() => { setNotifOpen((v) => !v); setProfileOpen(false); }}
+            notifOpen={notifOpen}
+            onProfileClick={() => { setProfileOpen((v) => !v); setNotifOpen(false); }}
+            profileOpen={profileOpen}
+            onCloseMenus={() => { setNotifOpen(false); setProfileOpen(false); }}
+          />
+          <main className="flex-1 min-h-0">
+            {screen === "dialogs" && (
+              <DialogsScreen
+                conversations={conversations}
+                setConversations={setConversations}
+                activeId={activeId}
+                setActiveId={setActiveId}
+                showToast={showToast}
+                onReply={handleReply}
+                onToggleAI={handleToggleAI}
+                onClose={handleClose}
+                onHandoff={handleHandoff}
+                onBillingAction={handleBillingAction}
+                servers={servers}
+              />
+            )}
+            {screen === "stats" && (
+              <StatisticsScreen
+                dailyConversations={dailyConversations}
+                hourly={hourly}
+                operators={opsState}
+                topQuestions={topQuestions}
+              />
+            )}
+            {screen === "settings" && (
+              <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast} />
+            )}
+          </main>
+          <Toast msg={toast} />
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

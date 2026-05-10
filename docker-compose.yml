@@ -1,9 +1,9 @@
 version: '3.8'
 
 services:
-  telegram-bot:
+  helpdesk:
     build: .
-    container_name: telegram-webhook-bot
+    container_name: vpn-helpdesk
     restart: unless-stopped
     depends_on:
       - redis
@@ -17,6 +17,8 @@ services:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - QDRANT_URL=http://qdrant:6333
+    ports:
+      - "8000:8000"
     logging:
       driver: "json-file"
       options:
@@ -60,8 +62,8 @@ services:
     container_name: vpn-bot-qdrant
     restart: unless-stopped
     ports:
-      - "6333:6333"   # REST API
-      - "6334:6334"   # gRPC
+      - "6333:6333"
+      - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
