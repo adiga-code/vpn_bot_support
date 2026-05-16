@@ -1,10 +1,14 @@
+import json
+import uuid
+import aiohttp
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from typing import Optional
 
 from app.config import Settings
 from app.database import DatabaseManager, avatar_color, make_initials
@@ -12,6 +16,23 @@ from app.n8n_client import N8NClient
 from app.ws_manager import WebSocketManager
 
 _STATIC = Path(__file__).parent / "static"
+
+_AI_DEFAULTS = {
+    "prompt": "Ты — дружелюбный ассистент поддержки VPN-сервиса. Отвечай кратко, на русском. Если не знаешь ответ — предложи передать диалог оператору.",
+    "temperature": 0.7,
+    "auto_reply": True,
+    "handoff_enabled": True,
+}
+
+_SCHEDULE_DEFAULTS = {
+    "mon": {"enabled": True,  "from": "09:00", "to": "21:00"},
+    "tue": {"enabled": True,  "from": "09:00", "to": "21:00"},
+    "wed": {"enabled": True,  "from": "09:00", "to": "21:00"},
+    "thu": {"enabled": True,  "from": "09:00", "to": "21:00"},
+    "fri": {"enabled": True,  "from": "09:00", "to": "21:00"},
+    "sat": {"enabled": False, "from": "10:00", "to": "18:00"},
+    "sun": {"enabled": False, "from": "10:00", "to": "18:00"},
+}
 
 
 def _fmt_time(dt: datetime) -> str:
@@ -27,7 +48,7 @@ def _fmt_time(dt: datetime) -> str:
     return dt_utc.strftime("%d.%m")
 
 
-def _fmt_dialog(row: dict) -> dict:
+def _fmt_dialog(row: dict, tickets: list = None) -> dict:
     did = row["dialog_id"]
     name = row.get("user_name") or did
     username = row.get("user_username") or f"@{row['chat_id']}"
@@ -56,7 +77,7 @@ def _fmt_dialog(row: dict) -> dict:
         },
         "preview": row.get("last_message_text") or "",
         "time": _fmt_time(row.get("last_message_time")),
-        "tickets": [],
+        "tickets": tickets or [],
     }
 
 
@@ -67,41 +88,76 @@ def _fmt_message(row: dict) -> dict:
         "text": row.get("text") or "",
         "fileId": row.get("file_id"),
         "fileType": row.get("file_type"),
+        "fileUrl": row.get("file_url"),
         "operator": row.get("operator_name"),
         "time": _fmt_time(row.get("created_at")),
     }
 
 
-class ReplyBody(BaseModel):
-    text: str
-    operator_name: str = "Оператор"
+# ── Request bodies ────────────────────────────────────────────────────────────
 
+class ReplyBody(BaseModel):
+    text: str = ""
+    operator_name: str = "Оператор"
+    file_url: Optional[str] = None
+    file_type: Optional[str] = None
 
 class HandoffBody(BaseModel):
     operator_name: str = "Оператор"
 
+class OperatorBody(BaseModel):
+    name: str
+    tg: str
+    role: str = "agent"
 
-def build_app(
-    settings: Settings,
-    db: DatabaseManager,
-    ws: WebSocketManager,
-    n8n: N8NClient,
-) -> FastAPI:
+class AISettingsBody(BaseModel):
+    prompt: str
+    temperature: float
+    auto_reply: bool
+    handoff_enabled: bool
+
+class ScheduleBody(BaseModel):
+    schedule: dict  # {"mon": {"enabled": bool, "from": "09:00", "to": "21:00"}, ...}
+
+
+# ── App factory ───────────────────────────────────────────────────────────────
+
+def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n: N8NClient) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
+    uploads = settings.uploads_path()
 
-    # ── Static files ─────────────────────────────────────────────────────────
     if _STATIC.exists():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
+
+    # Serve uploaded files
+    @app.get("/api/files/{filename}")
+    async def serve_file(filename: str):
+        path = uploads / filename
+        if not path.exists():
+            raise HTTPException(404, "File not found")
+        return FileResponse(path)
 
     @app.get("/")
     async def index():
         return FileResponse(_STATIC / "index.html")
 
     # ── Dialogs ───────────────────────────────────────────────────────────────
+
     @app.get("/api/dialogs")
     async def get_dialogs():
         rows = await db.get_all_dialogs()
         return [_fmt_dialog(r) for r in rows]
+
+    @app.get("/api/dialogs/{dialog_id}")
+    async def get_dialog(dialog_id: str):
+        row = await db.get_dialog(dialog_id)
+        if not row:
+            raise HTTPException(404)
+        tickets = await db.get_dialog_history(row["chat_id"], dialog_id)
+        return _fmt_dialog(row, [
+            {"id": f"T-{t['dialog_id'][-4:]}", "title": t["last_message_text"] or "Диалог", "date": _fmt_time(t["updated_at"]), "solved": True}
+            for t in tickets
+        ])
 
     @app.get("/api/dialogs/{dialog_id}/messages")
     async def get_messages(dialog_id: str):
@@ -113,16 +169,24 @@ def build_app(
     async def reply(dialog_id: str, body: ReplyBody):
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
-            raise HTTPException(404, "Dialog not found")
+            raise HTTPException(404)
 
         msg_row = await db.save_message(
-            dialog_id, "operator", body.text, operator_name=body.operator_name
+            dialog_id, "operator",
+            body.text or None,
+            file_type=body.file_type,
+            file_url=body.file_url,
+            operator_name=body.operator_name,
         )
-        await db.update_last_message(dialog_id, body.text)
+        preview = body.text or f"[{body.file_type}]" if body.file_type else "—"
+        await db.update_last_message(dialog_id, preview)
         if dialog["status"] == "new":
             await db.update_status(dialog_id, "in_progress")
 
-        await n8n.send_manager_message(dialog_id, dialog["chat_id"], body.text)
+        await n8n.send_manager_message(
+            dialog_id, dialog["chat_id"], body.text,
+            file_url=body.file_url, file_type=body.file_type,
+        )
 
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
@@ -133,29 +197,24 @@ def build_app(
     async def toggle_ai(dialog_id: str):
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
-            raise HTTPException(404, "Dialog not found")
-
+            raise HTTPException(404)
         result = await n8n.toggle_ai_status(dialog_id, dialog["chat_id"])
         if "error" in result:
             raise HTTPException(500, result["error"])
-
-        new_state: bool = result["ai_enabled"]
-        await db.update_ai_enabled(dialog_id, new_state)
+        await db.update_ai_enabled(dialog_id, result["ai_enabled"])
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        return {"ai_enabled": new_state}
+        return result
 
     @app.post("/api/dialogs/{dialog_id}/handoff")
     async def handoff(dialog_id: str, body: HandoffBody = HandoffBody()):
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
-            raise HTTPException(404, "Dialog not found")
-
+            raise HTTPException(404)
         text = f"Диалог передан оператору {body.operator_name}"
         msg_row = await db.save_message(dialog_id, "system", text)
         await db.update_status(dialog_id, "in_progress")
         await db.update_operator_called(dialog_id, True)
-
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
@@ -165,12 +224,10 @@ def build_app(
     async def close_dialog(dialog_id: str):
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
-            raise HTTPException(404, "Dialog not found")
-
+            raise HTTPException(404)
         msg_row = await db.save_message(dialog_id, "system", "Диалог закрыт оператором")
         await db.update_status(dialog_id, "closed")
         await db.update_operator_called(dialog_id, False)
-
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
@@ -179,15 +236,94 @@ def build_app(
     @app.post("/api/dialogs/{dialog_id}/billing/{action}")
     async def billing_action(dialog_id: str, action: str):
         if action not in ("renew", "buy_traffic", "reset_key"):
-            raise HTTPException(400, f"Unknown billing action: {action}")
+            raise HTTPException(400, f"Unknown action: {action}")
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
-            raise HTTPException(404, "Dialog not found")
-
+            raise HTTPException(404)
         ok = await n8n.send_billing_action(dialog_id, dialog["chat_id"], action)
         return {"ok": ok}
 
+    # ── File upload ───────────────────────────────────────────────────────────
+
+    @app.post("/api/upload")
+    async def upload_file(file: UploadFile = File(...)):
+        ext = Path(file.filename).suffix if file.filename else ""
+        filename = f"{uuid.uuid4().hex}{ext}"
+        dest = uploads / filename
+        content = await file.read()
+        dest.write_bytes(content)
+        return {"url": f"/api/files/{filename}", "filename": filename}
+
+    # ── Servers ───────────────────────────────────────────────────────────────
+
+    @app.get("/api/servers")
+    async def get_servers():
+        raw = await n8n.redis.get("vpn_bot:servers")
+        if raw:
+            servers = json.loads(raw)
+            checked = await n8n.redis.get("vpn_bot:servers_updated")
+            return {"servers": servers, "last_updated": checked.decode() if checked else None}
+        return {"servers": [], "last_updated": None}
+
+    # ── Statistics ────────────────────────────────────────────────────────────
+
+    @app.get("/api/stats")
+    async def get_stats(days: int = 14):
+        return await db.get_stats(days)
+
+    # ── Operators ─────────────────────────────────────────────────────────────
+
+    @app.get("/api/operators")
+    async def get_operators():
+        return await db.get_operators()
+
+    @app.post("/api/operators")
+    async def create_operator(body: OperatorBody):
+        return await db.create_operator(body.name, body.tg, body.role)
+
+    @app.put("/api/operators/{op_id}")
+    async def update_operator(op_id: int, body: OperatorBody):
+        result = await db.update_operator(op_id, body.name, body.tg, body.role)
+        if not result:
+            raise HTTPException(404)
+        return result
+
+    @app.delete("/api/operators/{op_id}")
+    async def delete_operator(op_id: int):
+        ok = await db.delete_operator(op_id)
+        if not ok:
+            raise HTTPException(404)
+        return {"ok": True}
+
+    # ── Settings: AI ─────────────────────────────────────────────────────────
+
+    @app.get("/api/settings/ai")
+    async def get_ai_settings():
+        return await db.get_setting_json("ai_settings", _AI_DEFAULTS)
+
+    @app.put("/api/settings/ai")
+    async def save_ai_settings(body: AISettingsBody):
+        data = body.model_dump()
+        await db.set_setting_json("ai_settings", data)
+        # Notify n8n via Redis so it picks up new prompt immediately
+        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(data))
+        return {"ok": True}
+
+    # ── Settings: Schedule ────────────────────────────────────────────────────
+
+    @app.get("/api/settings/schedule")
+    async def get_schedule():
+        return await db.get_setting_json("schedule", _SCHEDULE_DEFAULTS)
+
+    @app.put("/api/settings/schedule")
+    async def save_schedule(body: ScheduleBody):
+        await db.set_setting_json("schedule", body.schedule)
+        # Notify n8n via Redis
+        await n8n.redis.set("vpn_bot:schedule", json.dumps(body.schedule))
+        return {"ok": True}
+
     # ── WebSocket ─────────────────────────────────────────────────────────────
+
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         await ws.connect(websocket)

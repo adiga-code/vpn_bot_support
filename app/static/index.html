@@ -39,42 +39,18 @@
   <script type="text/babel" src="/static/dialogs.jsx"></script>
   <script type="text/babel" src="/static/statistics.jsx"></script>
   <script type="text/babel" src="/static/settings.jsx"></script>
+  <script type="text/babel" src="/static/servers.jsx"></script>
 
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
-    // Mock stats data (подключить к /api/stats при необходимости)
-    const dailyConversations = [38, 42, 51, 47, 39, 28, 33, 56, 62, 49, 71, 68, 74, 82];
-    const hourly = [4,2,1,1,0,2,5,9,18,27,34,41,38,42,47,52,49,44,38,29,22,18,12,7];
-    const topQuestions = [
-      { q: "Как настроить VPN на iPhone", count: 142 },
-      { q: "Не работает оплата криптой", count: 118 },
-      { q: "Как поменять сервер", count: 96 },
-      { q: "Сменить тариф на Pro", count: 81 },
-      { q: "Сбросить ключ доступа", count: 73 },
-      { q: "Закончился трафик", count: 64 },
-      { q: "VPN тормозит / низкая скорость", count: 58 },
-      { q: "Подключение на macOS", count: 49 },
-      { q: "Как продлить подписку", count: 41 },
-      { q: "Не приходит уведомление", count: 32 },
-    ];
-
-    // Mock VPN server statuses (будут заменены на /api/servers)
-    const DEFAULT_SERVERS = [
-      { name: "Frankfurt-01", status: "ok",   load: "—" },
-      { name: "Amsterdam-03", status: "ok",   load: "—" },
-      { name: "Moscow-02",    status: "down", load: "—" },
-      { name: "Warsaw-01",    status: "high", load: "—" },
-      { name: "Stockholm-01", status: "ok",   load: "—" },
-    ];
-
-    // Mock operators for Settings screen
-    const DEFAULT_OPERATORS = [
-      { id: 1, name: "Мария Иванова",  tg: "@maria_op", role: "admin", online: true,  closed: 0, avgTime: "—", initials: "МИ", color: "#A855F7" },
-      { id: 2, name: "Денис Петров",   tg: "@denisp",   role: "agent", online: true,  closed: 0, avgTime: "—", initials: "ДП", color: "#4F8EF7" },
-    ];
-
     // ── API helpers ───────────────────────────────────────────────────────────
+
+    async function apiGet(path) {
+      const res = await fetch(path);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return res.json();
+    }
 
     async function apiPost(path, body) {
       const res = await fetch(path, {
@@ -92,11 +68,13 @@
       const screens = [
         { id: "dialogs",  label: "Диалоги",    icon: "chat"     },
         { id: "stats",    label: "Статистика", icon: "chart"    },
+        { id: "servers",  label: "Серверы",    icon: "server"   },
         { id: "settings", label: "Настройки",  icon: "settings" },
       ];
       const breadcrumbMap = {
         dialogs:  ["Диалоги", activeName ? "@" + activeName : null],
         stats:    ["Статистика"],
+        servers:  ["Серверы VPN"],
         settings: ["Настройки"],
       };
       const crumbs = breadcrumbMap[screen].filter(Boolean);
@@ -226,8 +204,8 @@
       const [screen, setScreen]           = useState("dialogs");
       const [conversations, setConversations] = useState([]);
       const [activeId, setActiveId]       = useState(null);
-      const [opsState, setOpsState]       = useState(DEFAULT_OPERATORS);
-      const [servers, setServers]         = useState(DEFAULT_SERVERS);
+      const [opsState, setOpsState]       = useState([]);
+      const [stats, setStats]             = useState(null);
       const [loading, setLoading]         = useState(true);
       const [notifOpen, setNotifOpen]     = useState(false);
       const [profileOpen, setProfileOpen] = useState(false);
@@ -240,16 +218,19 @@
         setTimeout(() => setToast(null), 2500);
       }
 
-      // Load initial dialogs
+      // Load initial dialogs + operators + stats in parallel
       useEffect(() => {
-        fetch("/api/dialogs")
-          .then((r) => r.json())
-          .then((data) => {
-            const withMessages = data.map((d) => ({ ...d, messages: [], tickets: [] }));
-            setConversations(withMessages);
-            if (withMessages.length > 0) setActiveId(withMessages[0].id);
-          })
-          .catch((e) => console.error("Failed to load dialogs:", e))
+        Promise.all([
+          apiGet("/api/dialogs"),
+          apiGet("/api/operators").catch(() => []),
+          apiGet("/api/stats").catch(() => null),
+        ]).then(([dialogs, operators, statsData]) => {
+          const withMessages = dialogs.map((d) => ({ ...d, messages: [], tickets: [] }));
+          setConversations(withMessages);
+          if (withMessages.length > 0) setActiveId(withMessages[0].id);
+          setOpsState(operators || []);
+          setStats(statsData);
+        }).catch((e) => console.error("Failed to load initial data:", e))
           .finally(() => setLoading(false));
       }, []);
 
@@ -390,17 +371,20 @@
                 onClose={handleClose}
                 onHandoff={handleHandoff}
                 onBillingAction={handleBillingAction}
-                servers={servers}
+                servers={[]}
               />
             )}
             {screen === "stats" && (
               <StatisticsScreen
-                dailyConversations={dailyConversations}
-                hourly={hourly}
+                dailyConversations={stats ? stats.daily.map((d) => d.count) : []}
+                hourly={stats ? stats.hourly : []}
                 operators={opsState}
-                topQuestions={topQuestions}
+                topQuestions={stats ? stats.top_questions : []}
+                todayTotal={stats ? stats.today_total : null}
+                aiResolutionPct={stats ? stats.ai_resolution_pct : null}
               />
             )}
+            {screen === "servers" && <ServersScreen />}
             {screen === "settings" && (
               <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast} />
             )}
