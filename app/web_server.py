@@ -4,11 +4,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app.auth import create_token, decode_token, hash_password, verify_password
 from app.billing import BillingProvider
 from app.config import Settings
 from app.database import DatabaseManager, avatar_color, make_initials
@@ -19,7 +20,11 @@ from app.ws_manager import WebSocketManager
 _STATIC = Path(__file__).parent / "static"
 
 _AI_DEFAULTS = {
-    "prompt": "Ты — дружелюбный ассистент поддержки VPN-сервиса. Отвечай кратко, на русском. Если не знаешь ответ — предложи передать диалог оператору.",
+    "prompt": (
+        "Ты — дружелюбный ассистент поддержки VPN-сервиса. "
+        "Отвечай кратко, на русском. "
+        "Если не знаешь ответ — предложи передать диалог оператору."
+    ),
     "temperature": 0.7,
     "auto_reply": True,
     "handoff_enabled": True,
@@ -97,7 +102,32 @@ def _fmt_message(row: dict) -> dict:
     }
 
 
+def _fmt_operator(op: dict) -> dict:
+    return {
+        "id": op["id"],
+        "name": op["name"],
+        "tg": op["tg"],
+        "role": op["role"],
+        "initials": op.get("initials") or make_initials(op["name"]),
+        "color": op.get("color") or "#4F8EF7",
+        "online": op.get("online", False),
+    }
+
+
 # ── Request bodies ────────────────────────────────────────────────────────────
+
+class LoginBody(BaseModel):
+    tg: str
+    password: str
+
+class SetupBody(BaseModel):
+    name: str
+    tg: str
+    password: str
+
+class ChangePasswordBody(BaseModel):
+    current_password: str
+    new_password: str
 
 class ReplyBody(BaseModel):
     text: str = ""
@@ -105,16 +135,13 @@ class ReplyBody(BaseModel):
     file_url: Optional[str] = None
     file_type: Optional[str] = None
 
-
 class HandoffBody(BaseModel):
     operator_name: str = "Оператор"
-
 
 class OperatorBody(BaseModel):
     name: str
     tg: str
     role: str = "agent"
-
 
 class AISettingsBody(BaseModel):
     prompt: str
@@ -122,9 +149,8 @@ class AISettingsBody(BaseModel):
     auto_reply: bool
     handoff_enabled: bool
 
-
 class ScheduleBody(BaseModel):
-    schedule: dict  # {"mon": {"enabled": bool, "from": "09:00", "to": "21:00"}, ...}
+    schedule: dict
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -143,6 +169,32 @@ def build_app(
     if _STATIC.exists():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
+    # Auth dependency — defined here for closure access to db and settings
+    async def require_auth(authorization: Optional[str] = Depends(
+        lambda authorization: authorization  # FastAPI Header injection below
+    )) -> dict:
+        raise NotImplementedError  # replaced below
+
+    # Proper Header-based dependency
+    from fastapi import Header
+
+    async def require_auth(authorization: Optional[str] = Header(None)) -> dict:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(401, "Not authenticated")
+        op_id = decode_token(authorization[7:], settings.SECRET_KEY)
+        if not op_id:
+            raise HTTPException(401, "Invalid or expired token")
+        op = await db.get_operator(op_id)
+        if not op:
+            raise HTTPException(401, "Operator not found")
+        return op
+
+    # ── Static / index ────────────────────────────────────────────────────────
+
+    @app.get("/")
+    async def index():
+        return FileResponse(_STATIC / "index.html")
+
     @app.get("/api/files/{filename}")
     async def serve_file(filename: str):
         path = uploads / filename
@@ -150,19 +202,68 @@ def build_app(
             raise HTTPException(404, "File not found")
         return FileResponse(path)
 
-    @app.get("/")
-    async def index():
-        return FileResponse(_STATIC / "index.html")
+    # ── Auth (public) ─────────────────────────────────────────────────────────
+
+    @app.get("/api/auth/status")
+    async def auth_status():
+        """Returns whether first-time setup is needed (no operators in DB)."""
+        count = await db.pool.fetchval("SELECT COUNT(*) FROM operators")
+        return {"setup_needed": count == 0}
+
+    @app.post("/api/auth/setup")
+    async def setup(body: SetupBody):
+        """Create the first admin account. Fails if any operator already exists."""
+        count = await db.pool.fetchval("SELECT COUNT(*) FROM operators")
+        if count > 0:
+            raise HTTPException(403, "Setup already completed")
+        if len(body.password) < 6:
+            raise HTTPException(400, "Password must be at least 6 characters")
+        op = await db.create_operator(body.name, body.tg, "admin")
+        await db.set_password(op["id"], hash_password(body.password))
+        token = create_token(op["id"], settings.SECRET_KEY)
+        return {"token": token, "operator": _fmt_operator(op)}
+
+    @app.post("/api/auth/login")
+    async def login(body: LoginBody):
+        op = await db.get_operator_by_tg(body.tg)
+        if not op or not op.get("password_hash"):
+            raise HTTPException(401, "Неверный логин или пароль")
+        if not verify_password(body.password, op["password_hash"]):
+            raise HTTPException(401, "Неверный логин или пароль")
+        token = create_token(op["id"], settings.SECRET_KEY)
+        return {"token": token, "operator": _fmt_operator(op)}
+
+    # ── Auth (protected) ──────────────────────────────────────────────────────
+
+    @app.get("/api/auth/me")
+    async def me(operator: dict = Depends(require_auth)):
+        return _fmt_operator(operator)
+
+    @app.post("/api/auth/logout")
+    async def logout(operator: dict = Depends(require_auth)):
+        # JWT is stateless — client drops the token
+        return {"ok": True}
+
+    @app.put("/api/auth/password")
+    async def change_password(body: ChangePasswordBody, operator: dict = Depends(require_auth)):
+        if not operator.get("password_hash"):
+            raise HTTPException(400, "No password set")
+        if not verify_password(body.current_password, operator["password_hash"]):
+            raise HTTPException(400, "Неверный текущий пароль")
+        if len(body.new_password) < 6:
+            raise HTTPException(400, "Password must be at least 6 characters")
+        await db.set_password(operator["id"], hash_password(body.new_password))
+        return {"ok": True}
 
     # ── Dialogs ───────────────────────────────────────────────────────────────
 
     @app.get("/api/dialogs")
-    async def get_dialogs():
+    async def get_dialogs(operator: dict = Depends(require_auth)):
         rows = await db.get_all_dialogs()
         return [_fmt_dialog(r) for r in rows]
 
     @app.get("/api/dialogs/{dialog_id}")
-    async def get_dialog(dialog_id: str):
+    async def get_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
         row = await db.get_dialog(dialog_id)
         if not row:
             raise HTTPException(404)
@@ -178,25 +279,27 @@ def build_app(
         ])
 
     @app.get("/api/dialogs/{dialog_id}/messages")
-    async def get_messages(dialog_id: str):
+    async def get_messages(dialog_id: str, operator: dict = Depends(require_auth)):
         await db.clear_unread(dialog_id)
         rows = await db.get_messages(dialog_id)
         return [_fmt_message(r) for r in rows]
 
     @app.post("/api/dialogs/{dialog_id}/reply")
-    async def reply(dialog_id: str, body: ReplyBody):
+    async def reply(dialog_id: str, body: ReplyBody, operator: dict = Depends(require_auth)):
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
             raise HTTPException(404)
 
+        # Use authenticated operator's name if body doesn't override it
+        op_name = body.operator_name or operator["name"]
         msg_row = await db.save_message(
             dialog_id, "operator",
             body.text or None,
             file_type=body.file_type,
             file_url=body.file_url,
-            operator_name=body.operator_name,
+            operator_name=op_name,
         )
-        preview = body.text or f"[{body.file_type}]" if body.file_type else "—"
+        preview = body.text or (f"[{body.file_type}]" if body.file_type else "—")
         await db.update_last_message(dialog_id, preview)
         if dialog["status"] == "new":
             await db.update_status(dialog_id, "in_progress")
@@ -212,25 +315,24 @@ def build_app(
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/toggle_ai")
-    async def toggle_ai(dialog_id: str):
+    async def toggle_ai(dialog_id: str, operator: dict = Depends(require_auth)):
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
             raise HTTPException(404)
         new_value = not dialog["ai_enabled"]
         await db.update_ai_enabled(dialog_id, new_value)
-        # Notify n8n so it tracks the current AI state (fire-and-forget)
         await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], new_value)
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         return {"ai_enabled": new_value}
 
     @app.post("/api/dialogs/{dialog_id}/handoff")
-    async def handoff(dialog_id: str, body: HandoffBody = HandoffBody()):
+    async def handoff(dialog_id: str, body: HandoffBody = HandoffBody(), operator: dict = Depends(require_auth)):
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
             raise HTTPException(404)
-        text = f"Диалог передан оператору {body.operator_name}"
-        msg_row = await db.save_message(dialog_id, "system", text)
+        op_name = body.operator_name or operator["name"]
+        msg_row = await db.save_message(dialog_id, "system", f"Диалог передан оператору {op_name}")
         await db.update_status(dialog_id, "in_progress")
         await db.update_operator_called(dialog_id, True)
         updated = await db.get_dialog(dialog_id)
@@ -239,7 +341,7 @@ def build_app(
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/close")
-    async def close_dialog(dialog_id: str):
+    async def close_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
             raise HTTPException(404)
@@ -252,7 +354,7 @@ def build_app(
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/billing/{action}")
-    async def billing_action(dialog_id: str, action: str):
+    async def billing_action(dialog_id: str, action: str, operator: dict = Depends(require_auth)):
         if action not in ("renew", "buy_traffic", "reset_key"):
             raise HTTPException(400, f"Unknown action: {action}")
         dialog = await db.get_dialog(dialog_id)
@@ -266,7 +368,7 @@ def build_app(
     # ── File upload ───────────────────────────────────────────────────────────
 
     @app.post("/api/upload")
-    async def upload_file(file: UploadFile = File(...)):
+    async def upload_file(file: UploadFile = File(...), operator: dict = Depends(require_auth)):
         ext = Path(file.filename).suffix if file.filename else ""
         filename = f"{uuid.uuid4().hex}{ext}"
         dest = uploads / filename
@@ -277,34 +379,42 @@ def build_app(
     # ── Servers ───────────────────────────────────────────────────────────────
 
     @app.get("/api/servers")
-    async def get_servers():
+    async def get_servers(operator: dict = Depends(require_auth)):
         return server_monitor.get_snapshot()
 
     # ── Statistics ────────────────────────────────────────────────────────────
 
     @app.get("/api/stats")
-    async def get_stats(days: int = 14):
+    async def get_stats(days: int = 14, operator: dict = Depends(require_auth)):
         return await db.get_stats(days)
 
     # ── Operators ─────────────────────────────────────────────────────────────
 
     @app.get("/api/operators")
-    async def get_operators():
+    async def get_operators(operator: dict = Depends(require_auth)):
         return await db.get_operators()
 
     @app.post("/api/operators")
-    async def create_operator(body: OperatorBody):
+    async def create_operator(body: OperatorBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
         return await db.create_operator(body.name, body.tg, body.role)
 
     @app.put("/api/operators/{op_id}")
-    async def update_operator(op_id: int, body: OperatorBody):
+    async def update_operator(op_id: int, body: OperatorBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
         result = await db.update_operator(op_id, body.name, body.tg, body.role)
         if not result:
             raise HTTPException(404)
         return result
 
     @app.delete("/api/operators/{op_id}")
-    async def delete_operator(op_id: int):
+    async def delete_operator(op_id: int, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if op_id == operator["id"]:
+            raise HTTPException(400, "Cannot delete yourself")
         ok = await db.delete_operator(op_id)
         if not ok:
             raise HTTPException(404)
@@ -313,34 +423,36 @@ def build_app(
     # ── Settings: AI ──────────────────────────────────────────────────────────
 
     @app.get("/api/settings/ai")
-    async def get_ai_settings():
+    async def get_ai_settings(operator: dict = Depends(require_auth)):
         return await db.get_setting_json("ai_settings", _AI_DEFAULTS)
 
     @app.put("/api/settings/ai")
-    async def save_ai_settings(body: AISettingsBody):
+    async def save_ai_settings(body: AISettingsBody, operator: dict = Depends(require_auth)):
         data = body.model_dump()
         await db.set_setting_json("ai_settings", data)
-        # Push new prompt to Redis so n8n picks it up immediately
         await n8n.redis.set("vpn_bot:ai_settings", json.dumps(data))
         return {"ok": True}
 
     # ── Settings: Schedule ────────────────────────────────────────────────────
 
     @app.get("/api/settings/schedule")
-    async def get_schedule():
+    async def get_schedule(operator: dict = Depends(require_auth)):
         return await db.get_setting_json("schedule", _SCHEDULE_DEFAULTS)
 
     @app.put("/api/settings/schedule")
-    async def save_schedule(body: ScheduleBody):
+    async def save_schedule(body: ScheduleBody, operator: dict = Depends(require_auth)):
         await db.set_setting_json("schedule", body.schedule)
-        # Push updated schedule to Redis so n8n picks it up immediately
         await n8n.redis.set("vpn_bot:schedule", json.dumps(body.schedule))
         return {"ok": True}
 
     # ── WebSocket ─────────────────────────────────────────────────────────────
 
     @app.websocket("/ws")
-    async def websocket_endpoint(websocket: WebSocket):
+    async def websocket_endpoint(websocket: WebSocket, token: str = ""):
+        op_id = decode_token(token, settings.SECRET_KEY)
+        if not op_id:
+            await websocket.close(code=4001)
+            return
         await ws.connect(websocket)
         try:
             while True:

@@ -4,6 +4,7 @@ import json
 import uvicorn
 import redis.asyncio as aioredis
 
+from app.auth import hash_password
 from app.billing import make_billing_provider
 from app.config import Settings
 from app.database import DatabaseManager
@@ -20,6 +21,14 @@ async def main():
 
     db = DatabaseManager(settings)
     await db.init_db()
+
+    # ── Initial admin account ─────────────────────────────────────────────────
+    if settings.ADMIN_INIT_TG and settings.ADMIN_INIT_PASSWORD:
+        ops = await db.get_operators()
+        if not ops:
+            op = await db.create_operator("Admin", settings.ADMIN_INIT_TG, "admin")
+            await db.set_password(op["id"], hash_password(settings.ADMIN_INIT_PASSWORD))
+            print(f"Initial admin created: tg={settings.ADMIN_INIT_TG}")
 
     redis = aioredis.from_url(settings.REDIS_URL)
     ws_manager = WebSocketManager()

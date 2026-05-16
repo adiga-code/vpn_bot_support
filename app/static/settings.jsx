@@ -10,6 +10,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast }) {
 
   const sections = [
     { id: "operators",     label: "Операторы",    icon: "operators" },
+    { id: "profile",       label: "Профиль",      icon: "user"      },
     { id: "schedule",      label: "Расписание",   icon: "clock"     },
     { id: "ai",            label: "ИИ-настройки", icon: "sparkles"  },
     { id: "notifications", label: "Уведомления",  icon: "bell"      },
@@ -19,19 +20,11 @@ function SettingsScreen({ operators: ops, setOperators, showToast }) {
   async function saveOperator(data) {
     try {
       if (editingOp) {
-        const res = await fetch(`/api/operators/${editingOp.id}`, {
-          method: "PUT", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        });
-        const updated = await res.json();
+        const updated = await window.apiFetch("PUT", `/api/operators/${editingOp.id}`, data);
         setOperators((arr) => arr.map((o) => (o.id === editingOp.id ? { ...o, ...updated } : o)));
         showToast("Оператор обновлён");
       } else {
-        const res = await fetch("/api/operators", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        });
-        const created = await res.json();
+        const created = await window.apiFetch("POST", "/api/operators", data);
         setOperators((arr) => [...arr, { ...created, closed: 0, avgTime: "—" }]);
         showToast("Оператор добавлен");
       }
@@ -43,7 +36,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast }) {
 
   async function deleteOperator(op) {
     try {
-      await fetch(`/api/operators/${op.id}`, { method: "DELETE" });
+      await window.apiFetch("DELETE", `/api/operators/${op.id}`);
       setOperators((arr) => arr.filter((o) => o.id !== op.id));
       showToast("Оператор удалён");
     } catch (e) {
@@ -70,6 +63,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast }) {
 
       <div className="flex-1 overflow-y-auto scrollbar-thin">
         {section === "operators"     && <OperatorsSection operators={ops} onAdd={() => { setEditingOp(null); setModalOpen(true); }} onEdit={(op) => { setEditingOp(op); setModalOpen(true); }} onDelete={(op) => setConfirmDelete(op)} />}
+        {section === "profile"       && <ProfileSection showToast={showToast} />}
         {section === "schedule"      && <ScheduleSection showToast={showToast} />}
         {section === "ai"            && <AISection showToast={showToast} />}
         {section === "notifications" && <NotificationsSection showToast={showToast} />}
@@ -211,6 +205,72 @@ function OperatorModal({ editing, onClose, onSave }) {
   );
 }
 
+function ProfileSection({ showToast }) {
+  const [current,  setCurrent]  = useStateT("");
+  const [newPw,    setNewPw]    = useStateT("");
+  const [newPw2,   setNewPw2]   = useStateT("");
+  const [loading,  setLoading]  = useStateT(false);
+  const [err,      setErr]      = useStateT(null);
+
+  async function submit(e) {
+    e?.preventDefault();
+    if (newPw !== newPw2)  { setErr("Пароли не совпадают"); return; }
+    if (newPw.length < 6)  { setErr("Новый пароль — минимум 6 символов"); return; }
+    setLoading(true);
+    setErr(null);
+    try {
+      await window.apiFetch("PUT", "/api/auth/password", {
+        current_password: current,
+        new_password: newPw,
+      });
+      setCurrent(""); setNewPw(""); setNewPw2("");
+      showToast("Пароль изменён");
+    } catch {
+      setErr("Неверный текущий пароль");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="max-w-[600px] mx-auto p-6 space-y-5">
+      <div>
+        <h1 className="text-xl font-semibold text-[#f1f1f5]">Профиль</h1>
+        <div className="text-xs text-[#6b7280] mt-0.5">Управление своим аккаунтом</div>
+      </div>
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5">
+        <div className="text-sm font-medium text-[#f1f1f5] mb-4">Смена пароля</div>
+        <form onSubmit={submit} className="space-y-4">
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Текущий пароль</label>
+            <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)}
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50" />
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Новый пароль</label>
+            <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)}
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50" />
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Повторите новый пароль</label>
+            <input type="password" value={newPw2} onChange={(e) => setNewPw2(e.target.value)}
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50" />
+          </div>
+          {err && (
+            <div className="text-xs text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-3 py-2">
+              {err}
+            </div>
+          )}
+          <button type="submit" disabled={loading || !current || !newPw || !newPw2}
+            className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed">
+            {loading ? "Сохранение..." : "Изменить пароль"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ScheduleSection({ showToast }) {
   const DAYS = [
     {key:"mon",label:"Пн"},{key:"tue",label:"Вт"},{key:"wed",label:"Ср"},
@@ -219,7 +279,7 @@ function ScheduleSection({ showToast }) {
   const [schedule, setSchedule] = useStateT(null);
 
   useEffectT(() => {
-    fetch("/api/settings/schedule").then((r) => r.json()).then(setSchedule);
+    window.apiFetch("GET", "/api/settings/schedule").then(setSchedule).catch(() => {});
   }, []);
 
   function setDay(key, field, value) {
@@ -228,7 +288,7 @@ function ScheduleSection({ showToast }) {
 
   async function save() {
     try {
-      await fetch("/api/settings/schedule", { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ schedule }) });
+      await window.apiFetch("PUT", "/api/settings/schedule", { schedule });
       showToast("Расписание сохранено");
     } catch { showToast("Ошибка сохранения"); }
   }
@@ -275,12 +335,12 @@ function AISection({ showToast }) {
   const [settings, setSettings] = useStateT(null);
 
   useEffectT(() => {
-    fetch("/api/settings/ai").then((r) => r.json()).then(setSettings);
+    window.apiFetch("GET", "/api/settings/ai").then(setSettings).catch(() => {});
   }, []);
 
   async function save() {
     try {
-      await fetch("/api/settings/ai", { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(settings) });
+      await window.apiFetch("PUT", "/api/settings/ai", settings);
       showToast("Настройки ИИ сохранены");
     } catch { showToast("Ошибка сохранения"); }
   }

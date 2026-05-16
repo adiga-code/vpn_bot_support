@@ -44,27 +44,171 @@
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
-    // ── API helpers ───────────────────────────────────────────────────────────
+    // ── Auth token ────────────────────────────────────────────────────────────
 
-    async function apiGet(path) {
-      const res = await fetch(path);
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      return res.json();
+    let _token = localStorage.getItem("hd_token") || "";
+    let _authExpiredCb = null;
+
+    function setToken(t) {
+      _token = t;
+      t ? localStorage.setItem("hd_token", t) : localStorage.removeItem("hd_token");
     }
 
-    async function apiPost(path, body) {
+    // ── API helpers ───────────────────────────────────────────────────────────
+
+    async function apiFetch(method, path, body) {
+      const headers = {};
+      if (_token) headers["Authorization"] = "Bearer " + _token;
+      if (body !== undefined) headers["Content-Type"] = "application/json";
       const res = await fetch(path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: body ? JSON.stringify(body) : undefined,
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
       });
+      if (res.status === 401) {
+        setToken("");
+        if (_authExpiredCb) _authExpiredCb();
+        throw Object.assign(new Error("Unauthorized"), { status: 401 });
+      }
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      return res.json();
+      const text = await res.text();
+      return text ? JSON.parse(text) : null;
+    }
+
+    window.apiFetch = apiFetch;
+
+    async function apiGet(path)        { return apiFetch("GET",  path);       }
+    async function apiPost(path, body) { return apiFetch("POST", path, body); }
+
+    // ── LoginScreen ───────────────────────────────────────────────────────────
+
+    function LoginScreen({ onLogin }) {
+      const [tg,       setTg]       = useState("");
+      const [password, setPassword] = useState("");
+      const [loading,  setLoading]  = useState(false);
+      const [err,      setErr]      = useState(null);
+
+      async function submit(e) {
+        e?.preventDefault();
+        setLoading(true);
+        setErr(null);
+        try {
+          const handle = tg.startsWith("@") ? tg : "@" + tg;
+          await onLogin(handle, password);
+        } catch {
+          setErr("Неверный Telegram или пароль");
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      return (
+        <div className="h-full flex items-center justify-center bg-[#0d0d12]">
+          <div className="w-full max-w-sm px-4">
+            <div className="text-center mb-8">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#4F8EF7] to-[#A855F7] mx-auto flex items-center justify-center text-white font-bold text-2xl mb-4">Х</div>
+              <div className="text-xl font-semibold text-[#f1f1f5]">VPN Хелпдеск</div>
+              <div className="text-sm text-[#6b7280] mt-1">Войдите в аккаунт оператора</div>
+            </div>
+            <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-2xl p-6 space-y-4">
+              <div>
+                <label className="block text-xs text-[#6b7280] mb-1.5">Telegram username</label>
+                <input autoFocus value={tg} onChange={(e) => setTg(e.target.value)} placeholder="@username"
+                  className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono" />
+              </div>
+              <div>
+                <label className="block text-xs text-[#6b7280] mb-1.5">Пароль</label>
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••"
+                  className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
+              </div>
+              {err && (
+                <div className="text-xs text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-3 py-2">
+                  {err}
+                </div>
+              )}
+              <button type="submit" disabled={loading || !tg || !password}
+                className="w-full py-2.5 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white font-semibold text-sm transition disabled:opacity-40 disabled:cursor-not-allowed">
+                {loading ? "Вход..." : "Войти"}
+              </button>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // ── SetupScreen ───────────────────────────────────────────────────────────
+
+    function SetupScreen({ onSetup }) {
+      const [name,     setName]     = useState("");
+      const [tg,       setTg]       = useState("");
+      const [password, setPassword] = useState("");
+      const [password2,setPassword2]= useState("");
+      const [loading,  setLoading]  = useState(false);
+      const [err,      setErr]      = useState(null);
+
+      async function submit(e) {
+        e?.preventDefault();
+        if (password !== password2) { setErr("Пароли не совпадают"); return; }
+        if (password.length < 6)    { setErr("Пароль — минимум 6 символов"); return; }
+        setLoading(true);
+        setErr(null);
+        try {
+          const handle = tg.startsWith("@") ? tg : "@" + tg;
+          await onSetup(name.trim(), handle, password);
+        } catch {
+          setErr("Ошибка создания аккаунта");
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      return (
+        <div className="h-full flex items-center justify-center bg-[#0d0d12]">
+          <div className="w-full max-w-sm px-4">
+            <div className="text-center mb-8">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#4F8EF7] to-[#A855F7] mx-auto flex items-center justify-center text-white font-bold text-2xl mb-4">Х</div>
+              <div className="text-xl font-semibold text-[#f1f1f5]">Первый запуск</div>
+              <div className="text-sm text-[#6b7280] mt-1">Создайте аккаунт администратора</div>
+            </div>
+            <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-2xl p-6 space-y-4">
+              <div>
+                <label className="block text-xs text-[#6b7280] mb-1.5">Имя</label>
+                <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Алексей Петров"
+                  className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
+              </div>
+              <div>
+                <label className="block text-xs text-[#6b7280] mb-1.5">Telegram username</label>
+                <input value={tg} onChange={(e) => setTg(e.target.value)} placeholder="@username"
+                  className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono" />
+              </div>
+              <div>
+                <label className="block text-xs text-[#6b7280] mb-1.5">Пароль</label>
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••"
+                  className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
+              </div>
+              <div>
+                <label className="block text-xs text-[#6b7280] mb-1.5">Повторите пароль</label>
+                <input type="password" value={password2} onChange={(e) => setPassword2(e.target.value)} placeholder="••••••••"
+                  className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
+              </div>
+              {err && (
+                <div className="text-xs text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-3 py-2">
+                  {err}
+                </div>
+              )}
+              <button type="submit" disabled={loading || !name || !tg || !password || !password2}
+                className="w-full py-2.5 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white font-semibold text-sm transition disabled:opacity-40 disabled:cursor-not-allowed">
+                {loading ? "Создание..." : "Создать аккаунт"}
+              </button>
+            </form>
+          </div>
+        </div>
+      );
     }
 
     // ── TopBar ────────────────────────────────────────────────────────────────
 
-    function TopBar({ screen, setScreen, activeName, notifCount, onNotifClick, notifOpen, onProfileClick, profileOpen, onCloseMenus }) {
+    function TopBar({ screen, setScreen, activeName, notifCount, onNotifClick, notifOpen, onProfileClick, profileOpen, onCloseMenus, currentOperator, onLogout }) {
       const screens = [
         { id: "dialogs",  label: "Диалоги",    icon: "chat"     },
         { id: "stats",    label: "Статистика", icon: "chart"    },
@@ -78,6 +222,11 @@
         settings: ["Настройки"],
       };
       const crumbs = breadcrumbMap[screen].filter(Boolean);
+
+      const opInitials = currentOperator?.initials || "??";
+      const opColor    = currentOperator?.color    || "#4F8EF7";
+      const opName     = currentOperator?.name     || "Оператор";
+      const opTg       = currentOperator?.tg       || "";
 
       return (
         <header className="h-[56px] shrink-0 bg-[#13131a] border-b border-[#2a2a3a] flex items-center px-3 gap-2 relative z-30">
@@ -133,11 +282,11 @@
               className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg hover:bg-[#1a1a24] transition"
             >
               <div className="relative">
-                <Avatar initials="МИ" color="#A855F7" size={28} />
+                <Avatar initials={opInitials} color={opColor} size={28} />
                 <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#22c55e] ring-2 ring-[#13131a]"></span>
               </div>
               <div className="text-left">
-                <div className="text-xs font-medium text-[#f1f1f5] leading-tight">Мария И.</div>
+                <div className="text-xs font-medium text-[#f1f1f5] leading-tight">{opName}</div>
                 <div className="flex items-center gap-1 text-[10px] text-[#22c55e]">
                   <span className="w-1 h-1 rounded-full bg-[#22c55e]"></span>
                   Онлайн
@@ -179,18 +328,21 @@
               <div className="fixed inset-0 z-40" onClick={onCloseMenus}></div>
               <div className="absolute top-[52px] right-3 w-[220px] bg-[#13131a] border border-[#2a2a3a] rounded-xl shadow-2xl z-50 overflow-hidden py-1">
                 <div className="px-4 py-3 border-b border-[#2a2a3a]">
-                  <div className="text-sm font-medium text-[#f1f1f5]">Мария Иванова</div>
-                  <div className="text-[10px] text-[#6b7280] font-mono">@maria_op</div>
+                  <div className="text-sm font-medium text-[#f1f1f5]">{opName}</div>
+                  <div className="text-[10px] text-[#6b7280] font-mono">{opTg}</div>
                 </div>
-                {["Профиль", "Выйти"].map((it, i) => (
-                  <button
-                    key={i}
-                    onClick={onCloseMenus}
-                    className={"w-full text-left px-4 py-2 text-sm hover:bg-[#1a1a24] " + (i === 1 ? "text-[#ef4444]" : "text-[#f1f1f5]")}
-                  >
-                    {it}
-                  </button>
-                ))}
+                <button
+                  onClick={() => { onCloseMenus(); setScreen && setScreen("settings"); }}
+                  className="w-full text-left px-4 py-2 text-sm text-[#f1f1f5] hover:bg-[#1a1a24]"
+                >
+                  Профиль
+                </button>
+                <button
+                  onClick={() => { onCloseMenus(); onLogout(); }}
+                  className="w-full text-left px-4 py-2 text-sm text-[#ef4444] hover:bg-[#1a1a24]"
+                >
+                  Выйти
+                </button>
               </div>
             </>
           )}
@@ -201,25 +353,68 @@
     // ── App ───────────────────────────────────────────────────────────────────
 
     function App() {
-      const [screen, setScreen]           = useState("dialogs");
-      const [conversations, setConversations] = useState([]);
-      const [activeId, setActiveId]       = useState(null);
-      const [opsState, setOpsState]       = useState([]);
-      const [stats, setStats]             = useState(null);
-      const [loading, setLoading]         = useState(true);
-      const [notifOpen, setNotifOpen]     = useState(false);
-      const [profileOpen, setProfileOpen] = useState(false);
-      const [toast, setToast]             = useState(null);
+      // "loading" | "setup" | "login" | "app"
+      const [authState,       setAuthState]       = useState("loading");
+      const [currentOperator, setCurrentOperator] = useState(null);
+
+      const [screen,          setScreen]          = useState("dialogs");
+      const [conversations,   setConversations]   = useState([]);
+      const [activeId,        setActiveId]        = useState(null);
+      const [opsState,        setOpsState]        = useState([]);
+      const [stats,           setStats]           = useState(null);
+      const [dataLoading,     setDataLoading]     = useState(false);
+      const [notifOpen,       setNotifOpen]       = useState(false);
+      const [profileOpen,     setProfileOpen]     = useState(false);
+      const [toast,           setToast]           = useState(null);
 
       const loadedRef = useRef(new Set());
+      const wsRef     = useRef(null);
 
       function showToast(msg) {
         setToast(msg);
         setTimeout(() => setToast(null), 2500);
       }
 
-      // Load initial dialogs + operators + stats in parallel
+      // ── Auth expired callback ─────────────────────────────────────────────
+
       useEffect(() => {
+        _authExpiredCb = () => {
+          setCurrentOperator(null);
+          setAuthState("login");
+        };
+        return () => { _authExpiredCb = null; };
+      }, []);
+
+      // ── Initial auth check ────────────────────────────────────────────────
+
+      useEffect(() => {
+        async function boot() {
+          if (_token) {
+            try {
+              const op = await apiFetch("GET", "/api/auth/me");
+              setCurrentOperator(op);
+              setAuthState("app");
+              return;
+            } catch {
+              setToken("");
+            }
+          }
+          // No valid token — check if first-time setup is needed
+          try {
+            const status = await fetch("/api/auth/status").then((r) => r.json());
+            setAuthState(status.setup_needed ? "setup" : "login");
+          } catch {
+            setAuthState("login");
+          }
+        }
+        boot();
+      }, []);
+
+      // ── Load app data once authenticated ──────────────────────────────────
+
+      useEffect(() => {
+        if (authState !== "app") return;
+        setDataLoading(true);
         Promise.all([
           apiGet("/api/dialogs"),
           apiGet("/api/operators").catch(() => []),
@@ -231,17 +426,20 @@
           setOpsState(operators || []);
           setStats(statsData);
         }).catch((e) => console.error("Failed to load initial data:", e))
-          .finally(() => setLoading(false));
-      }, []);
+          .finally(() => setDataLoading(false));
+      }, [authState]);
 
-      // WebSocket for real-time updates
+      // ── WebSocket ─────────────────────────────────────────────────────────
+
       useEffect(() => {
+        if (authState !== "app") return;
+
         const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-        const ws = new WebSocket(`${protocol}//${location.host}/ws`);
+        const ws = new WebSocket(`${protocol}//${location.host}/ws?token=${_token}`);
+        wsRef.current = ws;
 
         ws.onmessage = (event) => {
           const data = JSON.parse(event.data);
-
           if (data.type === "new_message") {
             setConversations((prev) =>
               prev.map((c) =>
@@ -268,14 +466,14 @@
 
         ws.onerror = (e) => console.warn("WebSocket error", e);
         return () => ws.close();
-      }, []);
+      }, [authState]);
 
-      // Lazy-load messages when a dialog is first opened
+      // ── Lazy-load messages ────────────────────────────────────────────────
+
       useEffect(() => {
         if (!activeId || loadedRef.current.has(activeId)) return;
         loadedRef.current.add(activeId);
-        fetch(`/api/dialogs/${activeId}/messages`)
-          .then((r) => r.json())
+        apiGet(`/api/dialogs/${activeId}/messages`)
           .then((msgs) =>
             setConversations((prev) =>
               prev.map((c) => (c.id === activeId ? { ...c, messages: msgs } : c))
@@ -284,11 +482,41 @@
           .catch((e) => console.error("Failed to load messages:", e));
       }, [activeId]);
 
+      // ── Auth actions ──────────────────────────────────────────────────────
+
+      async function handleLogin(tg, password) {
+        const data = await apiFetch("POST", "/api/auth/login", { tg, password });
+        setToken(data.token);
+        setCurrentOperator(data.operator);
+        setAuthState("app");
+      }
+
+      async function handleSetup(name, tg, password) {
+        const data = await apiFetch("POST", "/api/auth/setup", { name, tg, password });
+        setToken(data.token);
+        setCurrentOperator(data.operator);
+        setAuthState("app");
+      }
+
+      async function handleLogout() {
+        try { await apiFetch("POST", "/api/auth/logout"); } catch {}
+        setToken("");
+        setCurrentOperator(null);
+        setConversations([]);
+        setActiveId(null);
+        loadedRef.current = new Set();
+        if (wsRef.current) wsRef.current.close();
+        setAuthState("login");
+      }
+
       // ── API callbacks ─────────────────────────────────────────────────────
 
-      async function handleReply(dialog_id, text, operator_name) {
+      async function handleReply(dialog_id, text) {
         try {
-          await apiPost(`/api/dialogs/${dialog_id}/reply`, { text, operator_name });
+          await apiPost(`/api/dialogs/${dialog_id}/reply`, {
+            text,
+            operator_name: currentOperator?.name || "Оператор",
+          });
         } catch (e) {
           console.error("Reply failed:", e);
           showToast("Ошибка отправки сообщения");
@@ -313,9 +541,11 @@
         }
       }
 
-      async function handleHandoff(dialog_id, operator_name) {
+      async function handleHandoff(dialog_id) {
         try {
-          await apiPost(`/api/dialogs/${dialog_id}/handoff`, { operator_name });
+          await apiPost(`/api/dialogs/${dialog_id}/handoff`, {
+            operator_name: currentOperator?.name || "Оператор",
+          });
         } catch (e) {
           console.error("Handoff failed:", e);
         }
@@ -332,12 +562,28 @@
         }
       }
 
-      // ─────────────────────────────────────────────────────────────────────
+      // ── Render ────────────────────────────────────────────────────────────
 
-      const active = conversations.find((c) => c.id === activeId);
+      if (authState === "loading") {
+        return (
+          <div className="h-full flex items-center justify-center bg-[#0d0d12]">
+            <div className="text-[#6b7280] text-sm">Загрузка...</div>
+          </div>
+        );
+      }
+
+      if (authState === "setup") {
+        return <SetupScreen onSetup={handleSetup} />;
+      }
+
+      if (authState === "login") {
+        return <LoginScreen onLogin={handleLogin} />;
+      }
+
+      const active     = conversations.find((c) => c.id === activeId);
       const notifCount = conversations.filter((c) => c.operatorCalled && c.status !== "closed").length;
 
-      if (loading) {
+      if (dataLoading) {
         return (
           <div className="h-full flex items-center justify-center bg-[#0d0d12]">
             <div className="text-[#6b7280] text-sm">Загрузка...</div>
@@ -350,13 +596,15 @@
           <TopBar
             screen={screen}
             setScreen={setScreen}
-            activeName={screen === "dialogs" && active ? active.username.replace("@", "") : null}
+            activeName={screen === "dialogs" && active ? active.username?.replace("@", "") : null}
             notifCount={notifCount}
             onNotifClick={() => { setNotifOpen((v) => !v); setProfileOpen(false); }}
             notifOpen={notifOpen}
             onProfileClick={() => { setProfileOpen((v) => !v); setNotifOpen(false); }}
             profileOpen={profileOpen}
             onCloseMenus={() => { setNotifOpen(false); setProfileOpen(false); }}
+            currentOperator={currentOperator}
+            onLogout={handleLogout}
           />
           <main className="flex-1 min-h-0">
             {screen === "dialogs" && (

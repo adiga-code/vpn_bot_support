@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     # ── File uploads ──────────────────────────────────────────────────────────
     UPLOADS_DIR: str = "app/uploads"
 
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    # Required — generate with: python -c "import secrets; print(secrets.token_hex(32))"
+    SECRET_KEY: str
+    # Optional — if set and no operators exist, creates the first admin on startup
+    ADMIN_INIT_TG: str = ""
+    ADMIN_INIT_PASSWORD: str = ""
+
     # ── Billing API ───────────────────────────────────────────────────────────
     # Leave empty to fall back to StubBillingProvider
     BILLING_API_URL: str = ""

@@ -152,10 +152,11 @@ class DatabaseManager:
             ("messages", "file_url",      "TEXT"),
             ("messages", "operator_name", "TEXT"),
             # operators
-            ("operators", "tg",       "TEXT"),
-            ("operators", "online",   "BOOLEAN DEFAULT FALSE"),
-            ("operators", "initials", "TEXT"),
-            ("operators", "color",    "TEXT DEFAULT '#4F8EF7'"),
+            ("operators", "tg",            "TEXT"),
+            ("operators", "online",        "BOOLEAN DEFAULT FALSE"),
+            ("operators", "initials",      "TEXT"),
+            ("operators", "color",         "TEXT DEFAULT '#4F8EF7'"),
+            ("operators", "password_hash", "TEXT"),
         ]
         for table, col, typedef in new_cols:
             await conn.execute(
@@ -273,6 +274,19 @@ class DatabaseManager:
     async def get_operators(self) -> list[dict]:
         rows = await self.pool.fetch("SELECT * FROM operators ORDER BY id")
         return [dict(r) for r in rows]
+
+    async def get_operator(self, op_id: int) -> Optional[dict]:
+        row = await self.pool.fetchrow("SELECT * FROM operators WHERE id=$1", op_id)
+        return dict(row) if row else None
+
+    async def get_operator_by_tg(self, tg: str) -> Optional[dict]:
+        row = await self.pool.fetchrow("SELECT * FROM operators WHERE tg=$1", tg)
+        return dict(row) if row else None
+
+    async def set_password(self, op_id: int, password_hash: str):
+        await self.pool.execute(
+            "UPDATE operators SET password_hash=$1 WHERE id=$2", password_hash, op_id
+        )
 
     async def create_operator(self, name: str, tg: str, role: str) -> dict:
         initials = make_initials(name)
