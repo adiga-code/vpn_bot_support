@@ -200,13 +200,13 @@ def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
             raise HTTPException(404)
-        result = await n8n.toggle_ai_status(dialog_id, dialog["chat_id"])
-        if "error" in result:
-            raise HTTPException(500, result["error"])
-        await db.update_ai_enabled(dialog_id, result["ai_enabled"])
+        new_value = not dialog["ai_enabled"]
+        await db.update_ai_enabled(dialog_id, new_value)
+        # Уведомляем n8n чтобы он знал актуальный статус (fire-and-forget, не ждём ответа)
+        await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], new_value)
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        return result
+        return {"ai_enabled": new_value}
 
     @app.post("/api/dialogs/{dialog_id}/handoff")
     async def handoff(dialog_id: str, body: HandoffBody = HandoffBody()):

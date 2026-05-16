@@ -38,26 +38,17 @@ class N8NClient:
             print(f"❌ Error sending manager message: {e}")
             return False
 
-    async def toggle_ai_status(self, dialog_id: str, chat_id: str) -> dict:
-        print(f"🔄 Toggle AI for dialog_id: {dialog_id}")
+    async def notify_ai_toggled(self, dialog_id: str, chat_id: str, ai_enabled: bool) -> None:
+        """Уведомляем n8n об изменении AI-статуса (fire-and-forget, без ожидания ответа)."""
         try:
-            await self.redis.publish("vpn_bot:toggle_request", json.dumps({
-                "type": "toggle_ai",
+            await self.redis.publish("vpn_bot:ai_toggled", json.dumps({
+                "type": "ai_toggled",
                 "dialog_id": dialog_id,
                 "chat_id": chat_id,
+                "ai_enabled": ai_enabled,
             }))
-            result = await self.redis.blpop(f"vpn_bot:toggle:{dialog_id}", timeout=10)
-            if not result:
-                return {"error": "Таймаут: n8n не ответил за 10 секунд"}
-            data = json.loads(result[1])
-            if "ai_enabled" not in data:
-                return {"error": "n8n не вернул поле 'ai_enabled'"}
-            if not isinstance(data["ai_enabled"], bool):
-                return {"error": "Неверный тип данных"}
-            return {"ai_enabled": data["ai_enabled"]}
         except Exception as e:
-            print(f"❌ toggle_ai error: {e}")
-            return {"error": str(e)}
+            print(f"⚠️ notify_ai_toggled error (non-critical): {e}")
 
     async def send_billing_action(self, dialog_id: str, chat_id: str, action: str) -> bool:
         try:
