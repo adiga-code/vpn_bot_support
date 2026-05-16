@@ -151,14 +151,20 @@ function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
 }
 
 function OperatorModal({ editing, onClose, onSave }) {
-  const [name, setName] = useStateT(editing?.name || "");
-  const [tg,   setTg]   = useStateT(editing?.tg   || "@");
-  const [role, setRole] = useStateT(editing?.role  || "agent");
+  const [name,     setName]     = useStateT(editing?.name || "");
+  const [tg,       setTg]       = useStateT(editing?.tg   || "@");
+  const [role,     setRole]     = useStateT(editing?.role  || "agent");
+  const [password, setPassword] = useStateT("");
+  const [pwErr,    setPwErr]    = useStateT(null);
 
   function submit(e) {
     e?.preventDefault();
     if (!name.trim() || tg.length < 2) return;
-    onSave({ name: name.trim(), tg: tg.trim(), role });
+    if (!editing && password && password.length < 6) {
+      setPwErr("Минимум 6 символов"); return;
+    }
+    setPwErr(null);
+    onSave({ name: name.trim(), tg: tg.trim(), role, password });
   }
 
   return (
@@ -192,6 +198,14 @@ function OperatorModal({ editing, onClose, onSave }) {
               ))}
             </div>
           </div>
+          {!editing && (
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">Пароль <span className="text-[#3a3a4a]">(необязательно — можно задать позже)</span></label>
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••"
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
+              {pwErr && <div className="text-xs text-[#ef4444] mt-1">{pwErr}</div>}
+            </div>
+          )}
         </div>
         <div className="px-5 py-4 border-t border-[#2a2a3a] flex justify-end gap-2 bg-[#0d0d12]/50">
           <button type="button" onClick={onClose} className="px-3 py-1.5 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
@@ -384,15 +398,14 @@ function AISection({ showToast }) {
 
 function NotificationsSection({ showToast }) {
   const [n1,setN1]=useStateT(true); const [n2,setN2]=useStateT(true);
-  const [n3,setN3]=useStateT(false); const [n4,setN4]=useStateT(true);
+  const [n3,setN3]=useStateT(true);
   return (
     <div className="max-w-[1100px] mx-auto p-6 space-y-5">
       <div><h1 className="text-xl font-semibold text-[#f1f1f5]">Уведомления</h1></div>
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
         <SettingsRow title="Новый диалог" desc="Пинг в Telegram при новом обращении" control={<Switch on={n1} onChange={()=>setN1(v=>!v)} />} />
         <SettingsRow title="Пользователь вызвал оператора" desc="Уведомление в браузере" control={<Switch on={n2} onChange={()=>setN2(v=>!v)} />} />
-        <SettingsRow title="Email-дайджест" desc="Сводка за день каждое утро в 09:00" control={<Switch on={n3} onChange={()=>setN3(v=>!v)} />} />
-        <SettingsRow title="Сервер VPN недоступен" desc="Мгновенное оповещение об инцидентах" control={<Switch on={n4} onChange={()=>setN4(v=>!v)} />} />
+        <SettingsRow title="Сервер VPN недоступен" desc="Мгновенное оповещение об инцидентах" control={<Switch on={n3} onChange={()=>setN3(v=>!v)} />} />
       </div>
       <div className="flex justify-end">
         <button onClick={() => showToast("Настройки уведомлений сохранены")} className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold">Сохранить</button>
@@ -401,35 +414,155 @@ function NotificationsSection({ showToast }) {
   );
 }
 
+const CATEGORY_LABELS = {
+  troubleshooting: "Решение проблем",
+  setup:           "Настройка",
+  payment:         "Оплата",
+  faq:             "FAQ",
+  escalation:      "Эскалация",
+};
+
+const CATEGORY_COLORS = {
+  troubleshooting: "bg-[#ef4444]/15 text-[#f87171] border-[#ef4444]/30",
+  setup:           "bg-[#22c55e]/15 text-[#4ade80] border-[#22c55e]/30",
+  payment:         "bg-[#eab308]/15 text-[#facc15] border-[#eab308]/30",
+  faq:             "bg-[#4F8EF7]/15 text-[#7BA8F9] border-[#4F8EF7]/30",
+  escalation:      "bg-[#A855F7]/15 text-[#C084FC] border-[#A855F7]/30",
+};
+
 function KBSection() {
-  const articles = [
-    {title:"Как настроить WireGuard на iPhone",views:4821,updated:"5 мая 2026"},
-    {title:"Оплата через USDT — пошаговая инструкция",views:3204,updated:"2 мая 2026"},
-    {title:"Список серверов и их назначение",views:2876,updated:"30 апр 2026"},
-    {title:"Подключение на macOS",views:2104,updated:"27 апр 2026"},
-    {title:"Что делать при низкой скорости",views:1893,updated:"18 апр 2026"},
-    {title:"Возврат средств — условия и сроки",views:1240,updated:"12 апр 2026"},
-  ];
+  const [articles,   setArticles]   = useStateT(null);
+  const [uploading,  setUploading]  = useStateT(false);
+  const [uploadErr,  setUploadErr]  = useStateT(null);
+  const [deleting,   setDeleting]   = useStateT(null);
+  const [expanded,   setExpanded]   = useStateT(null);
+  const fileRef = React.createRef();
+
+  useEffectT(() => {
+    window.apiFetch("GET", "/api/kb").then(setArticles).catch(() => setArticles([]));
+  }, []);
+
+  async function handleUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setUploading(true);
+    setUploadErr(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const headers = {};
+      const token = localStorage.getItem("hd_token");
+      if (token) headers["Authorization"] = "Bearer " + token;
+      const res = await fetch("/api/kb/upload", { method: "POST", headers, body: form });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || res.statusText);
+      }
+      const data = await res.json();
+      const fresh = await window.apiFetch("GET", "/api/kb");
+      setArticles(fresh);
+      setUploadErr(null);
+    } catch (err) {
+      setUploadErr(err.message || "Ошибка загрузки");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleDelete(id) {
+    setDeleting(id);
+    try {
+      await window.apiFetch("DELETE", `/api/kb/${id}`);
+      setArticles((arr) => arr.filter((a) => a.id !== id));
+    } catch {
+    } finally {
+      setDeleting(null);
+    }
+  }
+
+  if (articles === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+
   return (
     <div className="max-w-[1100px] mx-auto p-6 space-y-5">
       <div className="flex items-center justify-between">
-        <div><h1 className="text-xl font-semibold text-[#f1f1f5]">База знаний</h1><div className="text-xs text-[#6b7280] mt-0.5">{articles.length} статей · используется ИИ</div></div>
-        <button className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5"><Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />Добавить статью</button>
+        <div>
+          <h1 className="text-xl font-semibold text-[#f1f1f5]">База знаний</h1>
+          <div className="text-xs text-[#6b7280] mt-0.5">{articles.length} чанков · используется ИИ для поиска</div>
+        </div>
+        <div className="flex items-center gap-2">
+          {uploading && <span className="text-xs text-[#6b7280] animate-pulse">Обработка ИИ...</span>}
+          <button onClick={() => fileRef.current?.click()} disabled={uploading}
+            className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50">
+            <Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />
+            Загрузить документ
+          </button>
+          <input ref={fileRef} type="file" accept=".txt,.md" className="hidden" onChange={handleUpload} />
+        </div>
       </div>
-      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
-        {articles.map((a,i)=>(
-          <div key={i} className="px-5 py-3 flex items-center justify-between hover:bg-[#1a1a24]/40 transition group cursor-pointer">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-9 h-9 rounded-lg bg-[#4F8EF7]/10 text-[#7BA8F9] flex items-center justify-center shrink-0"><Icon name="book" /></div>
-              <div className="min-w-0">
-                <div className="text-sm text-[#f1f1f5] truncate">{a.title}</div>
-                <div className="text-xs text-[#6b7280]">{a.views.toLocaleString("ru-RU")} просмотров · {a.updated}</div>
-              </div>
-            </div>
-            <Icon name="chevronRight" className="w-4 h-4 text-[#6b7280] opacity-0 group-hover:opacity-100 transition" />
+
+      {uploadErr && (
+        <div className="text-sm text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-4 py-2">
+          {uploadErr}
+        </div>
+      )}
+
+      {!uploading && articles.length === 0 && (
+        <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-10 text-center">
+          <div className="w-12 h-12 rounded-xl bg-[#4F8EF7]/10 text-[#7BA8F9] flex items-center justify-center mx-auto mb-3">
+            <Icon name="book" className="w-6 h-6" />
           </div>
-        ))}
-      </div>
+          <div className="text-sm text-[#f1f1f5] font-medium mb-1">База знаний пуста</div>
+          <div className="text-xs text-[#6b7280]">Загрузите .txt или .md файл — ИИ разобьёт его на чанки и проиндексирует</div>
+        </div>
+      )}
+
+      {articles.length > 0 && (
+        <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/40">
+          {articles.map((a) => {
+            const kw = Array.isArray(a.keywords) ? a.keywords : [];
+            const catColor = CATEGORY_COLORS[a.category] || CATEGORY_COLORS.faq;
+            const catLabel = CATEGORY_LABELS[a.category] || a.category;
+            const isOpen = expanded === a.id;
+            return (
+              <div key={a.id}>
+                <div className="px-5 py-3 flex items-start justify-between gap-3 hover:bg-[#1a1a24]/40 transition">
+                  <button className="flex items-start gap-3 min-w-0 flex-1 text-left" onClick={() => setExpanded(isOpen ? null : a.id)}>
+                    <div className="w-9 h-9 rounded-lg bg-[#4F8EF7]/10 text-[#7BA8F9] flex items-center justify-center shrink-0 mt-0.5">
+                      <Icon name="book" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm text-[#f1f1f5] font-medium">{a.title}</span>
+                        <span className={"inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium border " + catColor}>{catLabel}</span>
+                      </div>
+                      {kw.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {kw.slice(0, 6).map((k, i) => (
+                            <span key={i} className="text-[10px] text-[#6b7280] bg-[#1a1a24] px-1.5 py-0.5 rounded">{k}</span>
+                          ))}
+                          {kw.length > 6 && <span className="text-[10px] text-[#6b7280]">+{kw.length - 6}</span>}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                  <button onClick={() => handleDelete(a.id)} disabled={deleting === a.id}
+                    className="p-1.5 text-[#6b7280] hover:text-[#ef4444] hover:bg-[#ef4444]/10 rounded transition shrink-0 mt-0.5 disabled:opacity-40">
+                    <Icon name="trash" className="w-4 h-4" />
+                  </button>
+                </div>
+                {isOpen && (
+                  <div className="px-5 pb-4 pt-0">
+                    <div className="ml-12 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-4 py-3 text-xs text-[#9ca3af] leading-relaxed whitespace-pre-wrap">
+                      {a.content}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

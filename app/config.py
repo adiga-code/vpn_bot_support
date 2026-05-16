@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     ADMIN_INIT_TG: str = ""
     ADMIN_INIT_PASSWORD: str = ""
 
+    # ── OpenAI ────────────────────────────────────────────────────────────────
+    OPENAI_API_KEY: str = ""
+
+    # ── Qdrant ────────────────────────────────────────────────────────────────
+    QDRANT_URL: str = "http://qdrant:6333"
+
     # ── Billing API ───────────────────────────────────────────────────────────
     # Leave empty to fall back to StubBillingProvider
     BILLING_API_URL: str = ""

@@ -13,6 +13,7 @@ from app.auth import create_token, decode_token, hash_password, verify_password
 from app.billing import BillingProvider
 from app.config import Settings
 from app.database import DatabaseManager, avatar_color, make_initials
+from app.kb import delete_from_qdrant, process_document
 from app.n8n_client import N8NClient
 from app.servers import ServerMonitor
 from app.ws_manager import WebSocketManager
@@ -142,6 +143,7 @@ class OperatorBody(BaseModel):
     name: str
     tg: str
     role: str = "agent"
+    password: str = ""
 
 class AISettingsBody(BaseModel):
     prompt: str
@@ -398,7 +400,12 @@ def build_app(
     async def create_operator(body: OperatorBody, operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
-        return await db.create_operator(body.name, body.tg, body.role)
+        op = await db.create_operator(body.name, body.tg, body.role)
+        if body.password:
+            if len(body.password) < 6:
+                raise HTTPException(400, "Password must be at least 6 characters")
+            await db.set_password(op["id"], hash_password(body.password))
+        return op
 
     @app.put("/api/operators/{op_id}")
     async def update_operator(op_id: int, body: OperatorBody, operator: dict = Depends(require_auth)):
@@ -443,6 +450,44 @@ def build_app(
     async def save_schedule(body: ScheduleBody, operator: dict = Depends(require_auth)):
         await db.set_setting_json("schedule", body.schedule)
         await n8n.redis.set("vpn_bot:schedule", json.dumps(body.schedule))
+        return {"ok": True}
+
+    # ── Knowledge Base ────────────────────────────────────────────────────────
+
+    @app.get("/api/kb")
+    async def get_kb(operator: dict = Depends(require_auth)):
+        articles = await db.get_kb_articles()
+        for a in articles:
+            try:
+                a["keywords"] = json.loads(a["keywords"])
+            except Exception:
+                a["keywords"] = []
+        return articles
+
+    @app.post("/api/kb/upload")
+    async def upload_kb(file: UploadFile = File(...), operator: dict = Depends(require_auth)):
+        if not settings.OPENAI_API_KEY:
+            raise HTTPException(400, "OPENAI_API_KEY not configured")
+        if not file.filename.endswith((".txt", ".md")):
+            raise HTTPException(400, "Only .txt and .md files are supported")
+        text = (await file.read()).decode("utf-8", errors="ignore")
+        if not text.strip():
+            raise HTTPException(400, "File is empty")
+        chunks = await process_document(text, settings.OPENAI_API_KEY, settings.QDRANT_URL)
+        for c in chunks:
+            await db.save_kb_article(
+                c["id"], c["title"], c["category"],
+                json.dumps(c["keywords"], ensure_ascii=False),
+                c["content"],
+            )
+        return {"chunks_created": len(chunks), "ids": [c["id"] for c in chunks]}
+
+    @app.delete("/api/kb/{article_id}")
+    async def delete_kb_article(article_id: str, operator: dict = Depends(require_auth)):
+        ok = await db.delete_kb_article(article_id)
+        if not ok:
+            raise HTTPException(404)
+        await delete_from_qdrant(article_id, settings.QDRANT_URL)
         return {"ok": True}
 
     # ── WebSocket ─────────────────────────────────────────────────────────────

@@ -123,6 +123,16 @@ class DatabaseManager:
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS kb_articles (
+                id         TEXT PRIMARY KEY,
+                title      TEXT NOT NULL,
+                category   TEXT NOT NULL,
+                keywords   TEXT NOT NULL,
+                content    TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
 
         # ── Forward migrations ────────────────────────────────────────────────
         # Add new columns without dropping anything; safe to re-run on every
@@ -394,6 +404,26 @@ class DatabaseManager:
             "hourly": hourly,
             "operators": operators,
         }
+
+    # ── Knowledge Base ────────────────────────────────────────────────────────
+
+    async def save_kb_article(self, id: str, title: str, category: str, keywords: str, content: str):
+        await self.pool.execute(
+            """INSERT INTO kb_articles (id, title, category, keywords, content)
+               VALUES ($1,$2,$3,$4,$5)
+               ON CONFLICT (id) DO UPDATE SET
+                 title=EXCLUDED.title, category=EXCLUDED.category,
+                 keywords=EXCLUDED.keywords, content=EXCLUDED.content""",
+            id, title, category, keywords, content,
+        )
+
+    async def get_kb_articles(self) -> list[dict]:
+        rows = await self.pool.fetch("SELECT * FROM kb_articles ORDER BY created_at DESC")
+        return [dict(r) for r in rows]
+
+    async def delete_kb_article(self, article_id: str) -> bool:
+        result = await self.pool.execute("DELETE FROM kb_articles WHERE id=$1", article_id)
+        return result == "DELETE 1"
 
     async def close(self):
         if self.pool:
