@@ -31,11 +31,9 @@ async def main():
                 await db.set_password(existing["id"], pw_hash)
                 print(f"[AUTH] Password set for operator: {settings.ADMIN_INIT_TG}")
         else:
-            ops = await db.get_operators()
-            if not ops:
-                op = await db.create_operator("Admin", settings.ADMIN_INIT_TG, "admin")
-                await db.set_password(op["id"], pw_hash)
-                print(f"[AUTH] Initial admin created: {settings.ADMIN_INIT_TG}")
+            op = await db.create_operator("Admin", settings.ADMIN_INIT_TG, "admin")
+            await db.set_password(op["id"], pw_hash)
+            print(f"[AUTH] Admin created: {settings.ADMIN_INIT_TG}")
 
     # ── Print login credentials ───────────────────────────────────────────────
     ops = await db.get_operators()
