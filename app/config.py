@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # File uploads directory
     UPLOADS_DIR: str = "app/uploads"
 
+    # Billing API (оставь пустым — будет использоваться StubBillingProvider)
+    BILLING_API_URL:   str = ""
+    BILLING_API_TOKEN: str = ""
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 
+from app.billing import BillingProvider
 from app.config import Settings
 from app.database import DatabaseManager, avatar_color, make_initials
 from app.n8n_client import N8NClient
@@ -122,7 +123,7 @@ class ScheduleBody(BaseModel):
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
-def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n: N8NClient) -> FastAPI:
+def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n: N8NClient, billing: BillingProvider) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
 
@@ -240,8 +241,10 @@ def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
             raise HTTPException(404)
-        ok = await n8n.send_billing_action(dialog_id, dialog["chat_id"], action)
-        return {"ok": ok}
+        result = await billing.execute(action, dialog["chat_id"], dialog_id)
+        if not result.ok:
+            raise HTTPException(502, result.message)
+        return {"ok": True, "message": result.message}
 
     # ── File upload ───────────────────────────────────────────────────────────
 

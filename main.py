@@ -6,6 +6,7 @@ from app.config import Settings
 from app.database import DatabaseManager
 from app.ws_manager import WebSocketManager
 from app.n8n_client import N8NClient
+from app.billing import make_billing_provider
 from app.web_server import build_app
 from app.redis_consumer import RedisConsumer
 
@@ -19,9 +20,10 @@ async def main():
     redis = aioredis.from_url(settings.REDIS_URL)
     ws_manager = WebSocketManager()
     n8n_client = N8NClient(settings, redis)
+    billing = make_billing_provider(settings.BILLING_API_URL, settings.BILLING_API_TOKEN)
     consumer = RedisConsumer(redis, db, ws_manager)
 
-    app = build_app(settings, db, ws_manager, n8n_client)
+    app = build_app(settings, db, ws_manager, n8n_client, billing)
 
     config = uvicorn.Config(
         app,
