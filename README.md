@@ -1,347 +1,405 @@
-# VPN Bot Support
+# VPN Helpdesk — веб-панель техподдержки
 
-Telegram-бот для поддержки VPN-пользователей. Получает сообщения от n8n через Redis, создаёт топики в Telegram-группе, маршрутизирует переписку между пользователями и менеджерами.
-
----
-
-## Что делает бот
-
-- Создаёт отдельный топик в группе для каждого диалога (`dialog_id`)
-- Показывает сообщения пользователей и ответы AI в топике
-- Когда менеджер отвечает в топике — пересылает ответ в n8n
-- Кнопка «Переключить AI» в каждом AI-ответе — переключает статус AI для диалога
-- Иконка топика меняется в зависимости от статуса AI (включён / выключён)
+Веб-интерфейс для операторов техподдержки VPN-сервиса. Заменяет старый интерфейс на основе Telegram-топиков.
 
 ---
 
-## Структура файлов
+## Архитектура
+
+```
+Пользователь (Telegram)
+        │
+        ▼
+    n8n webhook
+        │  (AI воркфлоу, обработка сообщений)
+        ▼
+      Redis ──────────────────────────────────────────────┐
+        │                                                  │
+        ▼                                                  ▼
+  Python (FastAPI)                              vpn_bot:servers
+  ├── REST API                                  (статус серверов)
+  ├── WebSocket (реал-тайм)
+  ├── PostgreSQL (диалоги, сообщения, операторы)
+  └── Billing API (прямые вызовы)
+        │
+        ▼
+  Браузер оператора (React SPA)
+```
+
+---
+
+## Что делает Python, что делает n8n
+
+### Python (этот репозиторий)
+
+| Функция | Как реализовано |
+|---|---|
+| Веб-панель операторов | FastAPI + React SPA |
+| Хранение диалогов и сообщений | Прямые запросы к PostgreSQL |
+| Реал-тайм обновления | WebSocket broadcast |
+| Управление операторами | CRUD через REST API |
+| AI-настройки и расписание | PostgreSQL + публикация в Redis для n8n |
+| Статистика | SQL-запросы напрямую |
+| Загрузка файлов | Эндпоинт `/api/upload`, хранение на диске |
+| Биллинг (продлить, трафик, ключ) | Прямой вызов внешнего API через `BillingProvider` |
+| Статусы VPN-серверов | Чтение Redis-ключа `vpn_bot:servers` |
+
+### n8n (внешний, не в этом репо)
+
+| Функция | Почему в n8n |
+|---|---|
+| Приём Telegram-вебхука | Telegram API-интеграция |
+| AI воркфлоу (LLM + RAG) | Визуальное редактирование без деплоя |
+| Отправка сообщений пользователю | Telegram Bot API |
+| Мониторинг серверов (cron) | Простой cron + Redis SET |
+
+---
+
+## Структура проекта
 
 ```
 vpn_bot_support/
 ├── app/
-│   ├── config.py           # Все настройки (читает из .env)
-│   ├── database.py         # PostgreSQL: хранит dialog_id ↔ topic_id
-│   ├── telegram_bot.py     # Telegram бот: создание топиков, отправка, кнопки
-│   ├── n8n_client.py       # Публикация событий в Redis → n8n
-│   └── redis_consumer.py   # Чтение входящих сообщений из Redis
+│   ├── billing.py          # Биллинг-провайдеры (OOP, легко заменить)
+│   ├── config.py           # Все настройки (читает .env)
+│   ├── database.py         # PostgreSQL: схема + миграции
+│   ├── n8n_client.py       # Отправка сообщений в Telegram через n8n/Redis
+│   ├── redis_consumer.py   # Чтение входящих сообщений из Redis
+│   ├── web_server.py       # FastAPI: все REST-эндпоинты + WebSocket
+│   ├── ws_manager.py       # WebSocket broadcast менеджер
+│   └── static/             # React SPA (без сборщика)
+│       ├── index.html      # App + TopBar
+│       ├── components.jsx  # Avatar, Icon, Toast, Badge
+│       ├── dialogs.jsx     # Экран диалогов
+│       ├── statistics.jsx  # Экран статистики
+│       ├── servers.jsx     # Экран серверов VPN
+│       └── settings.jsx    # Операторы, расписание, AI-настройки
 ├── main.py                 # Точка входа
 ├── Dockerfile
 ├── docker-compose.yml
+├── requirements.txt
 ├── .env                    # Создать из .env.example
 └── .env.example
 ```
 
 ---
 
-## Настройки (.env)
+## Быстрый старт
+
+```bash
+git clone <repo>
+cd vpn_bot_support
+
+cp .env.example .env
+# Заполнить .env (минимум POSTGRES_PASSWORD)
+
+docker compose up -d --build
+# Панель: http://localhost:8000
+```
+
+> После `git pull` всегда делай `docker compose up -d --build` —
+> статические файлы копируются в образ при сборке.
+
+---
+
+## Переменные окружения (.env)
 
 | Переменная | Обязательная | По умолчанию | Описание |
 |---|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | ✅ | — | Токен бота от @BotFather |
-| `TELEGRAM_GROUP_ID` | ✅ | — | ID Telegram-группы с топиками (например `-1001234567890`) |
 | `POSTGRES_PASSWORD` | ✅ | — | Пароль PostgreSQL |
-| `POSTGRES_HOST` | — | `postgres` | Хост PostgreSQL (внутри Docker — имя сервиса) |
+| `REDIS_URL` | — | `redis://redis:6379` | URL Redis |
+| `POSTGRES_HOST` | — | `postgres` | Хост PostgreSQL |
 | `POSTGRES_PORT` | — | `5432` | Порт PostgreSQL |
 | `POSTGRES_DB` | — | `vpnbot` | Имя базы данных |
 | `POSTGRES_USER` | — | `vpnbot` | Пользователь PostgreSQL |
-| `REDIS_URL` | — | `redis://localhost:6379` | URL подключения к Redis |
-| `ICON_AI_ENABLED` | — | `5417915203100613993` | Custom emoji ID иконки когда AI включён |
-| `ICON_AI_DISABLED` | — | `5237699328843200968` | Custom emoji ID иконки когда AI выключен |
+| `WEB_HOST` | — | `0.0.0.0` | Хост веб-сервера |
+| `WEB_PORT` | — | `8000` | Порт веб-сервера |
+| `BILLING_API_URL` | — | *(пусто)* | URL биллингового API |
+| `BILLING_API_TOKEN` | — | *(пусто)* | Bearer-токен биллингового API |
+
+Если `BILLING_API_URL` не задан — биллинг работает в режиме заглушки (логирует вызовы, ничего не делает).
 
 ---
 
-## Запуск
+## База данных
 
-### Docker (рекомендуется)
+`init_db()` запускается при каждом старте и безопасен для повторного запуска:
 
-```bash
-cp .env.example .env
-# заполнить .env
+- **Свежая установка** — создаёт все таблицы
+- **Обновление** — добавляет новые колонки через `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
+- **Миграция со старой системы** (Telegram-топики) — старые таблицы `dialogs`, `messages`, `chat_topics` автоматически переименуются в `*_legacy`, новые создадутся рядом
 
-docker compose up -d
+### Таблицы
+
+**`dialogs`** — один диалог = одно обращение пользователя:
+```
+dialog_id           TEXT PK   — уникальный ID из n8n
+chat_id             TEXT      — Telegram user ID
+status              TEXT      — new | in_progress | closed
+ai_enabled          BOOL      — включён ли AI
+operator_called     BOOL      — пользователь позвал оператора
+unread_count        INT       — счётчик непрочитанных
+user_name/username  TEXT      — имя и @username
+user_plan           TEXT      — тариф: Basic / Pro / ...
+user_sub_status     TEXT      — active | expired | ...
+user_next_payment   TEXT      — дата следующего платежа
+user_traffic_used/total FLOAT — использованный и общий трафик (ГБ)
+last_payment_amount/date TEXT — последний платёж
+last_message_text   TEXT      — превью последнего сообщения
 ```
 
-Поднимается три контейнера:
+**`messages`** — сообщения в диалоге:
+```
+dialog_id     TEXT  — ссылка на dialogs
+kind          TEXT  — user | ai | operator | system
+text          TEXT  — текст сообщения
+file_id       TEXT  — Telegram file_id (для справки)
+file_type     TEXT  — photo | document | voice
+file_url      TEXT  — URL файла на сервере (/api/files/...)
+operator_name TEXT  — имя оператора если kind=operator
+```
 
-| Контейнер | Образ | Порт на хосте |
-|---|---|---|
-| `telegram-webhook-bot` | python:3.11-slim | — |
-| `vpn-bot-redis` | redis:7-alpine | `6380` |
-| `vpn-bot-postgres` | postgres:16-alpine | `5433` |
+**`operators`** — учётные записи операторов:
+```
+name, tg, role (admin|agent), online, initials, color
+```
 
-### Локально
-
-```bash
-pip install -r requirements.txt
-# в .env указать POSTGRES_HOST=localhost, REDIS_URL=redis://localhost:6379
-python main.py
+**`settings`** — ключ-значение для настроек:
+```
+key=ai_settings   → JSON с prompt, temperature, auto_reply, handoff_enabled
+key=schedule      → JSON расписание по дням недели
 ```
 
 ---
 
-## Redis-очереди (интеграция с n8n)
+## Redis-интеграция с n8n
 
-### n8n → бот (`vpn_bot:incoming`, LPUSH)
+### n8n → Python: входящие сообщения (`LPUSH vpn_bot:incoming`)
 
-**Сообщение пользователя** — показывает в топике:
+**Сообщение пользователя:**
 ```json
 {
   "type": "user_message",
   "dialog_id": "42",
   "chat_id": "123456789",
   "message": "Привет",
-  "ai_enabled": true
+  "file_url": "/api/files/abc.jpg",
+  "file_type": "photo",
+  "ai_enabled": true,
+  "user_name": "Иван Иванов",
+  "user_username": "@ivan",
+  "user_plan": "Pro",
+  "user_sub_status": "active",
+  "user_next_payment": "2025-06-01",
+  "user_traffic_used": 45.2,
+  "user_traffic_total": 100
 }
 ```
 
-**Ответ AI** — показывает в топике с кнопкой переключения:
+**Ответ AI:**
 ```json
 {
   "type": "ai_response",
   "dialog_id": "42",
-  "chat_id": "123456789",
-  "message": "Чем могу помочь?"
+  "message": "Попробуйте переподключиться"
 }
 ```
 
----
+### Python → n8n: исходящие сообщения (`PUBLISH vpn_bot:messages`)
 
-### Бот → n8n
-
-**`vpn_bot:messages`** (pub/sub) — менеджер ответил в топике:
 ```json
 {
   "type": "manager_message",
   "dialog_id": "42",
   "chat_id": "123456789",
-  "message": "Попробуйте переподключиться",
-  "from": "manager"
+  "message": "Сейчас проверим",
+  "file_url": "/api/files/instruction.pdf",
+  "file_type": "document"
 }
 ```
 
-**`vpn_bot:toggle_request`** (pub/sub) — нажата кнопка переключения AI:
+### Toggle AI (`PUBLISH vpn_bot:toggle_request` → `BLPOP vpn_bot:toggle:{dialog_id}`)
+
+Python публикует запрос, ждёт ответ от n8n 10 секунд:
 ```json
-{
-  "type": "toggle_ai",
-  "dialog_id": "42",
-  "chat_id": "123456789"
-}
-```
+// запрос
+{ "type": "toggle_ai", "dialog_id": "42", "chat_id": "123456789" }
 
----
-
-### n8n → бот (ответ на toggle)
-
-После обработки `toggle_ai`, n8n пишет в `vpn_bot:toggle:{dialog_id}` (LPUSH):
-```json
+// ответ от n8n (LPUSH vpn_bot:toggle:42)
 { "ai_enabled": false }
 ```
 
-Бот ждёт этот ответ **10 секунд**, затем показывает таймаут.
+### AI-настройки и расписание (Redis SET-ключи, читает n8n)
+
+При сохранении через веб-панель Python пишет:
+```
+SET vpn_bot:ai_settings  → {"prompt": "...", "temperature": 0.7, "auto_reply": true, "handoff_enabled": true}
+SET vpn_bot:schedule     → {"mon": {"enabled": true, "from": "09:00", "to": "21:00"}, ...}
+```
+
+N8n должен читать эти ключи при каждом запросе к AI вместо захардкоженных значений.
 
 ---
 
-## База данных
+## Статусы VPN-серверов
 
-Таблица `chat_topics` в PostgreSQL хранит маппинг диалог → топик:
+Python читает Redis-ключ `vpn_bot:servers` и показывает в панели.
 
-```sql
-CREATE TABLE chat_topics (
-    id         SERIAL PRIMARY KEY,
-    dialog_id  TEXT UNIQUE NOT NULL,  -- ID диалога из n8n
-    chat_id    TEXT NOT NULL,          -- Telegram user ID
-    topic_id   INTEGER NOT NULL,       -- ID топика в группе
-    created_at TIMESTAMP DEFAULT NOW()
-);
+**N8n должен** настроить Cron-воркфлоу (раз в 5 минут):
+1. Пинговать каждый сервер
+2. Записать результат:
+
+```bash
+SET vpn_bot:servers '[
+  {"name": "Frankfurt-01", "status": "ok",   "load": 42, "ping": 18, "uptime": 99.9, "location": "DE"},
+  {"name": "Moscow-02",    "status": "down",  "load": null, "ping": null, "uptime": 95.2, "location": "RU"},
+  {"name": "Warsaw-01",    "status": "high",  "load": 87, "ping": 45, "uptime": 98.1, "location": "PL"}
+]'
+
+SET vpn_bot:servers_updated "16.05.2025 14:30"
+```
+
+Значения `status`: `ok` | `high` (нагрузка > 80%) | `down`.
+
+---
+
+## Файлы пользователей (фото, документы)
+
+Telegram файлы нельзя отобразить в браузере по `file_id`. Схема работы:
+
+```
+1. Пользователь отправил фото в Telegram
+2. n8n получает file_id, скачивает файл через Telegram API
+3. n8n POST /api/upload  (multipart/form-data)
+4. Python сохраняет файл, возвращает { "url": "/api/files/abc123.jpg" }
+5. n8n включает file_url в Redis-сообщение → Python → браузер отображает
+```
+
+Оператор отправляет файл в обратном направлении:
+```
+Оператор выбирает файл в браузере
+→ POST /api/upload → получает URL
+→ URL уходит в ответ вместе с сообщением
+→ n8n получает file_url, скачивает, отправляет в Telegram
 ```
 
 ---
 
-## Иконки топиков
+## Биллинг
 
-Иконки меняются через Telegram Custom Emoji. Чтобы изменить:
+Три действия из панели: **Продлить подписку**, **Докупить трафик**, **Сбросить ключ**.
 
-1. Найти нужный эмодзи в Telegram
-2. Получить его ID (через боты типа @getidsbot)
-3. Обновить `ICON_AI_ENABLED` или `ICON_AI_DISABLED` в `.env`
-4. Перезапустить бот: `docker compose restart telegram-webhook-bot`
+### Подключить свой API
+
+Задать в `.env`:
+```env
+BILLING_API_URL=https://billing.example.com/api
+BILLING_API_TOKEN=your_secret_token
+```
+
+`HttpBillingProvider` вызовет:
+```
+POST /subscriptions/renew        { "chat_id": "...", "dialog_id": "..." }
+POST /subscriptions/buy_traffic  { "chat_id": "...", "dialog_id": "..." }
+POST /keys/reset                 { "chat_id": "...", "dialog_id": "..." }
+```
+
+### Своя схема запросов
+
+Если формат API отличается — унаследуй и переопредели нужные методы в `app/billing.py`:
+
+```python
+class MyBilling(HttpBillingProvider):
+    async def reset_key(self, chat_id: str, dialog_id: str) -> BillingResult:
+        return await self._post(f"/vpn/users/{chat_id}/new-key", {})
+```
+
+Зарегистрировать в `main.py`:
+```python
+billing = MyBilling(settings.BILLING_API_URL, settings.BILLING_API_TOKEN)
+```
+
+Если `BILLING_API_URL` пустой — автоматически используется `StubBillingProvider` (только логи, ничего не ломается).
 
 ---
 
-## Подключение к PostgreSQL из n8n
+## N8n воркфлоу
 
-PostgreSQL доступен на хосте по порту `5433`:
+### Что нужно настроить в n8n
+
+#### 1. Входящие сообщения от пользователей
+
+Telegram Trigger → собрать payload → `LPUSH vpn_bot:incoming`:
+- Включить все поля пользователя (`user_name`, `user_plan`, трафик и т.д.)
+- Если сообщение содержит файл — скачать через Telegram API и загрузить через `POST /api/upload`
+
+#### 2. AI воркфлоу
+
+При запуске AI-агента:
+1. Прочитать `GET vpn_bot:ai_settings` — использовать `prompt` и `temperature`
+2. Прочитать `GET vpn_bot:schedule` — проверить рабочие часы
+3. Если вне расписания — ответить пользователю сообщением о часах работы, AI не запускать
+4. Ответ AI публиковать в `LPUSH vpn_bot:incoming` с `type=ai_response`
+
+#### 3. Отправка пользователям
+
+Подписаться на `SUBSCRIBE vpn_bot:messages` → при получении → `bot.sendMessage(chat_id, message)`.
+
+#### 4. Toggle AI
+
+```
+SUBSCRIBE vpn_bot:toggle_request
+→ Получить текущий ai_enabled из dialogs
+→ Обновить: UPDATE dialogs SET ai_enabled = NOT ai_enabled WHERE dialog_id = ...
+→ LPUSH vpn_bot:toggle:{dialog_id}  { "ai_enabled": <новое значение> }
+```
+
+#### 5. Мониторинг серверов (Cron)
+
+```
+Cron каждые 5 минут
+→ Пинговать каждый VPN-сервер
+→ SET vpn_bot:servers  [{ name, status, load, ping, uptime, location }, ...]
+→ SET vpn_bot:servers_updated  "ДД.ММ.ГГГГ ЧЧ:ММ"
+```
+
+#### 6. Уведомления оператору
+
+```
+При получении user_message с operator_called=true (или handoff-события)
+→ bot.sendMessage(operator_tg_id, "Новый запрос оператора от @username")
+```
+
+### PostgreSQL-подключение из n8n
 
 | Поле | Значение |
 |---|---|
-| Host | `172.17.0.1` (или IP сервера) |
+| Host | IP сервера (или `172.17.0.1` из Docker) |
 | Port | `5433` |
-| Database | значение `POSTGRES_DB` из `.env` |
-| User | значение `POSTGRES_USER` из `.env` |
+| Database | `vpnbot` (или значение `POSTGRES_DB`) |
+| User | `vpnbot` |
 | Password | значение `POSTGRES_PASSWORD` из `.env` |
 
----
-
-## n8n воркфлоу
-
-Система состоит из трёх воркфлоу в n8n.
+N8n должен работать с таблицами `dialogs` и `messages` напрямую — читать/писать в те же таблицы что и Python.
 
 ---
 
-### 1. Main (основной воркфлоу)
+## Порты контейнеров
 
-Обрабатывает все входящие сообщения от пользователей и менеджеров. Содержит три независимых потока.
-
-#### Поток 1 — Входящее сообщение от пользователя
-
-```
-Telegram Trigger (Bot 1)
-    → Фильтр по id группы          # отсекает сообщения из самой admin-группы
-    → Поиск диалогов пользователя  # ищет активный диалог в таблице dialogs
-    → If (диалог существует?)
-         ├── Да → Получить диалог
-         │        → Добавить сообщение в базу (таблица messages)
-         │        → Redis push → vpn_bot:incoming (user_message) — всегда
-         │        → Если ИИ включена?
-         │             ├── Да → Execute Workflow [AI агент]
-         │             └── Нет → (всё уже отправлено)
-         │
-         └── Нет → Добавить диалог (создать запись в dialogs, ai_status=true)
-                   → Получить данные пользователя (таблица users)
-                   → Получить ключи пользователя (таблица keys)
-                   → Парсинг ключей (форматирование текста)
-                   → Итоговое сообщение (карточка пользователя)
-                   → Redis push → vpn_bot:incoming (user_message с карточкой)
-```
-
-**Карточка нового пользователя** — первое сообщение в топике при создании диалога:
-```
-🆔 Telegram ID: 123456789
-✅ Статус: зарегистрирован в боте
-👤 Username: @username
-📛 Имя: Имя
-💰 Баланс: 0 ₽
-🎯 Триал: 1
-📅 Дата регистрации: ...
-
-🔑 Ключи пользователя (1):
-1. key_name
-⏳ Истекает: 13.04.2026, 05:05
-🖥 Сервер: remnawave
-```
-
----
-
-#### Поток 2 — Ответ менеджера из топика
-
-```
-Redis Trigger → vpn_bot:messages   # бот опубликовал сообщение менеджера
-    → To JSON                       # парсинг JSON из Redis
-    → Получить диалог по ID         # получить user_id из dialogs
-    → Добавить в диалог сообщение   # сохранить в таблицу messages (type=manager)
-    → Execute Workflow [output]     # отправить сообщение пользователю через Bot 1
-```
-
----
-
-#### Поток 3 — Переключение AI
-
-```
-Redis Trigger → vpn_bot:toggle_request   # кнопка нажата в топике
-    → To JSON1                            # парсинг JSON из Redis
-    → Получить диалог по ID1              # получить текущий ai_status
-    → Обновить ai_status (!ai_status)     # инвертировать значение в dialogs
-    → Redis push → vpn_bot:toggle:{dialog_id}   # ответить боту с новым статусом
-```
-
----
-
-### 2. Output (отправка пользователю)
-
-Вспомогательный воркфлоу — отправляет сообщение пользователю в личку через Bot 1.
-
-```
-When Executed by Another Workflow
-    Входные параметры: chat_id, message
-    → Telegram node (Bot 1) → Send message to {chat_id}
-```
-
-Вызывается из:
-- Main воркфлоу (поток 2) — когда менеджер ответил
-- AI агент — когда AI сгенерировал ответ
-
----
-
-### 3. AI агент (саб-воркфлоу)
-
-Обрабатывает сообщение пользователя через AI и отправляет ответ.
-
-```
-When Executed by Another Workflow
-    Входные параметры: message, dialog_id, chat_id, ai_enabled
-    → AI Agent (GPT-4.1-mini)
-         ├── Redis Chat Memory (ключ = dialog_id, окно = 10 сообщений)
-         └── Qdrant Vector Store (коллекция support_docs, top-3)
-              └── Embeddings OpenAI
-    → Redis push → vpn_bot:incoming (ai_response) — показывает ответ в топике
-    → Execute Workflow [output]                    — отправляет ответ пользователю
-```
-
-**AI агент:**
-- Модель: `gpt-4.1-mini`
-- Память: Redis по `dialog_id`, хранит последние 10 сообщений диалога
-- База знаний: Qdrant, коллекция `support_docs` — поиск по 3 релевантных документа
-- Язык: определяет автоматически, по умолчанию русский
-- Системный промпт: техподдержка VPN-сервиса, инструкции по Happ, тарифы, правила эскалации
-
----
-
-### Credentials в n8n
-
-| Название | Тип | Используется в |
+| Контейнер | Образ | Порт на хосте |
 |---|---|---|
-| `test` | Telegram API (Bot 1) | Telegram Trigger, output воркфлоу |
-| `Postgres account` | PostgreSQL | dialogs, messages (БД бота) |
-| `VPN bot` | PostgreSQL | users, keys (БД VPN-сервиса) |
-| `Redis account` | Redis | все Redis-узлы |
-| `OpenAI account` | OpenAI API | AI Agent, Embeddings |
-| `Qdrant account` | Qdrant API | Vector Store |
+| `vpn-helpdesk` | python:3.11-slim | `8000` |
+| `vpn-bot-redis` | redis:7-alpine | `6380` |
+| `vpn-bot-postgres` | postgres:16-alpine | `5433` |
+| `vpn-bot-qdrant` | qdrant/qdrant | `6333`, `6334` |
 
 ---
 
-### Таблицы PostgreSQL (n8n)
-
-**`dialogs`** — диалоги пользователей:
-```sql
-id        -- dialog_id, используется как ключ во всей системе
-user_id   -- Telegram user ID
-username  -- Telegram username
-ai_status -- boolean, включён ли AI для этого диалога
-status    -- 'active' | другие
-created_at
-```
-
-**`messages`** — история сообщений:
-```sql
-id
-dialog_id  -- ссылка на dialogs.id
-user_id
-message    -- текст
-type       -- 'user_message' | 'manager' | 'ai_response'
-created_at
-```
-
----
-
-## Перезапуск и обновление
+## Обновление
 
 ```bash
-# Посмотреть логи
-docker logs -f telegram-webhook-bot
-
-# Перезапустить только бота (без пересборки)
-docker compose restart telegram-webhook-bot
-
-# Обновить код и пересобрать
-git pull && docker compose up -d --build
+git pull
+docker compose up -d --build   # пересобрать образ с новым кодом
 ```
+
+База данных обновляется автоматически при старте — новые колонки добавятся через `ALTER TABLE`.
