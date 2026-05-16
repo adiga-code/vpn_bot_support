@@ -27,17 +27,33 @@ async def main():
         pw_hash = hash_password(settings.ADMIN_INIT_PASSWORD)
         existing = await db.get_operator_by_tg(settings.ADMIN_INIT_TG)
         if existing:
-            # Operator exists — set password if not set yet
             if not existing.get("password_hash"):
                 await db.set_password(existing["id"], pw_hash)
-                print(f"Password set for existing operator: {settings.ADMIN_INIT_TG}")
+                print(f"[AUTH] Password set for operator: {settings.ADMIN_INIT_TG}")
         else:
-            # No operator with this tg — create one if DB is empty
             ops = await db.get_operators()
             if not ops:
                 op = await db.create_operator("Admin", settings.ADMIN_INIT_TG, "admin")
                 await db.set_password(op["id"], pw_hash)
-                print(f"Initial admin created: tg={settings.ADMIN_INIT_TG}")
+                print(f"[AUTH] Initial admin created: {settings.ADMIN_INIT_TG}")
+
+    # ── Print login credentials ───────────────────────────────────────────────
+    ops = await db.get_operators()
+    print("=" * 50)
+    print("  HELPDESK LOGIN CREDENTIALS")
+    print("=" * 50)
+    if ops:
+        for op in ops:
+            has_pw = "✓ password set" if op.get("password_hash") else "✗ NO PASSWORD — set ADMIN_INIT_PASSWORD"
+            print(f"  [{op['role'].upper()}] {op['tg']}  ({has_pw})")
+        if settings.ADMIN_INIT_TG and settings.ADMIN_INIT_PASSWORD:
+            print(f"\n  Active credentials:")
+            print(f"  Login:    {settings.ADMIN_INIT_TG}")
+            print(f"  Password: {settings.ADMIN_INIT_PASSWORD}")
+    else:
+        print("  No operators found.")
+        print("  Set ADMIN_INIT_TG and ADMIN_INIT_PASSWORD in .env")
+    print("=" * 50)
 
     redis = aioredis.from_url(settings.REDIS_URL)
     ws_manager = WebSocketManager()
