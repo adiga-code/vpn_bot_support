@@ -1,37 +1,39 @@
 from pathlib import Path
+
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Redis
+    # ── Redis ─────────────────────────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379"
 
-    # PostgreSQL
+    # ── PostgreSQL ────────────────────────────────────────────────────────────
     POSTGRES_HOST: str = "postgres"
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "vpnbot"
     POSTGRES_USER: str = "vpnbot"
     POSTGRES_PASSWORD: str
 
-    # Web server
+    # ── Web server ────────────────────────────────────────────────────────────
     WEB_HOST: str = "0.0.0.0"
     WEB_PORT: int = 8000
 
-    # File uploads directory
+    # ── File uploads ──────────────────────────────────────────────────────────
     UPLOADS_DIR: str = "app/uploads"
 
-    # Billing API (оставь пустым — будет использоваться StubBillingProvider)
-    BILLING_API_URL:   str = ""
+    # ── Billing API ───────────────────────────────────────────────────────────
+    # Leave empty to fall back to StubBillingProvider
+    BILLING_API_URL: str = ""
     BILLING_API_TOKEN: str = ""
 
-    # Server monitoring
+    # ── Server monitoring ─────────────────────────────────────────────────────
     # SERVERS_MONITOR_TYPE: "tcp" | "http" | "stub"
-    # SERVERS: JSON-список серверов
+    # SERVERS: JSON list of servers, e.g.
     #   '[{"name":"Frankfurt-01","host":"1.2.3.4","port":443,"location":"DE"}]'
-    SERVERS_MONITOR_TYPE:     str = "stub"
-    SERVERS:                  str = "[]"   # JSON
-    SERVERS_CHECK_INTERVAL:   int = 300    # секунды
-    SERVERS_HEALTH_PATH:      str = "/health"
+    SERVERS_MONITOR_TYPE: str = "stub"
+    SERVERS: str = "[]"
+    SERVERS_CHECK_INTERVAL: int = 300  # seconds
+    SERVERS_HEALTH_PATH: str = "/health"
 
     class Config:
         env_file = ".env"

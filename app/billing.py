@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+
 import aiohttp
 
+
+# ── Data types ────────────────────────────────────────────────────────────────
 
 @dataclass
 class BillingResult:
@@ -10,23 +13,21 @@ class BillingResult:
     data: dict = None
 
 
+# ── Base class ────────────────────────────────────────────────────────────────
+
 class BillingProvider(ABC):
-    """Базовый класс для биллинг-провайдеров. Подключи свой API — унаследуй и переопредели методы."""
 
     @abstractmethod
-    async def renew_subscription(self, chat_id: str, dialog_id: str) -> BillingResult:
-        """Продлить подписку пользователя."""
+    async def renew_subscription(self, chat_id: str, dialog_id: str) -> BillingResult: ...
 
     @abstractmethod
-    async def buy_traffic(self, chat_id: str, dialog_id: str) -> BillingResult:
-        """Докупить трафик."""
+    async def buy_traffic(self, chat_id: str, dialog_id: str) -> BillingResult: ...
 
     @abstractmethod
-    async def reset_key(self, chat_id: str, dialog_id: str) -> BillingResult:
-        """Сбросить VPN-ключ и выдать новый."""
+    async def reset_key(self, chat_id: str, dialog_id: str) -> BillingResult: ...
 
     async def execute(self, action: str, chat_id: str, dialog_id: str) -> BillingResult:
-        """Диспетчер: action = 'renew' | 'buy_traffic' | 'reset_key'."""
+        """Dispatch action string → concrete method."""
         handlers = {
             "renew":       self.renew_subscription,
             "buy_traffic": self.buy_traffic,
@@ -38,10 +39,10 @@ class BillingProvider(ABC):
         return await handler(chat_id, dialog_id)
 
 
-# ── Заглушка для разработки / тестов ─────────────────────────────────────────
+# ── Stub (development / testing) ──────────────────────────────────────────────
 
 class StubBillingProvider(BillingProvider):
-    """Ничего не делает, только логирует. Используй пока нет боевого API."""
+    """No-op implementation — logs calls and always returns success."""
 
     async def renew_subscription(self, chat_id: str, dialog_id: str) -> BillingResult:
         print(f"[STUB] renew_subscription chat_id={chat_id}")
@@ -56,23 +57,24 @@ class StubBillingProvider(BillingProvider):
         return BillingResult(ok=True, message="Stub: key reset")
 
 
-# ── HTTP-провайдер (REST API твоего биллинга) ─────────────────────────────────
+# ── HTTP provider ─────────────────────────────────────────────────────────────
 
 class HttpBillingProvider(BillingProvider):
     """
-    Вызывает внешний REST API биллинговой системы.
+    Calls an external REST billing API.
 
-    Настраивается через переменные окружения (см. config.py):
-        BILLING_API_URL   — базовый URL, например https://billing.example.com/api
-        BILLING_API_TOKEN — токен авторизации (Bearer)
+    Configured via env vars (see config.py):
+        BILLING_API_URL   — base URL, e.g. https://billing.example.com/api
+        BILLING_API_TOKEN — Bearer token
 
-    Формат запросов: POST /subscriptions/renew
-                     POST /subscriptions/buy_traffic
-                     POST /keys/reset
-    Тело: { "chat_id": "...", "dialog_id": "..." }
+    Endpoints called:
+        POST /subscriptions/renew
+        POST /subscriptions/buy_traffic
+        POST /keys/reset
+    Body: { "chat_id": "...", "dialog_id": "..." }
 
-    Чтобы подключить другой API — унаследуй HttpBillingProvider и переопредели
-    нужные методы, или создай новый класс от BillingProvider.
+    To integrate a different API — subclass HttpBillingProvider and override
+    the relevant methods, or create a new BillingProvider subclass from scratch.
     """
 
     def __init__(self, base_url: str, api_token: str):
@@ -86,11 +88,17 @@ class HttpBillingProvider(BillingProvider):
         url = f"{self.base_url}{path}"
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, headers=self.headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                async with session.post(
+                    url, json=payload, headers=self.headers,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
                     body = await resp.json(content_type=None)
                     if resp.status < 300:
                         return BillingResult(ok=True, message=body.get("message", "OK"), data=body)
-                    return BillingResult(ok=False, message=body.get("error") or body.get("message") or f"HTTP {resp.status}")
+                    return BillingResult(
+                        ok=False,
+                        message=body.get("error") or body.get("message") or f"HTTP {resp.status}",
+                    )
         except aiohttp.ClientError as e:
             return BillingResult(ok=False, message=f"Network error: {e}")
         except Exception as e:
@@ -106,14 +114,11 @@ class HttpBillingProvider(BillingProvider):
         return await self._post("/keys/reset", {"chat_id": chat_id, "dialog_id": dialog_id})
 
 
-# ── Фабрика: выбирает провайдер по конфигу ────────────────────────────────────
+# ── Factory ───────────────────────────────────────────────────────────────────
 
 def make_billing_provider(billing_url: str, billing_token: str) -> BillingProvider:
-    """
-    Если BILLING_API_URL задан — возвращает HttpBillingProvider.
-    Иначе — StubBillingProvider (безопасная заглушка).
-    """
+    """Return HttpBillingProvider when a URL is configured, otherwise StubBillingProvider."""
     if billing_url:
         return HttpBillingProvider(billing_url, billing_token)
-    print("⚠️  BILLING_API_URL не задан — используется StubBillingProvider")
+    print("⚠️  BILLING_API_URL not set — using StubBillingProvider")
     return StubBillingProvider()

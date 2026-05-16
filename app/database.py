@@ -1,11 +1,15 @@
-import asyncpg
 import json
-from datetime import datetime, timezone
+from datetime import date, timedelta
 from typing import Optional
+
+import asyncpg
+
 from app.config import Settings
 
 _AVATAR_COLORS = ["#4F8EF7", "#A855F7", "#22c55e", "#eab308", "#ef4444", "#06b6d4", "#f97316"]
 
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def avatar_color(dialog_id: str) -> str:
     return _AVATAR_COLORS[hash(dialog_id) % len(_AVATAR_COLORS)]
@@ -17,6 +21,8 @@ def make_initials(name: str) -> str:
     parts = name.split()
     return "".join(p[0] for p in parts[:2]).upper()
 
+
+# ── Manager ───────────────────────────────────────────────────────────────────
 
 class DatabaseManager:
     def __init__(self, settings: Settings):
@@ -37,8 +43,8 @@ class DatabaseManager:
         print("✅ Database initialized")
 
     async def _migrate(self, conn):
-        # If old n8n-style tables exist (no dialog_id TEXT column) — rename them so we
-        # don't conflict, but keep the data accessible as *_legacy.
+        # If old n8n-style tables exist (no dialog_id TEXT column) — rename them
+        # to *_legacy so we don't conflict but keep the data accessible.
         old_dialogs = await conn.fetchval(
             "SELECT COUNT(*) FROM information_schema.tables "
             "WHERE table_schema='public' AND table_name='dialogs'"
@@ -117,9 +123,9 @@ class DatabaseManager:
             )
         """)
 
-        # ── Forward migrations: add new columns without dropping anything ─────
-        # Each entry: (table, column, definition)
-        # Safe to re-run on every startup — IF NOT EXISTS is idempotent.
+        # ── Forward migrations ────────────────────────────────────────────────
+        # Add new columns without dropping anything; safe to re-run on every
+        # startup because ADD COLUMN IF NOT EXISTS is idempotent.
         new_cols = [
             # dialogs
             ("dialogs", "chat_id",             "TEXT"),
@@ -157,7 +163,10 @@ class DatabaseManager:
 
     # ── Dialogs ───────────────────────────────────────────────────────────────
 
-    async def upsert_dialog(self, dialog_id: str, chat_id: str, ai_enabled: bool = True, user_info: dict = None) -> dict:
+    async def upsert_dialog(
+        self, dialog_id: str, chat_id: str,
+        ai_enabled: bool = True, user_info: dict = None,
+    ) -> dict:
         ui = user_info or {}
         row = await self.pool.fetchrow(
             """
@@ -234,13 +243,17 @@ class DatabaseManager:
         )
 
     async def clear_unread(self, dialog_id: str):
-        await self.pool.execute("UPDATE dialogs SET unread_count=0 WHERE dialog_id=$1", dialog_id)
+        await self.pool.execute(
+            "UPDATE dialogs SET unread_count=0 WHERE dialog_id=$1", dialog_id
+        )
 
     # ── Messages ──────────────────────────────────────────────────────────────
 
-    async def save_message(self, dialog_id: str, kind: str, text: str = None,
-                           file_id: str = None, file_type: str = None,
-                           file_url: str = None, operator_name: str = None) -> dict:
+    async def save_message(
+        self, dialog_id: str, kind: str, text: str = None,
+        file_id: str = None, file_type: str = None,
+        file_url: str = None, operator_name: str = None,
+    ) -> dict:
         row = await self.pool.fetchrow(
             """INSERT INTO messages (dialog_id, kind, text, file_id, file_type, file_url, operator_name)
                VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *""",
@@ -294,7 +307,8 @@ class DatabaseManager:
 
     async def set_setting(self, key: str, value: str):
         await self.pool.execute(
-            "INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()",
+            "INSERT INTO settings (key,value) VALUES ($1,$2) "
+            "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()",
             key, value,
         )
 
@@ -315,11 +329,12 @@ class DatabaseManager:
             "SELECT COUNT(*) FROM dialogs WHERE status='closed' AND updated_at::date = CURRENT_DATE"
         ) or 0
         ai_resolved = await self.pool.fetchval(
-            "SELECT COUNT(*) FROM dialogs WHERE status='closed' AND operator_called=FALSE AND updated_at::date = CURRENT_DATE"
+            "SELECT COUNT(*) FROM dialogs "
+            "WHERE status='closed' AND operator_called=FALSE AND updated_at::date = CURRENT_DATE"
         ) or 0
         ai_pct = int(ai_resolved / today_closed * 100) if today_closed else 0
 
-        # Daily counts for last N days (fill missing days with 0)
+        # Daily counts for last N days (missing days filled with 0)
         daily_rows = await self.pool.fetch(
             """SELECT created_at::date as d, COUNT(*) as cnt
                FROM dialogs WHERE created_at >= NOW() - ($1 || ' days')::interval
@@ -327,11 +342,13 @@ class DatabaseManager:
             str(days),
         )
         daily_map = {str(r["d"]): r["cnt"] for r in daily_rows}
-        from datetime import date, timedelta
         today = date.today()
-        daily = [int(daily_map.get(str(today - timedelta(days=days - 1 - i)), 0)) for i in range(days)]
+        daily = [
+            int(daily_map.get(str(today - timedelta(days=days - 1 - i)), 0))
+            for i in range(days)
+        ]
 
-        # Hourly distribution (last 14 days)
+        # Hourly distribution over the last 14 days
         hourly_rows = await self.pool.fetch(
             """SELECT EXTRACT(HOUR FROM created_at)::int as h, COUNT(*) as cnt
                FROM dialogs WHERE created_at >= NOW() - '14 days'::interval

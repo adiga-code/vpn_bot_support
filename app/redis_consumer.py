@@ -1,19 +1,22 @@
-import json
 import asyncio
+import json
+
 import redis.asyncio as aioredis
 
 from app.database import DatabaseManager
-from app.ws_manager import WebSocketManager
 from app.web_server import _fmt_dialog, _fmt_message
+from app.ws_manager import WebSocketManager
 
 
 class RedisConsumer:
-    """Читает входящие сообщения от n8n из Redis и транслирует в веб-интерфейс"""
+    """Reads inbound n8n events from the Redis queue and pushes them to the UI via WebSocket."""
 
     def __init__(self, redis: aioredis.Redis, db: DatabaseManager, ws: WebSocketManager):
         self.redis = redis
         self.db = db
         self.ws = ws
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
 
     async def consume(self):
         print("✅ Redis consumer started")
@@ -40,13 +43,15 @@ class RedisConsumer:
                 print(f"❌ Consumer error: {e}")
                 await asyncio.sleep(1)
 
+    # ── Handlers ──────────────────────────────────────────────────────────────
+
     async def _handle_user_message(self, data: dict):
         dialog_id = data["dialog_id"]
         chat_id = str(data["chat_id"])
         text = data.get("message", "")
         file_id = data.get("file_id")
         file_type = data.get("file_type", "text")
-        file_url = data.get("file_url")  # URL если n8n уже скачал файл
+        file_url = data.get("file_url")
         ai_enabled = data.get("ai_enabled", True)
 
         user_info = {k: data.get(k) for k in (
@@ -72,7 +77,11 @@ class RedisConsumer:
         if is_new:
             await self.ws.broadcast({"type": "new_dialog", "dialog": _fmt_dialog(updated)})
         else:
-            await self.ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+            await self.ws.broadcast({
+                "type": "new_message",
+                "dialog_id": dialog_id,
+                "message": _fmt_message(msg_row),
+            })
             await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
 
     async def _handle_ai_response(self, data: dict):
@@ -88,5 +97,9 @@ class RedisConsumer:
         await self.db.update_last_message(dialog_id, f"ИИ: {text}")
 
         updated = await self.db.get_dialog(dialog_id)
-        await self.ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+        await self.ws.broadcast({
+            "type": "new_message",
+            "dialog_id": dialog_id,
+            "message": _fmt_message(msg_row),
+        })
         await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})

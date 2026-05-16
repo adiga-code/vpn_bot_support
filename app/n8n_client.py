@@ -1,13 +1,17 @@
 import json
+
 import redis.asyncio as aioredis
+
 from app.config import Settings
 
 
 class N8NClient:
-    """Клиент для работы с n8n через Redis"""
+    """Publishes outbound events to n8n via Redis channels."""
 
     def __init__(self, settings: Settings, redis: aioredis.Redis):
         self.redis = redis
+
+    # ── Outbound messages ─────────────────────────────────────────────────────
 
     async def send_manager_message(
         self,
@@ -39,7 +43,7 @@ class N8NClient:
             return False
 
     async def notify_ai_toggled(self, dialog_id: str, chat_id: str, ai_enabled: bool) -> None:
-        """Уведомляем n8n об изменении AI-статуса (fire-and-forget, без ожидания ответа)."""
+        """Fire-and-forget: lets n8n track the current AI-enabled state per dialog."""
         try:
             await self.redis.publish("vpn_bot:ai_toggled", json.dumps({
                 "type": "ai_toggled",
