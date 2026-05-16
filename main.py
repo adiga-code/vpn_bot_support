@@ -24,11 +24,20 @@ async def main():
 
     # ── Initial admin account ─────────────────────────────────────────────────
     if settings.ADMIN_INIT_TG and settings.ADMIN_INIT_PASSWORD:
-        ops = await db.get_operators()
-        if not ops:
-            op = await db.create_operator("Admin", settings.ADMIN_INIT_TG, "admin")
-            await db.set_password(op["id"], hash_password(settings.ADMIN_INIT_PASSWORD))
-            print(f"Initial admin created: tg={settings.ADMIN_INIT_TG}")
+        pw_hash = hash_password(settings.ADMIN_INIT_PASSWORD)
+        existing = await db.get_operator_by_tg(settings.ADMIN_INIT_TG)
+        if existing:
+            # Operator exists — set password if not set yet
+            if not existing.get("password_hash"):
+                await db.set_password(existing["id"], pw_hash)
+                print(f"Password set for existing operator: {settings.ADMIN_INIT_TG}")
+        else:
+            # No operator with this tg — create one if DB is empty
+            ops = await db.get_operators()
+            if not ops:
+                op = await db.create_operator("Admin", settings.ADMIN_INIT_TG, "admin")
+                await db.set_password(op["id"], pw_hash)
+                print(f"Initial admin created: tg={settings.ADMIN_INIT_TG}")
 
     redis = aioredis.from_url(settings.REDIS_URL)
     ws_manager = WebSocketManager()
