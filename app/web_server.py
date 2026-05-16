@@ -14,6 +14,7 @@ from app.billing import BillingProvider
 from app.config import Settings
 from app.database import DatabaseManager, avatar_color, make_initials
 from app.n8n_client import N8NClient
+from app.servers import ServerMonitor
 from app.ws_manager import WebSocketManager
 
 _STATIC = Path(__file__).parent / "static"
@@ -123,7 +124,7 @@ class ScheduleBody(BaseModel):
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
-def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n: N8NClient, billing: BillingProvider) -> FastAPI:
+def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n: N8NClient, billing: BillingProvider, server_monitor: ServerMonitor) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
 
@@ -261,12 +262,7 @@ def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n
 
     @app.get("/api/servers")
     async def get_servers():
-        raw = await n8n.redis.get("vpn_bot:servers")
-        if raw:
-            servers = json.loads(raw)
-            checked = await n8n.redis.get("vpn_bot:servers_updated")
-            return {"servers": servers, "last_updated": checked.decode() if checked else None}
-        return {"servers": [], "last_updated": None}
+        return server_monitor.get_snapshot()
 
     # ── Statistics ────────────────────────────────────────────────────────────
 

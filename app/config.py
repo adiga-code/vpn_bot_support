@@ -24,6 +24,15 @@ class Settings(BaseSettings):
     BILLING_API_URL:   str = ""
     BILLING_API_TOKEN: str = ""
 
+    # Server monitoring
+    # SERVERS_MONITOR_TYPE: "tcp" | "http" | "stub"
+    # SERVERS: JSON-список серверов
+    #   '[{"name":"Frankfurt-01","host":"1.2.3.4","port":443,"location":"DE"}]'
+    SERVERS_MONITOR_TYPE:     str = "stub"
+    SERVERS:                  str = "[]"   # JSON
+    SERVERS_CHECK_INTERVAL:   int = 300    # секунды
+    SERVERS_HEALTH_PATH:      str = "/health"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -241,25 +241,61 @@ N8n должен читать эти ключи при каждом запрос
 
 ---
 
-## Статусы VPN-серверов
+## Мониторинг VPN-серверов
 
-Python читает Redis-ключ `vpn_bot:servers` и показывает в панели.
+Мониторинг реализован в Python (`app/servers.py`), n8n не нужен.
+Фоновая задача проверяет серверы каждые `SERVERS_CHECK_INTERVAL` секунд.
 
-**N8n должен** настроить Cron-воркфлоу (раз в 5 минут):
-1. Пинговать каждый сервер
-2. Записать результат:
+### Конфигурация (.env)
 
-```bash
-SET vpn_bot:servers '[
-  {"name": "Frankfurt-01", "status": "ok",   "load": 42, "ping": 18, "uptime": 99.9, "location": "DE"},
-  {"name": "Moscow-02",    "status": "down",  "load": null, "ping": null, "uptime": 95.2, "location": "RU"},
-  {"name": "Warsaw-01",    "status": "high",  "load": 87, "ping": 45, "uptime": 98.1, "location": "PL"}
-]'
+```env
+SERVERS_MONITOR_TYPE=tcp          # tcp | http | stub
+SERVERS_CHECK_INTERVAL=300        # секунды
+SERVERS_HEALTH_PATH=/health       # только для type=http
 
-SET vpn_bot:servers_updated "16.05.2025 14:30"
+SERVERS=[
+  {"name":"Frankfurt-01","host":"1.2.3.4","port":443,"location":"DE"},
+  {"name":"Amsterdam-03","host":"5.6.7.8","port":443,"location":"NL","load_warn_pct":75}
+]
 ```
 
-Значения `status`: `ok` | `high` (нагрузка > 80%) | `down`.
+### Типы мониторинга
+
+| Тип | Как работает | Когда использовать |
+|---|---|---|
+| `tcp` | TCP-подключение к `host:port`, измеряет пинг | Для любого сервера — просто и надёжно |
+| `http` | GET `host:port/health`, читает `load` и `uptime` из JSON | Если на серверах есть health-эндпоинт |
+| `stub` | Фиктивные данные | Разработка / тестирование |
+
+### HTTP health-endpoint (для type=http)
+
+Python ожидает от сервера JSON (поля опциональны):
+```json
+{ "load": 42.5, "uptime": 99.9 }
+```
+
+### Подключить своя логику проверки
+
+```python
+# app/servers.py
+class MyMonitor(ServerMonitor):
+    async def check_one(self, server: ServerInfo) -> ServerResult:
+        # Вызов твоего management API, SSH, SNMP — что угодно
+        data = await my_api.get_server_stats(server.host)
+        return ServerResult(
+            name=server.name,
+            location=server.location,
+            status="ok" if data["alive"] else "down",
+            load=data.get("cpu_pct"),
+            ping=data.get("latency_ms"),
+            uptime=data.get("uptime_pct"),
+        )
+```
+
+Зарегистрировать в `main.py`:
+```python
+server_monitor = MyMonitor(servers=[...], interval=300)
+```
 
 ---
 
