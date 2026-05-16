@@ -1,17 +1,8 @@
-"""
-VPN server monitoring — OOP, легко подключить свою реализацию.
-
-Чтобы добавить свой провайдер:
-    class MyMonitor(ServerMonitor):
-        async def check_one(self, server: ServerInfo) -> ServerResult: ...
-
-Зарегистрировать в make_server_monitor() или передать напрямую в main.py.
-"""
-
 import asyncio
+import random
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
@@ -20,59 +11,54 @@ import aiohttp
 StatusType = Literal["ok", "high", "down", "unknown"]
 
 
+# ── Data types ────────────────────────────────────────────────────────────────
+
 @dataclass
 class ServerInfo:
-    """Конфигурация одного сервера для мониторинга."""
     name: str
-    host: str                   # IP или hostname
+    host: str                   # IP or hostname
     location: str = ""
-    port: int = 443             # порт для TCP / HTTP проверки
-    load_warn_pct: float = 80   # выше этого → статус "high"
+    port: int = 443             # port for TCP / HTTP check
+    load_warn_pct: float = 80   # load above this threshold → status "high"
 
 
 @dataclass
 class ServerResult:
-    """Результат одной проверки сервера (то, что видит frontend)."""
     name: str
     status: StatusType
     location: str = ""
-    ping: float | None = None   # мс
+    ping: float | None = None   # ms
     load: float | None = None   # %
     uptime: float | None = None  # %
 
 
+# ── Base class ────────────────────────────────────────────────────────────────
+
 class ServerMonitor(ABC):
-    """Базовый класс. Реализуй check_one() — остальное бесплатно."""
+    """Implement check_one(); the polling loop and snapshot API come for free."""
 
     def __init__(self, servers: list[ServerInfo], interval: int = 300):
         self.servers = servers
-        self.interval = interval          # секунды между проверками
+        self.interval = interval
         self._results: list[ServerResult] = []
         self._last_updated: str | None = None
 
-    # ── Публичный интерфейс ───────────────────────────────────────────────────
-
     def get_snapshot(self) -> dict:
-        """Возвращает данные для /api/servers в формате, который ждёт frontend."""
+        """Return current results in the shape the frontend expects."""
         return {
             "servers": [self._result_to_dict(r) for r in self._results],
             "last_updated": self._last_updated,
         }
 
     async def run_forever(self):
-        """Фоновый цикл. Запускать через asyncio.gather() в main.py."""
-        print(f"✅ Server monitor started ({len(self.servers)} servers, interval={self.interval}s)")
+        """Background polling loop — run via asyncio.gather() in main.py."""
+        print(f"Server monitor started ({len(self.servers)} servers, interval={self.interval}s)")
         while True:
             await self._run_check()
             await asyncio.sleep(self.interval)
 
-    # ── Для переопределения ───────────────────────────────────────────────────
-
     @abstractmethod
-    async def check_one(self, server: ServerInfo) -> ServerResult:
-        """Проверить один сервер. Реализуй в своём классе."""
-
-    # ── Внутренние ───────────────────────────────────────────────────────────
+    async def check_one(self, server: ServerInfo) -> ServerResult: ...
 
     async def _run_check(self):
         tasks = [self.check_one(s) for s in self.servers]
@@ -96,17 +82,14 @@ class ServerMonitor(ABC):
         }
 
 
-# ── Реализации ────────────────────────────────────────────────────────────────
+# ── Implementations ───────────────────────────────────────────────────────────
 
 class TcpServerMonitor(ServerMonitor):
     """
-    Проверяет сервер через TCP-подключение.
+    Checks reachability via a TCP connection.
 
-    Плюсы:  работает для любого TCP-порта (VPN, SSH, HTTPS).
-    Минусы: не знает нагрузку и uptime — только доступность и пинг.
-
-    Для VPN-серверов обычно проверяют порт 443 (HTTPS) или 22 (SSH).
-    Задай port в ServerInfo под свой протокол.
+    Pros:  works for any TCP port (VPN, SSH, HTTPS).
+    Cons:  no load or uptime data — availability and ping only.
     """
 
     def __init__(self, servers: list[ServerInfo], interval: int = 300, timeout: float = 5.0):
@@ -135,15 +118,13 @@ class TcpServerMonitor(ServerMonitor):
 
 class HttpServerMonitor(ServerMonitor):
     """
-    Проверяет сервер через HTTP GET запрос к health-эндпоинту.
+    Checks a server via HTTP GET to a health endpoint.
 
-    Ожидаемый ответ от твоего сервера (JSON):
-        { "load": 42.5, "uptime": 99.9 }   — поля опциональны
+    Expected JSON response (fields optional):
+        { "load": 42.5, "uptime": 99.9 }
 
-    Если сервер не отвечает или статус != 2xx → "down".
-    Если load > server.load_warn_pct → "high".
-
-    Настрой health_path под свой API (например "/health", "/api/status").
+    Status "down" if unreachable or HTTP >= 400.
+    Status "high" if load exceeds server.load_warn_pct.
     """
 
     def __init__(self, servers: list[ServerInfo], interval: int = 300,
@@ -169,11 +150,9 @@ class HttpServerMonitor(ServerMonitor):
 
                     load = body.get("load")
                     uptime = body.get("uptime")
-                    if load is not None and load > server.load_warn_pct:
-                        status: StatusType = "high"
-                    else:
-                        status = "ok"
-
+                    status: StatusType = (
+                        "high" if load is not None and load > server.load_warn_pct else "ok"
+                    )
                     return ServerResult(
                         name=server.name,
                         location=server.location,
@@ -187,13 +166,9 @@ class HttpServerMonitor(ServerMonitor):
 
 
 class StubServerMonitor(ServerMonitor):
-    """
-    Возвращает фиктивные данные. Используй для разработки когда
-    реальных серверов нет или SERVERS_MONITOR_TYPE не задан.
-    """
+    """Returns randomised fake data — use during development when no real servers exist."""
 
     async def check_one(self, server: ServerInfo) -> ServerResult:
-        import random
         load = round(random.uniform(10, 95), 1)
         return ServerResult(
             name=server.name,
@@ -205,7 +180,7 @@ class StubServerMonitor(ServerMonitor):
         )
 
 
-# ── Фабрика ───────────────────────────────────────────────────────────────────
+# ── Factory ───────────────────────────────────────────────────────────────────
 
 def make_server_monitor(
     monitor_type: str,
@@ -214,11 +189,11 @@ def make_server_monitor(
     health_path: str = "/health",
 ) -> ServerMonitor:
     """
-    Создаёт монитор по типу из конфига.
+    Build a ServerMonitor from the app config.
 
     monitor_type: "tcp" | "http" | "stub"
-    servers: список словарей с полями ServerInfo
-             [{ "name": "Frankfurt-01", "host": "1.2.3.4", "port": 443, "location": "DE" }]
+    servers: list of dicts with ServerInfo fields, e.g.
+             [{"name": "Frankfurt-01", "host": "1.2.3.4", "port": 443, "location": "DE"}]
     """
     server_list = [
         ServerInfo(
@@ -233,7 +208,7 @@ def make_server_monitor(
 
     if not server_list or monitor_type == "stub":
         if not server_list:
-            print("⚠️  SERVERS не заданы — используется StubServerMonitor")
+            print("SERVERS not configured — using StubServerMonitor")
         return StubServerMonitor(server_list or _default_stub_servers(), interval)
 
     if monitor_type == "tcp":
@@ -242,7 +217,7 @@ def make_server_monitor(
     if monitor_type == "http":
         return HttpServerMonitor(server_list, interval, health_path=health_path)
 
-    raise ValueError(f"Unknown SERVERS_MONITOR_TYPE: {monitor_type!r}. Допустимые: tcp, http, stub")
+    raise ValueError(f"Unknown SERVERS_MONITOR_TYPE: {monitor_type!r}. Valid values: tcp, http, stub")
 
 
 def _default_stub_servers() -> list[ServerInfo]:

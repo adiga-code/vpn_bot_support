@@ -27,7 +27,7 @@ class BillingProvider(ABC):
     async def reset_key(self, chat_id: str, dialog_id: str) -> BillingResult: ...
 
     async def execute(self, action: str, chat_id: str, dialog_id: str) -> BillingResult:
-        """Dispatch action string → concrete method."""
+        """Dispatch action string to the corresponding concrete method."""
         handlers = {
             "renew":       self.renew_subscription,
             "buy_traffic": self.buy_traffic,
@@ -120,5 +120,5 @@ def make_billing_provider(billing_url: str, billing_token: str) -> BillingProvid
     """Return HttpBillingProvider when a URL is configured, otherwise StubBillingProvider."""
     if billing_url:
         return HttpBillingProvider(billing_url, billing_token)
-    print("⚠️  BILLING_API_URL not set — using StubBillingProvider")
+    print("BILLING_API_URL not set — using StubBillingProvider")
     return StubBillingProvider()

@@ -25,6 +25,7 @@ def make_initials(name: str) -> str:
 # ── Manager ───────────────────────────────────────────────────────────────────
 
 class DatabaseManager:
+
     def __init__(self, settings: Settings):
         self.settings = settings
         self.pool: asyncpg.Pool = None
@@ -40,7 +41,7 @@ class DatabaseManager:
         )
         async with self.pool.acquire() as conn:
             await self._migrate(conn)
-        print("✅ Database initialized")
+        print("Database initialized")
 
     async def _migrate(self, conn):
         # If old n8n-style tables exist (no dialog_id TEXT column) — rename them

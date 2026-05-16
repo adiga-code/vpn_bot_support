@@ -19,7 +19,7 @@ class RedisConsumer:
     # ── Main loop ─────────────────────────────────────────────────────────────
 
     async def consume(self):
-        print("✅ Redis consumer started")
+        print("Redis consumer started")
         while True:
             try:
                 result = await self.redis.blpop("vpn_bot:incoming", timeout=0)
@@ -28,19 +28,19 @@ class RedisConsumer:
 
                 data = json.loads(result[1])
                 msg_type = data.get("type")
-                print(f"📨 {msg_type} dialog={data.get('dialog_id')}")
+                print(f"Received {msg_type} dialog={data.get('dialog_id')}")
 
                 if msg_type == "user_message":
                     await self._handle_user_message(data)
                 elif msg_type == "ai_response":
                     await self._handle_ai_response(data)
                 else:
-                    print(f"⚠️ Unknown type: {msg_type}")
+                    print(f"Unknown type: {msg_type}")
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"❌ Consumer error: {e}")
+                print(f"Consumer error: {e}")
                 await asyncio.sleep(1)
 
     # ── Handlers ──────────────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ class RedisConsumer:
 
         dialog = await self.db.get_dialog(dialog_id)
         if not dialog:
-            print(f"⚠️ AI response for unknown dialog: {dialog_id}")
+            print(f"AI response for unknown dialog: {dialog_id}")
             return
 
         msg_row = await self.db.save_message(dialog_id, "ai", text)

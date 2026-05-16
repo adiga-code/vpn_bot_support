@@ -4,7 +4,7 @@ from fastapi import WebSocket
 
 
 class WebSocketManager:
-    """Tracks connected operator browser tabs and fans out JSON events to all of them."""
+    """Fans out JSON events to all connected operator browser tabs."""
 
     def __init__(self):
         self._connections: set[WebSocket] = set()

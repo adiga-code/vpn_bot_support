@@ -1,14 +1,13 @@
 import json
 import uuid
-import aiohttp
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import Optional
 
 from app.billing import BillingProvider
 from app.config import Settings
@@ -36,6 +35,8 @@ _SCHEDULE_DEFAULTS = {
     "sun": {"enabled": False, "from": "10:00", "to": "18:00"},
 }
 
+
+# ── Formatters ────────────────────────────────────────────────────────────────
 
 def _fmt_time(dt: datetime) -> str:
     if dt is None:
@@ -104,13 +105,16 @@ class ReplyBody(BaseModel):
     file_url: Optional[str] = None
     file_type: Optional[str] = None
 
+
 class HandoffBody(BaseModel):
     operator_name: str = "Оператор"
+
 
 class OperatorBody(BaseModel):
     name: str
     tg: str
     role: str = "agent"
+
 
 class AISettingsBody(BaseModel):
     prompt: str
@@ -118,20 +122,27 @@ class AISettingsBody(BaseModel):
     auto_reply: bool
     handoff_enabled: bool
 
+
 class ScheduleBody(BaseModel):
     schedule: dict  # {"mon": {"enabled": bool, "from": "09:00", "to": "21:00"}, ...}
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
-def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n: N8NClient, billing: BillingProvider, server_monitor: ServerMonitor) -> FastAPI:
+def build_app(
+    settings: Settings,
+    db: DatabaseManager,
+    ws: WebSocketManager,
+    n8n: N8NClient,
+    billing: BillingProvider,
+    server_monitor: ServerMonitor,
+) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
 
     if _STATIC.exists():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
-    # Serve uploaded files
     @app.get("/api/files/{filename}")
     async def serve_file(filename: str):
         path = uploads / filename
@@ -157,7 +168,12 @@ def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n
             raise HTTPException(404)
         tickets = await db.get_dialog_history(row["chat_id"], dialog_id)
         return _fmt_dialog(row, [
-            {"id": f"T-{t['dialog_id'][-4:]}", "title": t["last_message_text"] or "Диалог", "date": _fmt_time(t["updated_at"]), "solved": True}
+            {
+                "id": f"T-{t['dialog_id'][-4:]}",
+                "title": t["last_message_text"] or "Диалог",
+                "date": _fmt_time(t["updated_at"]),
+                "solved": True,
+            }
             for t in tickets
         ])
 
@@ -202,7 +218,7 @@ def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n
             raise HTTPException(404)
         new_value = not dialog["ai_enabled"]
         await db.update_ai_enabled(dialog_id, new_value)
-        # Уведомляем n8n чтобы он знал актуальный статус (fire-and-forget, не ждём ответа)
+        # Notify n8n so it tracks the current AI state (fire-and-forget)
         await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], new_value)
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
@@ -294,7 +310,7 @@ def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n
             raise HTTPException(404)
         return {"ok": True}
 
-    # ── Settings: AI ─────────────────────────────────────────────────────────
+    # ── Settings: AI ──────────────────────────────────────────────────────────
 
     @app.get("/api/settings/ai")
     async def get_ai_settings():
@@ -304,7 +320,7 @@ def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n
     async def save_ai_settings(body: AISettingsBody):
         data = body.model_dump()
         await db.set_setting_json("ai_settings", data)
-        # Notify n8n via Redis so it picks up new prompt immediately
+        # Push new prompt to Redis so n8n picks it up immediately
         await n8n.redis.set("vpn_bot:ai_settings", json.dumps(data))
         return {"ok": True}
 
@@ -317,7 +333,7 @@ def build_app(settings: Settings, db: DatabaseManager, ws: WebSocketManager, n8n
     @app.put("/api/settings/schedule")
     async def save_schedule(body: ScheduleBody):
         await db.set_setting_json("schedule", body.schedule)
-        # Notify n8n via Redis
+        # Push updated schedule to Redis so n8n picks it up immediately
         await n8n.redis.set("vpn_bot:schedule", json.dumps(body.schedule))
         return {"ok": True}
 

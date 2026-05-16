@@ -9,6 +9,7 @@ class N8NClient:
     """Publishes outbound events to n8n via Redis channels."""
 
     def __init__(self, settings: Settings, redis: aioredis.Redis):
+        # settings kept for future use (e.g. channel name overrides)
         self.redis = redis
 
     # ── Outbound messages ─────────────────────────────────────────────────────
@@ -39,7 +40,7 @@ class N8NClient:
             await self.redis.publish("vpn_bot:messages", json.dumps(payload))
             return True
         except Exception as e:
-            print(f"❌ Error sending manager message: {e}")
+            print(f"Error sending manager message: {e}")
             return False
 
     async def notify_ai_toggled(self, dialog_id: str, chat_id: str, ai_enabled: bool) -> None:
@@ -52,7 +53,7 @@ class N8NClient:
                 "ai_enabled": ai_enabled,
             }))
         except Exception as e:
-            print(f"⚠️ notify_ai_toggled error (non-critical): {e}")
+            print(f"notify_ai_toggled error (non-critical): {e}")
 
     async def send_billing_action(self, dialog_id: str, chat_id: str, action: str) -> bool:
         try:
@@ -64,5 +65,5 @@ class N8NClient:
             }))
             return True
         except Exception as e:
-            print(f"❌ billing action error: {e}")
+            print(f"Billing action error: {e}")
             return False
