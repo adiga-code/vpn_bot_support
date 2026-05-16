@@ -32,30 +32,56 @@ class DatabaseManager:
             user=s.POSTGRES_USER,
             password=s.POSTGRES_PASSWORD,
         )
-        await self.pool.execute("""
+        async with self.pool.acquire() as conn:
+            await self._migrate(conn)
+        print("✅ Database initialized")
+
+    async def _migrate(self, conn):
+        # If old n8n-style tables exist (no dialog_id TEXT column) — rename them so we
+        # don't conflict, but keep the data accessible as *_legacy.
+        old_dialogs = await conn.fetchval(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_schema='public' AND table_name='dialogs'"
+        )
+        has_dialog_id = await conn.fetchval(
+            "SELECT COUNT(*) FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name='dialogs' AND column_name='dialog_id'"
+        ) if old_dialogs else 0
+
+        if old_dialogs and not has_dialog_id:
+            for t in ("chat_topics", "messages", "dialogs"):
+                exists = await conn.fetchval(
+                    "SELECT COUNT(*) FROM information_schema.tables "
+                    "WHERE table_schema='public' AND table_name=$1", t
+                )
+                if exists:
+                    await conn.execute(f"ALTER TABLE {t} RENAME TO {t}_legacy")
+
+        # ── Core tables ───────────────────────────────────────────────────────
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS dialogs (
-                dialog_id            TEXT PRIMARY KEY,
-                chat_id              TEXT NOT NULL,
-                status               TEXT NOT NULL DEFAULT 'new',
-                ai_enabled           BOOLEAN NOT NULL DEFAULT TRUE,
-                operator_called      BOOLEAN NOT NULL DEFAULT FALSE,
-                unread_count         INTEGER NOT NULL DEFAULT 0,
-                user_name            TEXT,
-                user_username        TEXT,
-                user_plan            TEXT DEFAULT 'Basic',
-                user_sub_status      TEXT DEFAULT 'active',
-                user_next_payment    TEXT,
-                user_traffic_used    FLOAT DEFAULT 0,
-                user_traffic_total   FLOAT DEFAULT 100,
-                last_payment_amount  TEXT,
-                last_payment_date    TEXT,
-                last_message_text    TEXT,
-                last_message_time    TIMESTAMP DEFAULT NOW(),
-                created_at           TIMESTAMP DEFAULT NOW(),
-                updated_at           TIMESTAMP DEFAULT NOW()
+                dialog_id           TEXT PRIMARY KEY,
+                chat_id             TEXT NOT NULL,
+                status              TEXT NOT NULL DEFAULT 'new',
+                ai_enabled          BOOLEAN NOT NULL DEFAULT TRUE,
+                operator_called     BOOLEAN NOT NULL DEFAULT FALSE,
+                unread_count        INTEGER NOT NULL DEFAULT 0,
+                user_name           TEXT,
+                user_username       TEXT,
+                user_plan           TEXT DEFAULT 'Basic',
+                user_sub_status     TEXT DEFAULT 'active',
+                user_next_payment   TEXT,
+                user_traffic_used   FLOAT DEFAULT 0,
+                user_traffic_total  FLOAT DEFAULT 100,
+                last_payment_amount TEXT,
+                last_payment_date   TEXT,
+                last_message_text   TEXT,
+                last_message_time   TIMESTAMPTZ DEFAULT NOW(),
+                created_at          TIMESTAMPTZ DEFAULT NOW(),
+                updated_at          TIMESTAMPTZ DEFAULT NOW()
             )
         """)
-        await self.pool.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id            SERIAL PRIMARY KEY,
                 dialog_id     TEXT NOT NULL REFERENCES dialogs(dialog_id) ON DELETE CASCADE,
@@ -65,13 +91,13 @@ class DatabaseManager:
                 file_type     TEXT,
                 file_url      TEXT,
                 operator_name TEXT,
-                created_at    TIMESTAMP DEFAULT NOW()
+                created_at    TIMESTAMPTZ DEFAULT NOW()
             )
         """)
-        await self.pool.execute("""
-            CREATE INDEX IF NOT EXISTS messages_dialog_idx ON messages (dialog_id, created_at)
-        """)
-        await self.pool.execute("""
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS messages_dialog_idx ON messages (dialog_id, created_at)"
+        )
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS operators (
                 id         SERIAL PRIMARY KEY,
                 name       TEXT NOT NULL,
@@ -80,17 +106,54 @@ class DatabaseManager:
                 online     BOOLEAN DEFAULT FALSE,
                 initials   TEXT,
                 color      TEXT DEFAULT '#4F8EF7',
-                created_at TIMESTAMP DEFAULT NOW()
+                created_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
-        await self.pool.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key        TEXT PRIMARY KEY,
                 value      TEXT NOT NULL,
-                updated_at TIMESTAMP DEFAULT NOW()
+                updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
-        print("✅ Database initialized")
+
+        # ── Forward migrations: add new columns without dropping anything ─────
+        # Each entry: (table, column, definition)
+        # Safe to re-run on every startup — IF NOT EXISTS is idempotent.
+        new_cols = [
+            # dialogs
+            ("dialogs", "chat_id",             "TEXT"),
+            ("dialogs", "operator_called",      "BOOLEAN NOT NULL DEFAULT FALSE"),
+            ("dialogs", "unread_count",         "INTEGER NOT NULL DEFAULT 0"),
+            ("dialogs", "user_name",            "TEXT"),
+            ("dialogs", "user_username",        "TEXT"),
+            ("dialogs", "user_plan",            "TEXT DEFAULT 'Basic'"),
+            ("dialogs", "user_sub_status",      "TEXT DEFAULT 'active'"),
+            ("dialogs", "user_next_payment",    "TEXT"),
+            ("dialogs", "user_traffic_used",    "FLOAT DEFAULT 0"),
+            ("dialogs", "user_traffic_total",   "FLOAT DEFAULT 100"),
+            ("dialogs", "last_payment_amount",  "TEXT"),
+            ("dialogs", "last_payment_date",    "TEXT"),
+            ("dialogs", "last_message_text",    "TEXT"),
+            ("dialogs", "last_message_time",    "TIMESTAMPTZ DEFAULT NOW()"),
+            ("dialogs", "updated_at",           "TIMESTAMPTZ DEFAULT NOW()"),
+            # messages
+            ("messages", "kind",          "TEXT"),
+            ("messages", "text",          "TEXT"),
+            ("messages", "file_id",       "TEXT"),
+            ("messages", "file_type",     "TEXT"),
+            ("messages", "file_url",      "TEXT"),
+            ("messages", "operator_name", "TEXT"),
+            # operators
+            ("operators", "tg",       "TEXT"),
+            ("operators", "online",   "BOOLEAN DEFAULT FALSE"),
+            ("operators", "initials", "TEXT"),
+            ("operators", "color",    "TEXT DEFAULT '#4F8EF7'"),
+        ]
+        for table, col, typedef in new_cols:
+            await conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {typedef}"
+            )
 
     # ── Dialogs ───────────────────────────────────────────────────────────────
 
