@@ -31,6 +31,8 @@ _AI_DEFAULTS = {
     "handoff_enabled": True,
 }
 
+_NOTIF_DEFAULTS = {"new_dialog": True, "operator_called": True, "server_down": True}
+
 _SCHEDULE_DEFAULTS = {
     "mon": {"enabled": True,  "from": "09:00", "to": "21:00"},
     "tue": {"enabled": True,  "from": "09:00", "to": "21:00"},
@@ -153,6 +155,11 @@ class AISettingsBody(BaseModel):
 
 class ScheduleBody(BaseModel):
     schedule: dict
+
+class NotificationsBody(BaseModel):
+    new_dialog:      bool = True
+    operator_called: bool = True
+    server_down:     bool = True
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -340,6 +347,10 @@ def build_app(
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        notif = await db.get_setting_json("notifications", _NOTIF_DEFAULTS)
+        if notif.get("operator_called"):
+            username = updated.get("user_username") or dialog_id
+            await n8n.notify_event("operator_called", {"dialog_id": dialog_id, "username": username})
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/close")
@@ -450,6 +461,17 @@ def build_app(
     async def save_schedule(body: ScheduleBody, operator: dict = Depends(require_auth)):
         await db.set_setting_json("schedule", body.schedule)
         await n8n.redis.set("vpn_bot:schedule", json.dumps(body.schedule))
+        return {"ok": True}
+
+    # ── Settings: Notifications ───────────────────────────────────────────────
+
+    @app.get("/api/settings/notifications")
+    async def get_notifications(operator: dict = Depends(require_auth)):
+        return await db.get_setting_json("notifications", _NOTIF_DEFAULTS)
+
+    @app.put("/api/settings/notifications")
+    async def save_notifications(body: NotificationsBody, operator: dict = Depends(require_auth)):
+        await db.set_setting_json("notifications", body.model_dump())
         return {"ok": True}
 
     # ── Knowledge Base ────────────────────────────────────────────────────────

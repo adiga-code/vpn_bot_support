@@ -397,15 +397,33 @@ function AISection({ showToast }) {
 }
 
 function NotificationsSection({ showToast }) {
-  const [n1,setN1]=useStateT(true); const [n2,setN2]=useStateT(true);
-  const [n3,setN3]=useStateT(true);
+  const [s, setS] = useStateT(null);
+
+  useEffectT(() => {
+    window.apiFetch("GET", "/api/settings/notifications").then(setS).catch(() => {});
+  }, []);
+
+  async function save() {
+    try {
+      await window.apiFetch("PUT", "/api/settings/notifications", s);
+      showToast("Настройки уведомлений сохранены");
+    } catch { showToast("Ошибка сохранения"); }
+  }
+
+  function toggle(key) { setS(v => ({ ...v, [key]: !v[key] })); }
+
+  if (!s) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+
   return (
     <div className="max-w-[1100px] mx-auto p-6 space-y-5">
-      <div><h1 className="text-xl font-semibold text-[#f1f1f5]">Уведомления</h1></div>
+      <div>
+        <h1 className="text-xl font-semibold text-[#f1f1f5]">Уведомления</h1>
+        <div className="text-xs text-[#6b7280] mt-0.5">Python публикует события в Redis → n8n доставляет в Telegram</div>
+      </div>
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
-        <SettingsRow title="Новый диалог" desc="Пинг в Telegram при новом обращении" control={<Switch on={n1} onChange={()=>setN1(v=>!v)} />} />
-        <SettingsRow title="Пользователь вызвал оператора" desc="Уведомление в браузере" control={<Switch on={n2} onChange={()=>setN2(v=>!v)} />} />
-        <SettingsRow title="Сервер VPN недоступен" desc="Мгновенное оповещение об инцидентах" control={<Switch on={n3} onChange={()=>setN3(v=>!v)} />} />
+        <SettingsRow title="Новый диалог" desc="Пинг в Telegram при новом обращении" control={<Switch on={s.new_dialog} onChange={()=>toggle("new_dialog")} />} />
+        <SettingsRow title="Пользователь вызвал оператора" desc="При handoff или operator_called из n8n" control={<Switch on={s.operator_called} onChange={()=>toggle("operator_called")} />} />
+        <SettingsRow title="Сервер VPN недоступен" desc="Мгновенное оповещение при переходе в down" control={<Switch on={s.server_down} onChange={()=>toggle("server_down")} />} />
       </div>
       <div className="flex justify-end">
         <button onClick={() => showToast("Настройки уведомлений сохранены")} className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold">Сохранить</button>

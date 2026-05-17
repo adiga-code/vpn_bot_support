@@ -4,7 +4,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Callable, Literal, Optional
 
 import aiohttp
 
@@ -37,11 +37,14 @@ class ServerResult:
 class ServerMonitor(ABC):
     """Implement check_one(); the polling loop and snapshot API come for free."""
 
-    def __init__(self, servers: list[ServerInfo], interval: int = 300):
+    def __init__(self, servers: list[ServerInfo], interval: int = 300,
+                 on_server_down: Optional[Callable] = None):
         self.servers = servers
         self.interval = interval
         self._results: list[ServerResult] = []
         self._last_updated: str | None = None
+        self._on_server_down = on_server_down
+        self._prev_statuses: dict[str, str] = {}  # name → last known status
 
     def get_snapshot(self) -> dict:
         """Return current results in the shape the frontend expects."""
@@ -55,6 +58,15 @@ class ServerMonitor(ABC):
         print(f"Server monitor started ({len(self.servers)} servers, interval={self.interval}s)")
         while True:
             await self._run_check()
+            if self._on_server_down:
+                for r in self._results:
+                    prev = self._prev_statuses.get(r.name)
+                    if r.status == "down" and prev not in ("down", None):
+                        try:
+                            await self._on_server_down(r.name, r.location)
+                        except Exception as e:
+                            print(f"on_server_down callback error: {e}")
+            self._prev_statuses = {r.name: r.status for r in self._results}
             await asyncio.sleep(self.interval)
 
     @abstractmethod
@@ -92,8 +104,9 @@ class TcpServerMonitor(ServerMonitor):
     Cons:  no load or uptime data — availability and ping only.
     """
 
-    def __init__(self, servers: list[ServerInfo], interval: int = 300, timeout: float = 5.0):
-        super().__init__(servers, interval)
+    def __init__(self, servers: list[ServerInfo], interval: int = 300, timeout: float = 5.0,
+                 on_server_down: Optional[Callable] = None):
+        super().__init__(servers, interval, on_server_down)
         self.timeout = timeout
 
     async def check_one(self, server: ServerInfo) -> ServerResult:
@@ -128,8 +141,9 @@ class HttpServerMonitor(ServerMonitor):
     """
 
     def __init__(self, servers: list[ServerInfo], interval: int = 300,
-                 timeout: float = 10.0, health_path: str = "/health"):
-        super().__init__(servers, interval)
+                 timeout: float = 10.0, health_path: str = "/health",
+                 on_server_down: Optional[Callable] = None):
+        super().__init__(servers, interval, on_server_down)
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.health_path = health_path
 
@@ -187,6 +201,7 @@ def make_server_monitor(
     servers: list[dict],
     interval: int = 300,
     health_path: str = "/health",
+    on_server_down: Optional[Callable] = None,
 ) -> ServerMonitor:
     """
     Build a ServerMonitor from the app config.
@@ -209,13 +224,13 @@ def make_server_monitor(
     if not server_list or monitor_type == "stub":
         if not server_list:
             print("SERVERS not configured — using StubServerMonitor")
-        return StubServerMonitor(server_list or _default_stub_servers(), interval)
+        return StubServerMonitor(server_list or _default_stub_servers(), interval, on_server_down)
 
     if monitor_type == "tcp":
-        return TcpServerMonitor(server_list, interval)
+        return TcpServerMonitor(server_list, interval, on_server_down=on_server_down)
 
     if monitor_type == "http":
-        return HttpServerMonitor(server_list, interval, health_path=health_path)
+        return HttpServerMonitor(server_list, interval, health_path=health_path, on_server_down=on_server_down)
 
     raise ValueError(f"Unknown SERVERS_MONITOR_TYPE: {monitor_type!r}. Valid values: tcp, http, stub")
 

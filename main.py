@@ -57,14 +57,25 @@ async def main():
     ws_manager = WebSocketManager()
     n8n_client = N8NClient(settings, redis)
     billing = make_billing_provider(settings.BILLING_API_URL, settings.BILLING_API_TOKEN)
+
+    # ── Server-down notification callback ─────────────────────────────────────
+    _NOTIF_DEFAULTS = {"new_dialog": True, "operator_called": True, "server_down": True}
+
+    async def on_server_down(name: str, location: str):
+        notif = await db.get_setting_json("notifications", _NOTIF_DEFAULTS)
+        if notif.get("server_down"):
+            await n8n_client.notify_event("server_down", {"server_name": name, "location": location})
+            print(f"[NOTIF] server_down: {name} ({location})")
+
     server_monitor = make_server_monitor(
         monitor_type=settings.SERVERS_MONITOR_TYPE,
         servers=json.loads(settings.SERVERS),
         interval=settings.SERVERS_CHECK_INTERVAL,
         health_path=settings.SERVERS_HEALTH_PATH,
+        on_server_down=on_server_down,
     )
 
-    consumer = RedisConsumer(redis, db, ws_manager)
+    consumer = RedisConsumer(redis, db, ws_manager, n8n_client)
     app = build_app(settings, db, ws_manager, n8n_client, billing, server_monitor)
 
     # ── HTTP server ───────────────────────────────────────────────────────────

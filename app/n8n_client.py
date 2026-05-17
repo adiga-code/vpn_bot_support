@@ -55,6 +55,15 @@ class N8NClient:
         except Exception as e:
             print(f"notify_ai_toggled error (non-critical): {e}")
 
+    async def notify_event(self, event_type: str, payload: dict) -> None:
+        """Fire-and-forget: publish a notification event for n8n to deliver via Telegram."""
+        try:
+            await self.redis.publish("vpn_bot:notifications", json.dumps({
+                "type": event_type, **payload,
+            }))
+        except Exception as e:
+            print(f"notify_event error (non-critical): {e}")
+
     async def send_billing_action(self, dialog_id: str, chat_id: str, action: str) -> bool:
         try:
             await self.redis.publish("vpn_bot:billing", json.dumps({

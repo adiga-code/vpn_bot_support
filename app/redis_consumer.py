@@ -4,17 +4,21 @@ import json
 import redis.asyncio as aioredis
 
 from app.database import DatabaseManager
+from app.n8n_client import N8NClient
 from app.web_server import _fmt_dialog, _fmt_message
 from app.ws_manager import WebSocketManager
+
+_NOTIF_DEFAULTS = {"new_dialog": True, "operator_called": True, "server_down": True}
 
 
 class RedisConsumer:
     """Reads inbound n8n events from the Redis queue and pushes them to the UI via WebSocket."""
 
-    def __init__(self, redis: aioredis.Redis, db: DatabaseManager, ws: WebSocketManager):
+    def __init__(self, redis: aioredis.Redis, db: DatabaseManager, ws: WebSocketManager, n8n: N8NClient):
         self.redis = redis
         self.db = db
         self.ws = ws
+        self.n8n = n8n
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -43,6 +47,12 @@ class RedisConsumer:
                 print(f"Consumer error: {e}")
                 await asyncio.sleep(1)
 
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    async def _notif_enabled(self, key: str) -> bool:
+        settings = await self.db.get_setting_json("notifications", _NOTIF_DEFAULTS)
+        return bool(settings.get(key, True))
+
     # ── Handlers ──────────────────────────────────────────────────────────────
 
     async def _handle_user_message(self, data: dict):
@@ -53,6 +63,7 @@ class RedisConsumer:
         file_type = data.get("file_type", "text")
         file_url = data.get("file_url")
         ai_enabled = data.get("ai_enabled", True)
+        operator_called = bool(data.get("operator_called", False))
 
         user_info = {k: data.get(k) for k in (
             "user_name", "user_username", "user_plan", "user_sub_status",
@@ -73,9 +84,16 @@ class RedisConsumer:
         )
         await self.db.update_last_message(dialog_id, text or f"[{file_type}]")
 
+        if operator_called:
+            await self.db.update_operator_called(dialog_id, True)
+
         updated = await self.db.get_dialog(dialog_id)
+        username = updated.get("user_username") or dialog_id
+
         if is_new:
             await self.ws.broadcast({"type": "new_dialog", "dialog": _fmt_dialog(updated)})
+            if await self._notif_enabled("new_dialog"):
+                await self.n8n.notify_event("new_dialog", {"dialog_id": dialog_id, "username": username})
         else:
             await self.ws.broadcast({
                 "type": "new_message",
@@ -83,6 +101,9 @@ class RedisConsumer:
                 "message": _fmt_message(msg_row),
             })
             await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+
+        if operator_called and await self._notif_enabled("operator_called"):
+            await self.n8n.notify_event("operator_called", {"dialog_id": dialog_id, "username": username})
 
     async def _handle_ai_response(self, data: dict):
         dialog_id = data["dialog_id"]
