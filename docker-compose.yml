@@ -36,6 +36,9 @@ services:
       - "6380:6379"
     volumes:
       - redis_data:/data
+    networks:
+      - default
+      - shared
     logging:
       driver: "json-file"
       options:
@@ -151,3 +154,8 @@ volumes:
   postgres_data:
   pgadmin_data:
   qdrant_data:
+
+networks:
+  shared:
+    name: vpn_n8n_shared
+    external: true
