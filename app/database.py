@@ -137,6 +137,38 @@ class DatabaseManager:
             )
         """)
 
+        # ── n8n shared tables ────────────────────────────────────────────────
+        # n8n connects to the same PostgreSQL and uses these tables.
+        # Names are prefixed with n8n_ to avoid collisions with helpdesk tables.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS n8n_dialogs (
+                id         BIGSERIAL PRIMARY KEY,
+                user_id    BIGINT NOT NULL,
+                username   TEXT,
+                ai_status  BOOLEAN NOT NULL DEFAULT TRUE,
+                status     TEXT NOT NULL DEFAULT 'new',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS n8n_dialogs_user_idx ON n8n_dialogs (user_id)"
+        )
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS n8n_messages (
+                id         BIGSERIAL PRIMARY KEY,
+                user_id    BIGINT NOT NULL,
+                dialog_id  BIGINT NOT NULL REFERENCES n8n_dialogs(id) ON DELETE CASCADE,
+                message    TEXT,
+                type       TEXT NOT NULL DEFAULT 'user',
+                file_id    TEXT,
+                file_type  TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS n8n_messages_dialog_idx ON n8n_messages (dialog_id)"
+        )
+
         # ── Forward migrations ────────────────────────────────────────────────
         # Add new columns without dropping anything; safe to re-run on every
         # startup because ADD COLUMN IF NOT EXISTS is idempotent.
