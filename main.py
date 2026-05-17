@@ -4,6 +4,7 @@ import json
 import uvicorn
 import redis.asyncio as aioredis
 
+from app.ai_client import make_chat_client
 from app.auth import hash_password
 from app.billing import make_billing_provider
 from app.config import Settings
@@ -75,7 +76,8 @@ async def main():
         on_server_down=on_server_down,
     )
 
-    consumer = RedisConsumer(redis, db, ws_manager, n8n_client, settings.OPENAI_API_KEY)
+    chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
+    consumer = RedisConsumer(redis, db, ws_manager, n8n_client, chat_client)
     app = build_app(settings, db, ws_manager, n8n_client, billing, server_monitor)
 
     # ── HTTP server ───────────────────────────────────────────────────────────

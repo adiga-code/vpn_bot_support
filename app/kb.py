@@ -1,9 +1,15 @@
+from __future__ import annotations
+
 import json
 import re
+from typing import TYPE_CHECKING
 
 from openai import AsyncOpenAI
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
+
+if TYPE_CHECKING:
+    from app.ai_client import ChatClient
 
 _COLLECTION = "kb"
 _EMBED_MODEL = "text-embedding-3-small"
@@ -61,11 +67,10 @@ def _make_slug(title: str, existing: set[str]) -> str:
     return slug
 
 
-async def chunk_document(text: str, openai_key: str) -> list[dict]:
-    """Call GPT to split the document into KB chunks. Returns list of chunk dicts."""
-    client = AsyncOpenAI(api_key=openai_key)
-    response = await client.chat.completions.create(
-        model="gpt-4o-mini",
+async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
+    """Call the configured chat LLM to split the document into KB chunks."""
+    response = await chat_client.client.chat.completions.create(
+        model=chat_client.model,
         messages=[
             {"role": "system", "content": _CHUNKING_PROMPT},
             {"role": "user",   "content": text},
@@ -74,11 +79,9 @@ async def chunk_document(text: str, openai_key: str) -> list[dict]:
         response_format={"type": "json_object"},
     )
     raw = response.choices[0].message.content
-    # GPT may return {"chunks": [...]} or just [...]
     parsed = json.loads(raw)
     chunks = parsed if isinstance(parsed, list) else parsed.get("chunks", list(parsed.values())[0])
 
-    # Ensure unique slugs — use GPT's id if valid, else derive from title
     seen: set[str] = set()
     result = []
     for c in chunks:
@@ -94,7 +97,7 @@ async def chunk_document(text: str, openai_key: str) -> list[dict]:
 
 
 async def embed_chunks(chunks: list[dict], openai_key: str) -> list[dict]:
-    """Add 'embedding' field to each chunk. Sends in batches of _BATCH_SIZE."""
+    """Embed chunks using OpenAI text-embedding-3-small (always OpenAI)."""
     client = AsyncOpenAI(api_key=openai_key)
     texts = [c["content"] for c in chunks]
     embeddings = []
@@ -156,10 +159,10 @@ async def delete_from_qdrant(article_id: str, qdrant_url: str):
     await client.close()
 
 
-async def process_document(text: str, openai_key: str, qdrant_url: str) -> list[dict]:
-    """Full pipeline: text → chunks → embeddings → qdrant. Returns chunks (without embeddings)."""
-    print(f"[KB] Chunking document ({len(text)} chars)...")
-    chunks = await chunk_document(text, openai_key)
+async def process_document(text: str, chat_client: "ChatClient", openai_key: str, qdrant_url: str) -> list[dict]:
+    """Full pipeline: text → chunks (via chat LLM) → embeddings (OpenAI) → Qdrant."""
+    print(f"[KB] Chunking document ({len(text)} chars) via {chat_client.model}...")
+    chunks = await chunk_document(text, chat_client)
     print(f"[KB] Created {len(chunks)} chunks, embedding...")
     chunks = await embed_chunks(chunks, openai_key)
     await ensure_collection(qdrant_url)

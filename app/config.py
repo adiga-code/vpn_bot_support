@@ -28,8 +28,14 @@ class Settings(BaseSettings):
     ADMIN_INIT_TG: str = ""
     ADMIN_INIT_PASSWORD: str = ""
 
-    # ── OpenAI ────────────────────────────────────────────────────────────────
+    # ── AI providers ─────────────────────────────────────────────────────────
+    # CHAT_PROVIDER selects the LLM for classification and KB chunking.
+    # "openai" (default) uses OPENAI_API_KEY with gpt-4o-mini.
+    # "gemini" uses GEMINI_API_KEY with gemini-2.0-flash via OpenAI-compat API.
+    # Embeddings always use OpenAI (OPENAI_API_KEY required for KB upload).
+    CHAT_PROVIDER: str = "openai"
     OPENAI_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
 
     # ── Qdrant ────────────────────────────────────────────────────────────────
     QDRANT_URL: str = "http://qdrant:6333"

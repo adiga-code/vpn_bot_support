@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app.ai_client import make_chat_client
 from app.auth import create_token, decode_token, hash_password, verify_password
 from app.billing import BillingProvider
 from app.config import Settings
@@ -176,6 +177,7 @@ def build_app(
 ) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
+    chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
 
     if _STATIC.exists():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
@@ -501,13 +503,13 @@ def build_app(
     @app.post("/api/kb/upload")
     async def upload_kb(file: UploadFile = File(...), operator: dict = Depends(require_auth)):
         if not settings.OPENAI_API_KEY:
-            raise HTTPException(400, "OPENAI_API_KEY not configured")
+            raise HTTPException(400, "OPENAI_API_KEY is required for embeddings")
         if not file.filename.endswith((".txt", ".md")):
             raise HTTPException(400, "Only .txt and .md files are supported")
         text = (await file.read()).decode("utf-8", errors="ignore")
         if not text.strip():
             raise HTTPException(400, "File is empty")
-        chunks = await process_document(text, settings.OPENAI_API_KEY, settings.QDRANT_URL)
+        chunks = await process_document(text, chat_client, settings.OPENAI_API_KEY, settings.QDRANT_URL)
         for c in chunks:
             await db.save_kb_article(
                 c["id"], c["title"], c["category"],

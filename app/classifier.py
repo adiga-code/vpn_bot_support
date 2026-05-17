@@ -1,4 +1,9 @@
-from openai import AsyncOpenAI
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.ai_client import ChatClient
 
 CATEGORIES = [
     "Оплата и подписка",
@@ -16,13 +21,12 @@ _PROMPT = (
 )
 
 
-async def classify_message(text: str, openai_key: str) -> str | None:
-    if not text.strip() or not openai_key:
+async def classify_message(text: str, chat_client: "ChatClient") -> str | None:
+    if not text.strip():
         return None
-    client = AsyncOpenAI(api_key=openai_key)
     try:
-        resp = await client.chat.completions.create(
-            model="gpt-4o-mini",
+        resp = await chat_client.client.chat.completions.create(
+            model=chat_client.model,
             messages=[{"role": "user", "content": _PROMPT.format(text=text[:500])}],
             max_tokens=20,
             temperature=0,
