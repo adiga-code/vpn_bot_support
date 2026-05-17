@@ -450,10 +450,17 @@
               )
             );
           } else if (data.type === "new_dialog") {
-            setConversations((prev) => [
-              { ...data.dialog, messages: [], tickets: [] },
-              ...prev,
-            ]);
+            setConversations((prev) => {
+              const exists = prev.some((c) => c.id === data.dialog.id);
+              if (exists) {
+                return prev.map((c) =>
+                  c.id === data.dialog.id
+                    ? { ...data.dialog, messages: c.messages, tickets: c.tickets }
+                    : c
+                );
+              }
+              return [{ ...data.dialog, messages: [], tickets: [] }, ...prev];
+            });
           }
         };
 
