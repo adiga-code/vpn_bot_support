@@ -435,7 +435,7 @@ def build_app(
             if len(body.password) < 6:
                 raise HTTPException(400, "Password must be at least 6 characters")
             await db.set_password(op["id"], hash_password(body.password))
-        return op
+        return _fmt_operator(op)
 
     @app.put("/api/operators/{op_id}")
     async def update_operator(op_id: int, body: OperatorBody, operator: dict = Depends(require_auth)):
@@ -444,7 +444,7 @@ def build_app(
         result = await db.update_operator(op_id, body.name, body.tg, body.role, tg_id=body.tg_id)
         if not result:
             raise HTTPException(404)
-        return result
+        return _fmt_operator(result)
 
     @app.delete("/api/operators/{op_id}")
     async def delete_operator(op_id: int, operator: dict = Depends(require_auth)):
