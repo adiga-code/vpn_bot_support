@@ -461,6 +461,10 @@
               }
               return [{ ...data.dialog, messages: [], tickets: [] }, ...prev];
             });
+          } else if (data.type === "operator_status") {
+            setOpsState((prev) =>
+              prev.map((o) => o.id === data.op_id ? { ...o, online: data.online } : o)
+            );
           }
         };
 

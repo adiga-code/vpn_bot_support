@@ -424,7 +424,7 @@ def build_app(
 
     @app.get("/api/operators")
     async def get_operators(operator: dict = Depends(require_auth)):
-        return await db.get_operators()
+        return [_fmt_operator(op) for op in await db.get_operators()]
 
     @app.post("/api/operators")
     async def create_operator(body: OperatorBody, operator: dict = Depends(require_auth)):
@@ -549,11 +549,17 @@ def build_app(
         if not op_id:
             await websocket.close(code=4001)
             return
-        await ws.connect(websocket)
+        went_online = await ws.connect(websocket, op_id)
+        if went_online:
+            await db.set_operator_online(op_id, True)
+            await ws.broadcast({"type": "operator_status", "op_id": op_id, "online": True})
         try:
             while True:
                 await websocket.receive_text()
         except WebSocketDisconnect:
-            ws.disconnect(websocket)
+            departed_id, went_offline = ws.disconnect(websocket)
+            if went_offline and departed_id:
+                await db.set_operator_online(departed_id, False)
+                await ws.broadcast({"type": "operator_status", "op_id": departed_id, "online": False})
 
     return app
