@@ -53,8 +53,7 @@ function ServersScreen() {
 
   function load() {
     setLoading(true);
-    fetch("/api/servers")
-      .then((r) => r.json())
+    window.apiFetch("GET", "/api/servers")
       .then((d) => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
   }
