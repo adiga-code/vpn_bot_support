@@ -376,6 +376,7 @@ def build_app(
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        await n8n.notify_dialog_closed(dialog_id, dialog["chat_id"], operator["name"])
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/billing/{action}")
