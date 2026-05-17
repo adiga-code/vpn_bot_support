@@ -510,32 +510,6 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction }) {
         </div>
       </section>
 
-      {/* Servers */}
-      <section>
-        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">Серверы VPN</div>
-        <div className="bg-[#1a1a24] rounded-xl border border-[#2a2a3a]/60 divide-y divide-[#2a2a3a]/60">
-          {servers.length === 0 ? (
-            <div className="px-3 py-3 text-xs text-[#6b7280] text-center">Нет данных</div>
-          ) : servers.map((s) => {
-            const dot = { ok: "bg-[#22c55e]", down: "bg-[#ef4444]", high: "bg-[#eab308]" }[s.status];
-            const label = { ok: "OK", down: "Недоступен", high: "Высокая нагрузка" }[s.status];
-            const labelColor = { ok: "text-[#22c55e]", down: "text-[#ef4444]", high: "text-[#eab308]" }[s.status];
-            return (
-              <div key={s.name} className="flex items-center justify-between px-3 py-2 text-xs">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className={"w-1.5 h-1.5 rounded-full shrink-0 " + dot + (s.status === "ok" ? " animate-pulse" : "")}></span>
-                  <span className="text-[#f1f1f5] truncate">{s.name}</span>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-[10px] text-[#6b7280] tabular-nums">{s.load}</span>
-                  <span className={"text-[10px] " + labelColor}>{label}</span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
       {/* History */}
       <section>
         <button
