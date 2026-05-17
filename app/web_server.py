@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -379,13 +379,13 @@ def build_app(
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/billing/{action}")
-    async def billing_action(dialog_id: str, action: str, operator: dict = Depends(require_auth)):
+    async def billing_action(dialog_id: str, action: str, body: dict = Body(default={}), operator: dict = Depends(require_auth)):
         if action not in ("renew", "buy_traffic", "reset_key"):
             raise HTTPException(400, f"Unknown action: {action}")
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
             raise HTTPException(404)
-        result = await billing.execute(action, dialog["chat_id"], dialog_id)
+        result = await billing.execute(action, dialog["chat_id"], dialog_id, params=body)
         if not result.ok:
             raise HTTPException(502, result.message)
         return {"ok": True, "message": result.message}

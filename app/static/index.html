@@ -551,9 +551,9 @@
         }
       }
 
-      async function handleBillingAction(dialog_id, action) {
+      async function handleBillingAction(dialog_id, action, params) {
         try {
-          await apiPost(`/api/dialogs/${dialog_id}/billing/${action}`);
+          await apiPost(`/api/dialogs/${dialog_id}/billing/${action}`, params || {});
           const labels = { renew: "Подписка продлена", buy_traffic: "Трафик докуплен", reset_key: "Ключ сброшен" };
           showToast(labels[action] || "Готово");
         } catch (e) {
