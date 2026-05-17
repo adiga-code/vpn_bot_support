@@ -350,7 +350,8 @@
       const [authState,       setAuthState]       = useState("loading");
       const [currentOperator, setCurrentOperator] = useState(null);
 
-      const [screen,          setScreen]          = useState("dialogs");
+      const [screen, setScreenRaw] = useState(() => localStorage.getItem("screen") || "dialogs");
+      const setScreen = (s) => { localStorage.setItem("screen", s); setScreenRaw(s); };
       const [conversations,   setConversations]   = useState([]);
       const [activeId,        setActiveId]        = useState(null);
       const [opsState,        setOpsState]        = useState([]);
