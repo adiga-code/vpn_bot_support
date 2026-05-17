@@ -18,25 +18,23 @@ class BillingResult:
 class BillingProvider(ABC):
 
     @abstractmethod
-    async def renew_subscription(self, chat_id: str, dialog_id: str) -> BillingResult: ...
+    async def renew_subscription(self, chat_id: str, dialog_id: str, months: int = 1) -> BillingResult: ...
 
     @abstractmethod
-    async def buy_traffic(self, chat_id: str, dialog_id: str) -> BillingResult: ...
+    async def buy_traffic(self, chat_id: str, dialog_id: str, gb: int = 10) -> BillingResult: ...
 
     @abstractmethod
     async def reset_key(self, chat_id: str, dialog_id: str) -> BillingResult: ...
 
-    async def execute(self, action: str, chat_id: str, dialog_id: str) -> BillingResult:
-        """Dispatch action string to the corresponding concrete method."""
-        handlers = {
-            "renew":       self.renew_subscription,
-            "buy_traffic": self.buy_traffic,
-            "reset_key":   self.reset_key,
-        }
-        handler = handlers.get(action)
-        if not handler:
-            return BillingResult(ok=False, message=f"Unknown action: {action}")
-        return await handler(chat_id, dialog_id)
+    async def execute(self, action: str, chat_id: str, dialog_id: str, params: dict = None) -> BillingResult:
+        params = params or {}
+        if action == "renew":
+            return await self.renew_subscription(chat_id, dialog_id, months=int(params.get("months", 1)))
+        if action == "buy_traffic":
+            return await self.buy_traffic(chat_id, dialog_id, gb=int(params.get("gb", 10)))
+        if action == "reset_key":
+            return await self.reset_key(chat_id, dialog_id)
+        return BillingResult(ok=False, message=f"Unknown action: {action}")
 
 
 # ── Stub (development / testing) ──────────────────────────────────────────────
@@ -44,13 +42,13 @@ class BillingProvider(ABC):
 class StubBillingProvider(BillingProvider):
     """No-op implementation — logs calls and always returns success."""
 
-    async def renew_subscription(self, chat_id: str, dialog_id: str) -> BillingResult:
-        print(f"[STUB] renew_subscription chat_id={chat_id}")
-        return BillingResult(ok=True, message="Stub: subscription renewed")
+    async def renew_subscription(self, chat_id: str, dialog_id: str, months: int = 1) -> BillingResult:
+        print(f"[STUB] renew_subscription chat_id={chat_id} months={months}")
+        return BillingResult(ok=True, message=f"Stub: subscription renewed for {months} month(s)")
 
-    async def buy_traffic(self, chat_id: str, dialog_id: str) -> BillingResult:
-        print(f"[STUB] buy_traffic chat_id={chat_id}")
-        return BillingResult(ok=True, message="Stub: traffic added")
+    async def buy_traffic(self, chat_id: str, dialog_id: str, gb: int = 10) -> BillingResult:
+        print(f"[STUB] buy_traffic chat_id={chat_id} gb={gb}")
+        return BillingResult(ok=True, message=f"Stub: {gb} GB added")
 
     async def reset_key(self, chat_id: str, dialog_id: str) -> BillingResult:
         print(f"[STUB] reset_key chat_id={chat_id}")
@@ -104,11 +102,11 @@ class HttpBillingProvider(BillingProvider):
         except Exception as e:
             return BillingResult(ok=False, message=str(e))
 
-    async def renew_subscription(self, chat_id: str, dialog_id: str) -> BillingResult:
-        return await self._post("/subscriptions/renew", {"chat_id": chat_id, "dialog_id": dialog_id})
+    async def renew_subscription(self, chat_id: str, dialog_id: str, months: int = 1) -> BillingResult:
+        return await self._post("/subscriptions/renew", {"chat_id": chat_id, "dialog_id": dialog_id, "months": months})
 
-    async def buy_traffic(self, chat_id: str, dialog_id: str) -> BillingResult:
-        return await self._post("/subscriptions/buy_traffic", {"chat_id": chat_id, "dialog_id": dialog_id})
+    async def buy_traffic(self, chat_id: str, dialog_id: str, gb: int = 10) -> BillingResult:
+        return await self._post("/subscriptions/buy_traffic", {"chat_id": chat_id, "dialog_id": dialog_id, "gb": gb})
 
     async def reset_key(self, chat_id: str, dialog_id: str) -> BillingResult:
         return await self._post("/keys/reset", {"chat_id": chat_id, "dialog_id": dialog_id})

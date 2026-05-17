@@ -420,15 +420,19 @@ function DialogsScreen({
 
 function UserInfoPanel({ conv, showToast, servers, onBillingAction }) {
   const [historyOpen, setHistoryOpen] = useStateD(true);
+  const [billingOpen, setBillingOpen] = useStateD(null);
+  const [months, setMonths] = useStateD(1);
+  const [gb, setGb] = useStateD(10);
   const trafficPct = Math.min(100, (conv.traffic.used / conv.traffic.total) * 100);
   const trafficColor = trafficPct > 85 ? "#ef4444" : trafficPct > 60 ? "#eab308" : "#22c55e";
 
-  function billingAction(action, label) {
-    if (onBillingAction) {
-      onBillingAction(conv.id, action);
-    } else {
-      showToast(label);
-    }
+  function billingAction(action, params) {
+    if (onBillingAction) onBillingAction(conv.id, action, params);
+    setBillingOpen(null);
+  }
+
+  function toggleBilling(action) {
+    setBillingOpen((v) => (v === action ? null : action));
   }
 
   return (
@@ -480,28 +484,106 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction }) {
       <section>
         <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">Биллинг</div>
         <div className="space-y-1.5">
+
+          {/* Renew */}
           <button
-            onClick={() => billingAction("renew", "Подписка продлена на 1 месяц")}
-            className="w-full px-3 py-2 bg-[#4F8EF7]/15 border border-[#4F8EF7]/30 text-[#7BA8F9] rounded-lg text-xs font-medium hover:bg-[#4F8EF7]/25 transition flex items-center justify-between"
+            onClick={() => toggleBilling("renew")}
+            className={"w-full px-3 py-2 border rounded-lg text-xs font-medium transition flex items-center justify-between " + (billingOpen === "renew" ? "bg-[#4F8EF7]/25 border-[#4F8EF7]/50 text-[#7BA8F9]" : "bg-[#4F8EF7]/15 border-[#4F8EF7]/30 text-[#7BA8F9] hover:bg-[#4F8EF7]/25")}
           >
             <span>Продлить подписку</span>
-            <Icon name="refresh" className="w-3.5 h-3.5" />
+            <Icon name={billingOpen === "renew" ? "chevronDown" : "refresh"} className="w-3.5 h-3.5" />
           </button>
+          {billingOpen === "renew" && (
+            <div className="bg-[#13131a] border border-[#4F8EF7]/20 rounded-lg p-3 space-y-2.5">
+              <div className="text-[10px] text-[#6b7280]">Срок продления</div>
+              <div className="grid grid-cols-4 gap-1">
+                {[1, 3, 6, 12].map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setMonths(m)}
+                    className={"py-1.5 rounded text-[11px] font-medium transition " + (months === m ? "bg-[#4F8EF7] text-white" : "bg-[#1a1a24] text-[#6b7280] hover:text-[#f1f1f5] border border-[#2a2a3a]")}
+                  >
+                    {m} мес.
+                  </button>
+                ))}
+              </div>
+              <div className="text-[10px] text-[#6b7280]">
+                Итого: <span className="text-[#f1f1f5]">{months} {months === 1 ? "месяц" : months < 5 ? "месяца" : "месяцев"}</span>
+              </div>
+              <button
+                onClick={() => billingAction("renew", { months })}
+                className="w-full py-1.5 bg-[#4F8EF7] hover:bg-[#4F8EF7]/80 text-white rounded text-xs font-medium transition"
+              >
+                Подтвердить
+              </button>
+            </div>
+          )}
+
+          {/* Buy traffic */}
           <button
-            onClick={() => billingAction("buy_traffic", "Открыт диалог докупки трафика")}
-            className="w-full px-3 py-2 bg-[#1a1a24] border border-[#2a2a3a] text-[#f1f1f5] rounded-lg text-xs font-medium hover:bg-[#1f1f2a] transition flex items-center justify-between"
+            onClick={() => toggleBilling("buy_traffic")}
+            className={"w-full px-3 py-2 border rounded-lg text-xs font-medium transition flex items-center justify-between " + (billingOpen === "buy_traffic" ? "bg-[#1f1f2a] border-[#4F8EF7]/30 text-[#f1f1f5]" : "bg-[#1a1a24] border-[#2a2a3a] text-[#f1f1f5] hover:bg-[#1f1f2a]")}
           >
             <span>Докупить трафик</span>
-            <Icon name="plus2" className="w-3.5 h-3.5" />
+            <Icon name={billingOpen === "buy_traffic" ? "chevronDown" : "plus2"} className="w-3.5 h-3.5" />
           </button>
+          {billingOpen === "buy_traffic" && (
+            <div className="bg-[#13131a] border border-[#2a2a3a] rounded-lg p-3 space-y-2.5">
+              <div className="text-[10px] text-[#6b7280]">Объём трафика</div>
+              <div className="grid grid-cols-3 gap-1">
+                {[10, 50, 100].map((g) => (
+                  <button
+                    key={g}
+                    onClick={() => setGb(g)}
+                    className={"py-1.5 rounded text-[11px] font-medium transition " + (gb === g ? "bg-[#4F8EF7] text-white" : "bg-[#1a1a24] text-[#6b7280] hover:text-[#f1f1f5] border border-[#2a2a3a]")}
+                  >
+                    {g} GB
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-[#6b7280] shrink-0">Другой объём:</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="999"
+                  value={gb}
+                  onChange={(e) => setGb(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="w-full bg-[#1a1a24] border border-[#2a2a3a] rounded px-2 py-1 text-xs text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50"
+                />
+                <span className="text-[10px] text-[#6b7280] shrink-0">GB</span>
+              </div>
+              <button
+                onClick={() => billingAction("buy_traffic", { gb })}
+                className="w-full py-1.5 bg-[#4F8EF7] hover:bg-[#4F8EF7]/80 text-white rounded text-xs font-medium transition"
+              >
+                Подтвердить
+              </button>
+            </div>
+          )}
+
+          {/* Reset key */}
           <button
-            onClick={() => billingAction("reset_key", "Ключ доступа сброшен")}
-            className="w-full px-3 py-2 bg-[#1a1a24] border border-[#2a2a3a] text-[#f1f1f5] rounded-lg text-xs font-medium hover:bg-[#1f1f2a] transition flex items-center justify-between"
+            onClick={() => toggleBilling("reset_key")}
+            className={"w-full px-3 py-2 border rounded-lg text-xs font-medium transition flex items-center justify-between " + (billingOpen === "reset_key" ? "bg-[#1f1f2a] border-[#ef4444]/30 text-[#f87171]" : "bg-[#1a1a24] border-[#2a2a3a] text-[#f1f1f5] hover:bg-[#1f1f2a]")}
           >
             <span>Сбросить ключ</span>
-            <Icon name="key" className="w-3.5 h-3.5" />
+            <Icon name={billingOpen === "reset_key" ? "chevronDown" : "key"} className="w-3.5 h-3.5" />
           </button>
-          <div className="bg-[#1a1a24]/60 rounded-lg px-3 py-2 mt-2 border border-[#2a2a3a]/60">
+          {billingOpen === "reset_key" && (
+            <div className="bg-[#13131a] border border-[#ef4444]/20 rounded-lg p-3 space-y-2.5">
+              <div className="text-[11px] text-[#fca5a5]">Ключ будет отозван и выдан новый. Все текущие подключения оборвутся.</div>
+              <button
+                onClick={() => billingAction("reset_key", {})}
+                className="w-full py-1.5 bg-[#ef4444]/80 hover:bg-[#ef4444] text-white rounded text-xs font-medium transition"
+              >
+                Сбросить ключ
+              </button>
+            </div>
+          )}
+
+          {/* Last payment */}
+          <div className="bg-[#1a1a24]/60 rounded-lg px-3 py-2 mt-1 border border-[#2a2a3a]/60">
             <div className="text-[10px] text-[#6b7280] mb-0.5">Последний платёж</div>
             <div className="text-xs text-[#f1f1f5] tabular-nums">
               {conv.lastPayment.amount} <span className="text-[#6b7280]">· {conv.lastPayment.date}</span>

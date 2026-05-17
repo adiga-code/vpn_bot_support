@@ -96,16 +96,17 @@ class RedisConsumer:
         updated = await self.db.get_dialog(dialog_id)
         username = updated.get("user_username") or dialog_id
 
+        await self.ws.broadcast({
+            "type": "new_message",
+            "dialog_id": dialog_id,
+            "message": _fmt_message(msg_row),
+        })
+
         if is_new:
             await self.ws.broadcast({"type": "new_dialog", "dialog": _fmt_dialog(updated)})
             if await self._notif_enabled("new_dialog"):
                 await self.n8n.notify_event("new_dialog", {"dialog_id": dialog_id, "username": username})
         else:
-            await self.ws.broadcast({
-                "type": "new_message",
-                "dialog_id": dialog_id,
-                "message": _fmt_message(msg_row),
-            })
             await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
 
         if operator_called and await self._notif_enabled("operator_called"):
