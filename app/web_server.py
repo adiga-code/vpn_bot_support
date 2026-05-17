@@ -27,13 +27,14 @@ _AI_DEFAULTS = {
         "Отвечай кратко, на русском. "
         "Если не знаешь ответ — предложи передать диалог оператору."
     ),
+    "out_of_hours_message": "Мы сейчас не работаем. Напишите нам в рабочее время — мы ответим как можно скорее.",
     "temperature": 0.7,
     "auto_reply": True,
     "handoff_enabled": True,
     "classification_enabled": False,
 }
 
-_NOTIF_DEFAULTS = {"new_dialog": True, "operator_called": True, "server_down": True}
+_NOTIF_PREFS_DEFAULT = {"new_dialog": True, "operator_called": True, "server_down": True}
 
 _SCHEDULE_DEFAULTS = {
     "mon": {"enabled": True,  "from": "09:00", "to": "21:00"},
@@ -108,6 +109,8 @@ def _fmt_message(row: dict) -> dict:
 
 
 def _fmt_operator(op: dict) -> dict:
+    raw_prefs = op.get("notif_prefs")
+    notif_prefs = json.loads(raw_prefs) if raw_prefs else _NOTIF_PREFS_DEFAULT
     return {
         "id": op["id"],
         "name": op["name"],
@@ -117,6 +120,7 @@ def _fmt_operator(op: dict) -> dict:
         "initials": op.get("initials") or make_initials(op["name"]),
         "color": op.get("color") or "#4F8EF7",
         "online": op.get("online", False),
+        "notifPrefs": notif_prefs,
     }
 
 
@@ -157,14 +161,15 @@ class AISettingsBody(BaseModel):
     auto_reply: bool
     handoff_enabled: bool
     classification_enabled: bool = False
+    out_of_hours_message: str = ""
 
-class ScheduleBody(BaseModel):
-    schedule: dict
-
-class NotificationsBody(BaseModel):
+class NotifPrefsBody(BaseModel):
     new_dialog:      bool = True
     operator_called: bool = True
     server_down:     bool = True
+
+class ScheduleBody(BaseModel):
+    schedule: dict
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -301,6 +306,23 @@ def build_app(
             for t in tickets
         ])
 
+    @app.get("/api/dialogs/{dialog_id}/history")
+    async def get_dialog_history(dialog_id: str, operator: dict = Depends(require_auth)):
+        row = await db.get_dialog(dialog_id)
+        if not row:
+            raise HTTPException(404)
+        history = await db.get_dialog_history(row["chat_id"], dialog_id)
+        return [
+            {
+                "id": f"T-{t['dialog_id'][-4:]}",
+                "dialogId": t["dialog_id"],
+                "title": t["last_message_text"] or "Диалог",
+                "date": _fmt_time(t["updated_at"]),
+                "solved": True,
+            }
+            for t in history
+        ]
+
     @app.get("/api/dialogs/{dialog_id}/messages")
     async def get_messages(dialog_id: str, operator: dict = Depends(require_auth)):
         await db.clear_unread(dialog_id)
@@ -361,10 +383,8 @@ def build_app(
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        notif = await db.get_setting_json("notifications", _NOTIF_DEFAULTS)
-        if notif.get("operator_called"):
-            username = updated.get("user_username") or dialog_id
-            await n8n.notify_event("operator_called", {"dialog_id": dialog_id, "username": username})
+        username = updated.get("user_username") or dialog_id
+        await n8n.notify_event("operator_called", {"dialog_id": dialog_id, "username": username})
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/close")
@@ -425,6 +445,15 @@ def build_app(
     @app.get("/api/operators")
     async def get_operators(operator: dict = Depends(require_auth)):
         return [_fmt_operator(op) for op in await db.get_operators()]
+
+    @app.get("/api/operators/me/notifications")
+    async def get_my_notif_prefs(operator: dict = Depends(require_auth)):
+        return _fmt_operator(operator)["notifPrefs"]
+
+    @app.put("/api/operators/me/notifications")
+    async def save_my_notif_prefs(body: NotifPrefsBody, operator: dict = Depends(require_auth)):
+        await db.update_operator_notif_prefs(operator["id"], body.model_dump())
+        return {"ok": True}
 
     @app.post("/api/operators")
     async def create_operator(body: OperatorBody, operator: dict = Depends(require_auth)):
@@ -493,19 +522,6 @@ def build_app(
             raise HTTPException(403, "Admin only")
         await db.set_setting_json("schedule", body.schedule)
         await n8n.redis.set("vpn_bot:schedule", json.dumps(body.schedule, ensure_ascii=False))
-        return {"ok": True}
-
-    # ── Settings: Notifications ───────────────────────────────────────────────
-
-    @app.get("/api/settings/notifications")
-    async def get_notifications(operator: dict = Depends(require_auth)):
-        return await db.get_setting_json("notifications", _NOTIF_DEFAULTS)
-
-    @app.put("/api/settings/notifications")
-    async def save_notifications(body: NotificationsBody, operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
-        await db.set_setting_json("notifications", body.model_dump())
         return {"ok": True}
 
     # ── Knowledge Base ────────────────────────────────────────────────────────

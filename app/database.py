@@ -117,6 +117,7 @@ class DatabaseManager:
                 online     BOOLEAN DEFAULT FALSE,
                 initials   TEXT,
                 color      TEXT DEFAULT '#4F8EF7',
+                notif_prefs TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
@@ -203,6 +204,7 @@ class DatabaseManager:
             ("operators", "online",        "BOOLEAN DEFAULT FALSE"),
             ("operators", "initials",      "TEXT"),
             ("operators", "color",         "TEXT DEFAULT '#4F8EF7'"),
+            ("operators", "notif_prefs",   "TEXT"),
             ("operators", "password_hash", "TEXT"),
         ]
         for table, col, typedef in new_cols:
@@ -365,6 +367,12 @@ class DatabaseManager:
 
     async def set_operator_online(self, op_id: int, online: bool):
         await self.pool.execute("UPDATE operators SET online=$1 WHERE id=$2", online, op_id)
+
+    async def update_operator_notif_prefs(self, op_id: int, prefs: dict):
+        await self.pool.execute(
+            "UPDATE operators SET notif_prefs=$1 WHERE id=$2",
+            json.dumps(prefs, ensure_ascii=False), op_id,
+        )
 
     # ── Settings ──────────────────────────────────────────────────────────────
 
