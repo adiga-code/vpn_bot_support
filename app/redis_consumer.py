@@ -133,13 +133,33 @@ class RedisConsumer:
             print(f"AI response for unknown dialog: {dialog_id}")
             return
 
-        msg_row = await self.db.save_message(dialog_id, "ai", text)
-        await self.db.update_last_message(dialog_id, f"ИИ: {text}")
+        wants_handoff = "[HANDOFF]" in text
+        clean_text = text.replace("[HANDOFF]", "").strip()
 
+        if clean_text:
+            msg_row = await self.db.save_message(dialog_id, "ai", clean_text)
+            await self.db.update_last_message(dialog_id, f"ИИ: {clean_text}")
+            updated = await self.db.get_dialog(dialog_id)
+            await self.ws.broadcast({
+                "type": "new_message",
+                "dialog_id": dialog_id,
+                "message": _fmt_message(msg_row),
+            })
+            await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+
+        if wants_handoff and not dialog.get("operator_called"):
+            ai_settings = await self.db.get_setting_json("ai_settings", {})
+            if ai_settings.get("handoff_enabled", True):
+                await self._auto_handoff(dialog_id, dialog)
+
+    async def _auto_handoff(self, dialog_id: str, dialog: dict):
+        print(f"[auto-handoff] dialog={dialog_id}")
+        sys_row = await self.db.save_message(dialog_id, "system", "ИИ передал диалог оператору")
+        await self.db.update_status(dialog_id, "in_progress")
+        await self.db.update_operator_called(dialog_id, True)
         updated = await self.db.get_dialog(dialog_id)
-        await self.ws.broadcast({
-            "type": "new_message",
-            "dialog_id": dialog_id,
-            "message": _fmt_message(msg_row),
-        })
+        await self.ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(sys_row)})
         await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        if await self._notif_enabled("operator_called"):
+            username = updated.get("user_username") or dialog_id
+            await self.n8n.notify_event("operator_called", {"dialog_id": dialog_id, "username": username})
