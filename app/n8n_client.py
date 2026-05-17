@@ -44,25 +44,15 @@ class N8NClient:
             return False
 
     async def notify_ai_toggled(self, dialog_id: str, chat_id: str, ai_enabled: bool) -> None:
-        await self._dialog_event("ai_toggled", dialog_id, chat_id, {"ai_enabled": ai_enabled})
-
-    async def notify_dialog_closed(self, dialog_id: str, chat_id: str, operator_name: str) -> None:
-        await self._dialog_event("dialog_closed", dialog_id, chat_id, {"operator_name": operator_name})
-
-    async def notify_dialog_handoff(self, dialog_id: str, chat_id: str, operator_name: str) -> None:
-        await self._dialog_event("dialog_handoff", dialog_id, chat_id, {"operator_name": operator_name})
-
-    async def _dialog_event(self, event_type: str, dialog_id: str, chat_id: str, extra: dict = None) -> None:
-        """Publish a dialog state change for n8n to sync its own DB."""
         try:
-            await self.redis.publish("vpn_bot:dialog_events", json.dumps({
-                "type": event_type,
+            await self.redis.publish("vpn_bot:ai_toggled", json.dumps({
+                "type": "ai_toggled",
                 "dialog_id": dialog_id,
                 "chat_id": chat_id,
-                **(extra or {}),
+                "ai_enabled": ai_enabled,
             }))
         except Exception as e:
-            print(f"dialog_event error (non-critical): {e}")
+            print(f"notify_ai_toggled error (non-critical): {e}")
 
     async def notify_event(self, event_type: str, payload: dict) -> None:
         """Fire-and-forget: publish a notification event for n8n to deliver via Telegram."""

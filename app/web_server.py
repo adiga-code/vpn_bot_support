@@ -359,7 +359,6 @@ def build_app(
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        await n8n.notify_dialog_handoff(dialog_id, dialog["chat_id"], op_name)
         notif = await db.get_setting_json("notifications", _NOTIF_DEFAULTS)
         if notif.get("operator_called"):
             username = updated.get("user_username") or dialog_id
