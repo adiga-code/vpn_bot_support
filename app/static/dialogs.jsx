@@ -420,7 +420,6 @@ function DialogsScreen({
 
 function UserInfoPanel({ conv, showToast, servers, onBillingAction }) {
   const [historyOpen, setHistoryOpen] = useStateD(true);
-  const isPro = conv.plan === "Pro";
   const trafficPct = Math.min(100, (conv.traffic.used / conv.traffic.total) * 100);
   const trafficColor = trafficPct > 85 ? "#ef4444" : trafficPct > 60 ? "#eab308" : "#22c55e";
 
@@ -477,80 +476,64 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction }) {
         </div>
       </section>
 
-      {/* Billing — Pro only */}
+      {/* Billing */}
       <section>
-        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3 flex items-center gap-1.5">
-          Биллинг
-          {isPro && <span className="text-[#A855F7] text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#A855F7]/15 normal-case tracking-normal">PRO</span>}
-        </div>
-        {isPro ? (
-          <div className="space-y-1.5">
-            <button
-              onClick={() => billingAction("renew", "Подписка продлена на 1 месяц")}
-              className="w-full px-3 py-2 bg-[#4F8EF7]/15 border border-[#4F8EF7]/30 text-[#7BA8F9] rounded-lg text-xs font-medium hover:bg-[#4F8EF7]/25 transition flex items-center justify-between"
-            >
-              <span>Продлить подписку</span>
-              <Icon name="refresh" className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => billingAction("buy_traffic", "Открыт диалог докупки трафика")}
-              className="w-full px-3 py-2 bg-[#1a1a24] border border-[#2a2a3a] text-[#f1f1f5] rounded-lg text-xs font-medium hover:bg-[#1f1f2a] transition flex items-center justify-between"
-            >
-              <span>Докупить трафик</span>
-              <Icon name="plus2" className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => billingAction("reset_key", "Ключ доступа сброшен")}
-              className="w-full px-3 py-2 bg-[#1a1a24] border border-[#2a2a3a] text-[#f1f1f5] rounded-lg text-xs font-medium hover:bg-[#1f1f2a] transition flex items-center justify-between"
-            >
-              <span>Сбросить ключ</span>
-              <Icon name="key" className="w-3.5 h-3.5" />
-            </button>
-            <div className="bg-[#1a1a24]/60 rounded-lg px-3 py-2 mt-2 border border-[#2a2a3a]/60">
-              <div className="text-[10px] text-[#6b7280] mb-0.5">Последний платёж</div>
-              <div className="text-xs text-[#f1f1f5] tabular-nums">
-                {conv.lastPayment.amount} <span className="text-[#6b7280]">· {conv.lastPayment.date}</span>
-              </div>
+        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">Биллинг</div>
+        <div className="space-y-1.5">
+          <button
+            onClick={() => billingAction("renew", "Подписка продлена на 1 месяц")}
+            className="w-full px-3 py-2 bg-[#4F8EF7]/15 border border-[#4F8EF7]/30 text-[#7BA8F9] rounded-lg text-xs font-medium hover:bg-[#4F8EF7]/25 transition flex items-center justify-between"
+          >
+            <span>Продлить подписку</span>
+            <Icon name="refresh" className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => billingAction("buy_traffic", "Открыт диалог докупки трафика")}
+            className="w-full px-3 py-2 bg-[#1a1a24] border border-[#2a2a3a] text-[#f1f1f5] rounded-lg text-xs font-medium hover:bg-[#1f1f2a] transition flex items-center justify-between"
+          >
+            <span>Докупить трафик</span>
+            <Icon name="plus2" className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => billingAction("reset_key", "Ключ доступа сброшен")}
+            className="w-full px-3 py-2 bg-[#1a1a24] border border-[#2a2a3a] text-[#f1f1f5] rounded-lg text-xs font-medium hover:bg-[#1f1f2a] transition flex items-center justify-between"
+          >
+            <span>Сбросить ключ</span>
+            <Icon name="key" className="w-3.5 h-3.5" />
+          </button>
+          <div className="bg-[#1a1a24]/60 rounded-lg px-3 py-2 mt-2 border border-[#2a2a3a]/60">
+            <div className="text-[10px] text-[#6b7280] mb-0.5">Последний платёж</div>
+            <div className="text-xs text-[#f1f1f5] tabular-nums">
+              {conv.lastPayment.amount} <span className="text-[#6b7280]">· {conv.lastPayment.date}</span>
             </div>
           </div>
-        ) : (
-          <div className="bg-[#1a1a24]/60 rounded-lg p-3 border border-dashed border-[#2a2a3a] text-xs text-[#6b7280] text-center">
-            Доступно для тарифа Pro
-          </div>
-        )}
+        </div>
       </section>
 
-      {/* Servers — Pro only */}
+      {/* Servers */}
       <section>
-        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3 flex items-center gap-1.5">
-          Серверы VPN
-          {isPro && <span className="text-[#A855F7] text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#A855F7]/15 normal-case tracking-normal">PRO</span>}
-        </div>
-        {isPro ? (
-          <div className="bg-[#1a1a24] rounded-xl border border-[#2a2a3a]/60 divide-y divide-[#2a2a3a]/60">
-            {servers.map((s) => {
-              const dot = { ok: "bg-[#22c55e]", down: "bg-[#ef4444]", high: "bg-[#eab308]" }[s.status];
-              const label = { ok: "OK", down: "Недоступен", high: "Высокая нагрузка" }[s.status];
-              const labelColor = { ok: "text-[#22c55e]", down: "text-[#ef4444]", high: "text-[#eab308]" }[s.status];
-              return (
-                <div key={s.name} className="flex items-center justify-between px-3 py-2 text-xs">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className={"w-1.5 h-1.5 rounded-full shrink-0 " + dot + (s.status === "ok" ? " animate-pulse" : "")}></span>
-                    <span className="text-[#f1f1f5] truncate">{s.name}</span>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-[10px] text-[#6b7280] tabular-nums">{s.load}</span>
-                    <span className={"text-[10px] " + labelColor}>{label}</span>
-                  </div>
+        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">Серверы VPN</div>
+        <div className="bg-[#1a1a24] rounded-xl border border-[#2a2a3a]/60 divide-y divide-[#2a2a3a]/60">
+          {servers.length === 0 ? (
+            <div className="px-3 py-3 text-xs text-[#6b7280] text-center">Нет данных</div>
+          ) : servers.map((s) => {
+            const dot = { ok: "bg-[#22c55e]", down: "bg-[#ef4444]", high: "bg-[#eab308]" }[s.status];
+            const label = { ok: "OK", down: "Недоступен", high: "Высокая нагрузка" }[s.status];
+            const labelColor = { ok: "text-[#22c55e]", down: "text-[#ef4444]", high: "text-[#eab308]" }[s.status];
+            return (
+              <div key={s.name} className="flex items-center justify-between px-3 py-2 text-xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={"w-1.5 h-1.5 rounded-full shrink-0 " + dot + (s.status === "ok" ? " animate-pulse" : "")}></span>
+                  <span className="text-[#f1f1f5] truncate">{s.name}</span>
                 </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="bg-[#1a1a24]/60 rounded-lg p-3 border border-dashed border-[#2a2a3a] text-xs text-[#6b7280] text-center">
-            Доступно для тарифа Pro
-          </div>
-        )}
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-[10px] text-[#6b7280] tabular-nums">{s.load}</span>
+                  <span className={"text-[10px] " + labelColor}>{label}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </section>
 
       {/* History */}
