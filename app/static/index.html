@@ -614,7 +614,7 @@
             )}
             {screen === "stats" && (
               <StatisticsScreen
-                dailyConversations={stats ? stats.daily.map((d) => d.count) : []}
+                dailyConversations={stats ? stats.daily : []}
                 hourly={stats ? stats.hourly : []}
                 operators={opsState}
                 topQuestions={stats ? stats.top_questions : []}

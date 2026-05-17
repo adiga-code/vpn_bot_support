@@ -403,6 +403,7 @@ class DatabaseManager:
             "daily": daily,
             "hourly": hourly,
             "operators": operators,
+            "top_questions": [],
         }
 
     # ── Knowledge Base ────────────────────────────────────────────────────────

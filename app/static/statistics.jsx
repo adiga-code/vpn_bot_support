@@ -19,6 +19,13 @@ function StatCard({ label, value, delta, deltaPositive }) {
 }
 
 function LineChart({ data, days = 14 }) {
+  if (!data || data.length < 2) {
+    return (
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5 flex items-center justify-center h-[300px]">
+        <div className="text-sm text-[#6b7280]">Нет данных за период</div>
+      </div>
+    );
+  }
   const max = Math.max(...data);
   const min = Math.min(...data);
   const w = 100, h = 100;
@@ -68,7 +75,7 @@ function LineChart({ data, days = 14 }) {
 }
 
 function HeatmapChart({ data }) {
-  const max = Math.max(...data);
+  const max = data && data.length ? Math.max(...data) : 1;
   return (
     <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5">
       <div className="text-sm font-medium text-[#f1f1f5] mb-1">Обращения по часам</div>
@@ -99,6 +106,15 @@ function HeatmapChart({ data }) {
 }
 
 function TopQuestionsChart({ data }) {
+  if (!data || data.length === 0) {
+    return (
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5">
+        <div className="text-sm font-medium text-[#f1f1f5] mb-1">Топ-10 частых вопросов</div>
+        <div className="text-xs text-[#6b7280] mb-4">за последние 30 дней</div>
+        <div className="py-10 text-center text-sm text-[#6b7280]">Нет данных</div>
+      </div>
+    );
+  }
   const max = data[0].count;
   return (
     <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5">
