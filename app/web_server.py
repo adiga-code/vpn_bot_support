@@ -29,6 +29,7 @@ _AI_DEFAULTS = {
     "temperature": 0.7,
     "auto_reply": True,
     "handoff_enabled": True,
+    "classification_enabled": False,
 }
 
 _NOTIF_DEFAULTS = {"new_dialog": True, "operator_called": True, "server_down": True}
@@ -152,6 +153,7 @@ class AISettingsBody(BaseModel):
     temperature: float
     auto_reply: bool
     handoff_enabled: bool
+    classification_enabled: bool = False
 
 class ScheduleBody(BaseModel):
     schedule: dict

@@ -75,7 +75,7 @@ async def main():
         on_server_down=on_server_down,
     )
 
-    consumer = RedisConsumer(redis, db, ws_manager, n8n_client)
+    consumer = RedisConsumer(redis, db, ws_manager, n8n_client, settings.OPENAI_API_KEY)
     app = build_app(settings, db, ws_manager, n8n_client, billing, server_monitor)
 
     # ── HTTP server ───────────────────────────────────────────────────────────

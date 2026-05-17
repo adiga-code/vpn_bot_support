@@ -370,6 +370,7 @@ function AISection({ showToast }) {
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
         <SettingsRow title="Автоматические ответы" desc="ИИ сам отвечает на сообщения" control={<Switch on={settings.auto_reply} onChange={() => setSettings((s) => ({ ...s, auto_reply: !s.auto_reply }))} />} />
         <SettingsRow title="Передавать при низкой уверенности" desc="Если ИИ не уверен — зовёт оператора" control={<Switch on={settings.handoff_enabled} onChange={() => setSettings((s) => ({ ...s, handoff_enabled: !s.handoff_enabled }))} />} />
+        <SettingsRow title="Классификация вопросов" desc="Автоматически определять тему каждого сообщения через OpenAI. Требует OPENAI_API_KEY. Результат — в Статистике → Топ вопросов." control={<Switch on={!!settings.classification_enabled} onChange={() => setSettings((s) => ({ ...s, classification_enabled: !s.classification_enabled }))} />} />
         <div className="px-5 py-4">
           <div className="flex justify-between mb-2">
             <div>

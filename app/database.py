@@ -104,6 +104,9 @@ class DatabaseManager:
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS messages_dialog_idx ON messages (dialog_id, created_at)"
         )
+        await conn.execute(
+            "ALTER TABLE messages ADD COLUMN IF NOT EXISTS category TEXT"
+        )
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS operators (
                 id         SERIAL PRIMARY KEY,
@@ -279,6 +282,11 @@ class DatabaseManager:
         )
         return [dict(r) for r in rows]
 
+    async def update_message_category(self, msg_id: int, category: str):
+        await self.pool.execute(
+            "UPDATE messages SET category=$1 WHERE id=$2", category, msg_id,
+        )
+
     # ── Operators ─────────────────────────────────────────────────────────────
 
     async def get_operators(self) -> list[dict]:
@@ -403,8 +411,18 @@ class DatabaseManager:
             "daily": daily,
             "hourly": hourly,
             "operators": operators,
-            "top_questions": [],
+            "top_questions": await self._get_top_questions(),
         }
+
+    async def _get_top_questions(self) -> list[dict]:
+        rows = await self.pool.fetch(
+            """SELECT category AS q, COUNT(*) AS count
+               FROM messages
+               WHERE kind='user' AND category IS NOT NULL
+                 AND created_at >= NOW() - '30 days'::interval
+               GROUP BY category ORDER BY count DESC LIMIT 10"""
+        )
+        return [{"q": r["q"], "count": r["count"]} for r in rows]
 
     # ── Knowledge Base ────────────────────────────────────────────────────────
 

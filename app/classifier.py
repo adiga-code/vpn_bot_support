@@ -1,0 +1,37 @@
+from openai import AsyncOpenAI
+
+CATEGORIES = [
+    "Оплата и подписка",
+    "Подключение и настройка",
+    "Скорость и качество связи",
+    "Отмена и возврат",
+    "Технические проблемы",
+    "Другое",
+]
+
+_PROMPT = (
+    "Classify the following support message into exactly one category:\n"
+    + "\n".join(f"- {c}" for c in CATEGORIES)
+    + "\n\nMessage: {text}\n\nReply with only the category name, nothing else."
+)
+
+
+async def classify_message(text: str, openai_key: str) -> str | None:
+    if not text.strip() or not openai_key:
+        return None
+    client = AsyncOpenAI(api_key=openai_key)
+    try:
+        resp = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": _PROMPT.format(text=text[:500])}],
+            max_tokens=20,
+            temperature=0,
+        )
+        result = resp.choices[0].message.content.strip()
+        for cat in CATEGORIES:
+            if cat.lower() in result.lower():
+                return cat
+        return "Другое"
+    except Exception as e:
+        print(f"[classifier] error: {e}")
+        return None

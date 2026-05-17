@@ -3,6 +3,7 @@ import json
 
 import redis.asyncio as aioredis
 
+from app.classifier import classify_message
 from app.database import DatabaseManager
 from app.n8n_client import N8NClient
 from app.web_server import _fmt_dialog, _fmt_message
@@ -14,11 +15,12 @@ _NOTIF_DEFAULTS = {"new_dialog": True, "operator_called": True, "server_down": T
 class RedisConsumer:
     """Reads inbound n8n events from the Redis queue and pushes them to the UI via WebSocket."""
 
-    def __init__(self, redis: aioredis.Redis, db: DatabaseManager, ws: WebSocketManager, n8n: N8NClient):
+    def __init__(self, redis: aioredis.Redis, db: DatabaseManager, ws: WebSocketManager, n8n: N8NClient, openai_key: str = ""):
         self.redis = redis
         self.db = db
         self.ws = ws
         self.n8n = n8n
+        self.openai_key = openai_key
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -84,6 +86,9 @@ class RedisConsumer:
         )
         await self.db.update_last_message(dialog_id, text or f"[{file_type}]")
 
+        if text and file_type == "text":
+            asyncio.create_task(self._classify_later(msg_row["id"], text))
+
         if operator_called:
             await self.db.update_operator_called(dialog_id, True)
 
@@ -104,6 +109,18 @@ class RedisConsumer:
 
         if operator_called and await self._notif_enabled("operator_called"):
             await self.n8n.notify_event("operator_called", {"dialog_id": dialog_id, "username": username})
+
+    async def _classify_later(self, msg_id: int, text: str):
+        try:
+            ai_settings = await self.db.get_setting_json("ai_settings", {})
+            if not ai_settings.get("classification_enabled"):
+                return
+            category = await classify_message(text, self.openai_key)
+            if category:
+                await self.db.update_message_category(msg_id, category)
+                print(f"[classifier] msg {msg_id} → {category}")
+        except Exception as e:
+            print(f"[classifier] background error: {e}")
 
     async def _handle_ai_response(self, data: dict):
         dialog_id = data["dialog_id"]
