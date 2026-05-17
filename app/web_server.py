@@ -15,7 +15,7 @@ from app.config import Settings
 from app.database import DatabaseManager, avatar_color, make_initials
 from app.kb import delete_from_qdrant, process_document
 from app.n8n_client import N8NClient
-from app.servers import ServerMonitor
+from app.servers import ServerMonitor, StubServerMonitor
 from app.ws_manager import WebSocketManager
 
 _STATIC = Path(__file__).parent / "static"
@@ -401,7 +401,9 @@ def build_app(
 
     @app.get("/api/servers")
     async def get_servers(operator: dict = Depends(require_auth)):
-        return server_monitor.get_snapshot()
+        snapshot = server_monitor.get_snapshot()
+        snapshot["is_stub"] = isinstance(server_monitor, StubServerMonitor)
+        return snapshot
 
     # ── Statistics ────────────────────────────────────────────────────────────
 

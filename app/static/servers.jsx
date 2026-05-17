@@ -69,6 +69,17 @@ function ServersScreen() {
     <div className="flex-1 overflow-y-auto scrollbar-thin bg-[#0d0d12]">
       <div className="max-w-[1200px] mx-auto p-6 space-y-6">
 
+        {/* Stub mode banner */}
+        {data.is_stub && (
+          <div className="flex items-center gap-3 bg-[#2a1f0a] border border-[#f59e0b]/30 rounded-xl px-4 py-3 text-sm text-[#f59e0b]">
+            <span className="text-base">⚠</span>
+            <div>
+              <span className="font-medium">Тестовый режим</span>
+              <span className="text-[#f59e0b]/70 ml-2">— показаны случайные данные. Настройте переменную <code className="bg-[#1a1200] px-1 rounded text-xs">SERVERS</code> в .env для мониторинга реальных серверов.</span>
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
