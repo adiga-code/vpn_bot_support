@@ -178,6 +178,14 @@ def build_app(
     if _STATIC.exists():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
+    @app.middleware("http")
+    async def no_cache_static(request, call_next):
+        response = await call_next(request)
+        if request.url.path.endswith((".jsx", ".js", ".html")):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
     # Auth dependency — defined here for closure access to db and settings
     async def require_auth(authorization: Optional[str] = Depends(
         lambda authorization: authorization  # FastAPI Header injection below
