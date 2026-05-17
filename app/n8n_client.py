@@ -43,6 +43,17 @@ class N8NClient:
             print(f"Error sending manager message: {e}")
             return False
 
+    async def notify_dialog_closed(self, dialog_id: str, chat_id: str, operator_name: str) -> None:
+        try:
+            await self.redis.publish("vpn_bot:dialog_closed", json.dumps({
+                "type": "dialog_closed",
+                "dialog_id": dialog_id,
+                "chat_id": chat_id,
+                "operator_name": operator_name,
+            }))
+        except Exception as e:
+            print(f"notify_dialog_closed error (non-critical): {e}")
+
     async def notify_ai_toggled(self, dialog_id: str, chat_id: str, ai_enabled: bool) -> None:
         try:
             await self.redis.publish("vpn_bot:ai_toggled", json.dumps({
