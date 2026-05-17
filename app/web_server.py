@@ -112,6 +112,7 @@ def _fmt_operator(op: dict) -> dict:
         "id": op["id"],
         "name": op["name"],
         "tg": op["tg"],
+        "tgId": op.get("tg_id"),
         "role": op["role"],
         "initials": op.get("initials") or make_initials(op["name"]),
         "color": op.get("color") or "#4F8EF7",
@@ -146,6 +147,7 @@ class HandoffBody(BaseModel):
 class OperatorBody(BaseModel):
     name: str
     tg: str
+    tg_id: Optional[int] = None
     role: str = "agent"
     password: str = ""
 
@@ -428,7 +430,7 @@ def build_app(
     async def create_operator(body: OperatorBody, operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
-        op = await db.create_operator(body.name, body.tg, body.role)
+        op = await db.create_operator(body.name, body.tg, body.role, tg_id=body.tg_id)
         if body.password:
             if len(body.password) < 6:
                 raise HTTPException(400, "Password must be at least 6 characters")
@@ -439,7 +441,7 @@ def build_app(
     async def update_operator(op_id: int, body: OperatorBody, operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
-        result = await db.update_operator(op_id, body.name, body.tg, body.role)
+        result = await db.update_operator(op_id, body.name, body.tg, body.role, tg_id=body.tg_id)
         if not result:
             raise HTTPException(404)
         return result
