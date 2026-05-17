@@ -112,6 +112,7 @@ class DatabaseManager:
                 id         SERIAL PRIMARY KEY,
                 name       TEXT NOT NULL,
                 tg         TEXT,
+                tg_id      BIGINT,
                 role       TEXT NOT NULL DEFAULT 'agent',
                 online     BOOLEAN DEFAULT FALSE,
                 initials   TEXT,
@@ -198,6 +199,7 @@ class DatabaseManager:
             ("messages", "operator_name", "TEXT"),
             # operators
             ("operators", "tg",            "TEXT"),
+            ("operators", "tg_id",         "BIGINT"),
             ("operators", "online",        "BOOLEAN DEFAULT FALSE"),
             ("operators", "initials",      "TEXT"),
             ("operators", "color",         "TEXT DEFAULT '#4F8EF7'"),
@@ -338,22 +340,22 @@ class DatabaseManager:
             "UPDATE operators SET password_hash=$1 WHERE id=$2", password_hash, op_id
         )
 
-    async def create_operator(self, name: str, tg: str, role: str) -> dict:
+    async def create_operator(self, name: str, tg: str, role: str, tg_id: int = None) -> dict:
         initials = make_initials(name)
         colors = ["#A855F7", "#4F8EF7", "#22c55e", "#eab308", "#f97316", "#ef4444", "#06b6d4"]
         count = await self.pool.fetchval("SELECT COUNT(*) FROM operators")
         color = colors[count % len(colors)]
         row = await self.pool.fetchrow(
-            "INSERT INTO operators (name, tg, role, initials, color) VALUES ($1,$2,$3,$4,$5) RETURNING *",
-            name, tg, role, initials, color,
+            "INSERT INTO operators (name, tg, tg_id, role, initials, color) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
+            name, tg, tg_id, role, initials, color,
         )
         return dict(row)
 
-    async def update_operator(self, op_id: int, name: str, tg: str, role: str) -> Optional[dict]:
+    async def update_operator(self, op_id: int, name: str, tg: str, role: str, tg_id: int = None) -> Optional[dict]:
         initials = make_initials(name)
         row = await self.pool.fetchrow(
-            "UPDATE operators SET name=$1, tg=$2, role=$3, initials=$4 WHERE id=$5 RETURNING *",
-            name, tg, role, initials, op_id,
+            "UPDATE operators SET name=$1, tg=$2, tg_id=$3, role=$4, initials=$5 WHERE id=$6 RETURNING *",
+            name, tg, tg_id, role, initials, op_id,
         )
         return dict(row) if row else None
 

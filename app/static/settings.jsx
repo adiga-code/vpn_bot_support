@@ -124,7 +124,11 @@ function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
                     <div className="font-medium text-[#f1f1f5]">{op.name}</div>
                   </div>
                 </td>
-                <td className="px-3 py-3 text-[#6b7280] font-mono text-xs">{op.tg}</td>
+                <td className="px-3 py-3 font-mono text-xs">
+                  <div className="text-[#6b7280]">{op.tg}</div>
+                  {op.tgId && <div className="text-[#3a3a4a] text-[10px] mt-0.5">ID {op.tgId}</div>}
+                  {!op.tgId && <div className="text-[#ef4444]/60 text-[10px] mt-0.5">ID не задан</div>}
+                </td>
                 <td className="px-3 py-3">
                   <span className={"inline-flex px-2 py-0.5 rounded-md text-[11px] font-medium border " +
                     (op.role === "admin" ? "bg-[#A855F7]/15 text-[#C084FC] border-[#A855F7]/30" : "bg-[#1a1a24] text-[#f1f1f5] border-[#2a2a3a]")}>
@@ -156,6 +160,7 @@ function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
 function OperatorModal({ editing, onClose, onSave }) {
   const [name,     setName]     = useStateT(editing?.name || "");
   const [tg,       setTg]       = useStateT(editing?.tg   || "@");
+  const [tgId,     setTgId]     = useStateT(editing?.tgId != null ? String(editing.tgId) : "");
   const [role,     setRole]     = useStateT(editing?.role  || "agent");
   const [password, setPassword] = useStateT("");
   const [pwErr,    setPwErr]    = useStateT(null);
@@ -167,7 +172,8 @@ function OperatorModal({ editing, onClose, onSave }) {
       setPwErr("Минимум 6 символов"); return;
     }
     setPwErr(null);
-    onSave({ name: name.trim(), tg: tg.trim(), role, password });
+    const tg_id = tgId.trim() ? parseInt(tgId.trim(), 10) : null;
+    onSave({ name: name.trim(), tg: tg.trim(), tg_id, role, password });
   }
 
   return (
@@ -183,10 +189,17 @@ function OperatorModal({ editing, onClose, onSave }) {
             <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Алексей Петров"
               className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
           </div>
-          <div>
-            <label className="block text-xs text-[#6b7280] mb-1.5">Telegram username</label>
-            <input value={tg} onChange={(e) => { let v = e.target.value; if (!v.startsWith("@")) v = "@" + v.replace(/^@*/, ""); setTg(v); }} placeholder="@username"
-              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono" />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">Telegram username</label>
+              <input value={tg} onChange={(e) => { let v = e.target.value; if (!v.startsWith("@")) v = "@" + v.replace(/^@*/, ""); setTg(v); }} placeholder="@username"
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono" />
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">Telegram ID <span className="text-[#3a3a4a]">(числовой)</span></label>
+              <input value={tgId} onChange={(e) => setTgId(e.target.value.replace(/\D/g, ""))} placeholder="123456789"
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono" />
+            </div>
           </div>
           <div>
             <label className="block text-xs text-[#6b7280] mb-1.5">Роль</label>
