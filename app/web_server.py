@@ -25,9 +25,7 @@ _AI_DEFAULTS = {
     "prompt": (
         "Ты — дружелюбный ассистент поддержки VPN-сервиса. "
         "Отвечай кратко, на русском. "
-        "Если вопрос сложный, ты не уверен в ответе, пользователь недоволен или требует живого оператора — "
-        "добавь [HANDOFF] в начало ответа (например: '[HANDOFF] Передаю вас оператору, он скоро ответит.'). "
-        "Система автоматически уведомит оператора. Без [HANDOFF] — отвечай сам."
+        "Если не знаешь ответ — предложи передать диалог оператору."
     ),
     "temperature": 0.7,
     "auto_reply": True,
@@ -471,7 +469,16 @@ def build_app(
             raise HTTPException(403, "Admin only")
         data = body.model_dump()
         await db.set_setting_json("ai_settings", data)
-        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(data, ensure_ascii=False))
+        # For n8n: append [HANDOFF] instruction when handoff is enabled
+        n8n_data = dict(data)
+        if data.get("handoff_enabled"):
+            n8n_data["prompt"] = (data["prompt"] or "").rstrip() + (
+                "\n\nЕсли вопрос сложный, ты не уверен в ответе или пользователь просит живого оператора — "
+                "добавь [HANDOFF] в самое начало своего ответа. "
+                "Пример: «[HANDOFF] Передаю вас оператору, он скоро ответит.» "
+                "Без [HANDOFF] — отвечай самостоятельно."
+            )
+        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
         return {"ok": True}
 
     # ── Settings: Schedule ────────────────────────────────────────────────────
