@@ -173,47 +173,18 @@ function DialogsScreen({
   function sendMessage() {
     const text = draft.trim();
     if (!text || !active) return;
-    const time = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-    const newMsg = { id: Date.now(), kind: "operator", text, time, operator: "Мария" };
-
-    // Optimistic update
-    setConversations((convs) =>
-      convs.map((c) =>
-        c.id === active.id
-          ? { ...c, messages: [...(c.messages || []), newMsg], preview: text, time, status: c.status === "new" ? "in_progress" : c.status, unread: 0 }
-          : c
-      )
-    );
     setDraft("");
-
-    // API call
-    if (onReply) onReply(active.id, text, "Мария");
+    if (onReply) onReply(active.id, text);
   }
 
   function handoffToOperator() {
     if (!active) return;
-    const time = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-    setConversations((convs) =>
-      convs.map((c) =>
-        c.id === active.id
-          ? { ...c, messages: [...(c.messages || []), { id: Date.now(), kind: "system", text: "Диалог передан оператору Мария", time }], status: "in_progress", operatorCalled: true }
-          : c
-      )
-    );
     showToast("Диалог взят в работу");
-    if (onHandoff) onHandoff(active.id, "Мария");
+    if (onHandoff) onHandoff(active.id);
   }
 
   function closeDialog() {
     if (!active) return;
-    const time = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-    setConversations((convs) =>
-      convs.map((c) =>
-        c.id === active.id
-          ? { ...c, messages: [...(c.messages || []), { id: Date.now(), kind: "system", text: "Диалог закрыт оператором", time }], status: "closed", operatorCalled: false }
-          : c
-      )
-    );
     setConfirmClose(false);
     showToast("Диалог закрыт");
     if (onClose) onClose(active.id);
