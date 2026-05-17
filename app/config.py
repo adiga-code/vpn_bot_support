@@ -1,27 +1,64 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    """Настройки приложения из .env"""
-
-    # Telegram
-    TELEGRAM_BOT_TOKEN: str
-    TELEGRAM_GROUP_ID: int
-
-    # Redis
+    # ── Redis ─────────────────────────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379"
 
-    # PostgreSQL
+    # ── PostgreSQL ────────────────────────────────────────────────────────────
     POSTGRES_HOST: str = "postgres"
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "vpnbot"
     POSTGRES_USER: str = "vpnbot"
     POSTGRES_PASSWORD: str
 
-    # Custom Emoji IDs для иконок топиков
-    ICON_AI_ENABLED: str = "5417915203100613993"
-    ICON_AI_DISABLED: str = "5237699328843200968"
+    # ── Web server ────────────────────────────────────────────────────────────
+    WEB_HOST: str = "0.0.0.0"
+    WEB_PORT: int = 8000
+
+    # ── File uploads ──────────────────────────────────────────────────────────
+    UPLOADS_DIR: str = "app/uploads"
+
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    # Required — generate with: python -c "import secrets; print(secrets.token_hex(32))"
+    SECRET_KEY: str
+    # Optional — if set and no operators exist, creates the first admin on startup
+    ADMIN_INIT_TG: str = ""
+    ADMIN_INIT_PASSWORD: str = ""
+
+    # ── AI providers ─────────────────────────────────────────────────────────
+    # CHAT_PROVIDER selects the LLM for classification and KB chunking.
+    # "openai" (default) uses OPENAI_API_KEY with gpt-4o-mini.
+    # "gemini" uses GEMINI_API_KEY with gemini-2.0-flash via OpenAI-compat API.
+    # Embeddings always use OpenAI (OPENAI_API_KEY required for KB upload).
+    CHAT_PROVIDER: str = "openai"
+    OPENAI_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
+
+    # ── Qdrant ────────────────────────────────────────────────────────────────
+    QDRANT_URL: str = "http://qdrant:6333"
+
+    # ── Billing API ───────────────────────────────────────────────────────────
+    # Leave empty to fall back to StubBillingProvider
+    BILLING_API_URL: str = ""
+    BILLING_API_TOKEN: str = ""
+
+    # ── Server monitoring ─────────────────────────────────────────────────────
+    # SERVERS_MONITOR_TYPE: "tcp" | "http" | "stub"
+    # SERVERS: JSON list of servers, e.g.
+    #   '[{"name":"Frankfurt-01","host":"1.2.3.4","port":443,"location":"DE"}]'
+    SERVERS_MONITOR_TYPE: str = "stub"
+    SERVERS: str = "[]"
+    SERVERS_CHECK_INTERVAL: int = 300  # seconds
+    SERVERS_HEALTH_PATH: str = "/health"
 
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+
+    def uploads_path(self) -> Path:
+        p = Path(self.UPLOADS_DIR)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
