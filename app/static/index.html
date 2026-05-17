@@ -619,7 +619,8 @@
                 operators={opsState}
                 topQuestions={stats ? stats.top_questions : []}
                 todayTotal={stats ? stats.today_total : null}
-                aiResolutionPct={stats ? stats.ai_resolution_pct : null}
+                todayClosed={stats ? stats.today_closed : null}
+                aiPct={stats ? stats.ai_pct : null}
               />
             )}
             {screen === "servers" && <ServersScreen />}

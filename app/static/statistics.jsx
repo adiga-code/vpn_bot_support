@@ -36,15 +36,25 @@ function LineChart({ data, days = 14 }) {
   });
   const path = pts.map(([x, y], i) => (i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`)).join(" ");
   const area = path + ` L ${w} ${h} L 0 ${h} Z`;
-  const labels = ["28 апр", "30 апр", "2 мая", "4 мая", "6 мая", "8 мая", "10 мая"];
+
+  // Generate date labels: evenly spaced across the data range
+  const today = new Date();
+  const labelCount = 7;
+  const step = Math.floor((data.length - 1) / (labelCount - 1));
+  const labels = Array.from({ length: labelCount }, (_, i) => {
+    const d = new Date(today);
+    d.setDate(d.getDate() - (data.length - 1 - i * step));
+    return d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }).replace(".", "");
+  });
+
+  const lastVal = data[data.length - 1];
 
   return (
     <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5">
-      <div className="flex items-center justify-between mb-1">
+      <div className="flex items-center justify-between mb-4">
         <div className="text-sm font-medium text-[#f1f1f5]">Обращения по дням</div>
-        <div className="text-xs text-[#6b7280]">последние 14 дней</div>
+        <div className="text-xs text-[#6b7280]">последние {days} дней</div>
       </div>
-      <div className="text-xs text-[#22c55e] mb-4 tabular-nums">↑ 23% к прошлой неделе</div>
       <div className="relative h-[200px]">
         <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="w-full h-full overflow-visible">
           <defs>
@@ -62,10 +72,12 @@ function LineChart({ data, days = 14 }) {
             <circle key={i} cx={x} cy={y} r="0.8" fill="#4F8EF7" stroke="#0d0d12" strokeWidth="0.4" />
           ))}
         </svg>
-        <div className="absolute top-1 right-2 bg-[#1a1a24] border border-[#4F8EF7]/30 rounded-md px-2 py-1 text-xs">
-          <div className="text-[10px] text-[#6b7280]">10 мая</div>
-          <div className="font-semibold text-[#7BA8F9] tabular-nums">82 обращ.</div>
-        </div>
+        {lastVal > 0 && (
+          <div className="absolute top-1 right-2 bg-[#1a1a24] border border-[#4F8EF7]/30 rounded-md px-2 py-1 text-xs">
+            <div className="text-[10px] text-[#6b7280]">сегодня</div>
+            <div className="font-semibold text-[#7BA8F9] tabular-nums">{lastVal} обращ.</div>
+          </div>
+        )}
       </div>
       <div className="flex justify-between mt-3 text-[10px] text-[#6b7280] px-1">
         {labels.map((l, i) => <span key={i}>{l}</span>)}
@@ -191,7 +203,7 @@ function OperatorsTable({ operators }) {
   );
 }
 
-function StatisticsScreen({ dailyConversations: dc, hourly: hv, operators: ops, topQuestions: tq }) {
+function StatisticsScreen({ dailyConversations: dc, hourly: hv, operators: ops, topQuestions: tq, todayTotal, todayClosed, aiPct }) {
   const dailyConversations = dc || [];
   const hourly = hv || [];
   const operators = ops || [];
@@ -204,6 +216,8 @@ function StatisticsScreen({ dailyConversations: dc, hourly: hv, operators: ops, 
     { id: "30d", label: "30 дней" },
   ];
 
+  const days = range === "today" ? 1 : range === "7d" ? 7 : range === "14d" ? 14 : 30;
+
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin bg-[#0d0d12]">
       <div className="max-w-[1400px] mx-auto p-6 space-y-5">
@@ -211,7 +225,7 @@ function StatisticsScreen({ dailyConversations: dc, hourly: hv, operators: ops, 
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-semibold text-[#f1f1f5]">Статистика</h1>
-            <div className="text-xs text-[#6b7280] mt-0.5">Обновлено 5 минут назад</div>
+            <div className="text-xs text-[#6b7280] mt-0.5">данные за сегодня</div>
           </div>
           <div className="flex items-center gap-3">
             <div className="bg-[#13131a] border border-[#2a2a3a] rounded-lg p-1 flex gap-0.5">
@@ -228,25 +242,21 @@ function StatisticsScreen({ dailyConversations: dc, hourly: hv, operators: ops, 
                 </button>
               ))}
             </div>
-            <button className="bg-[#13131a] border border-[#2a2a3a] rounded-lg px-3 py-2 text-xs text-[#f1f1f5] hover:bg-[#1a1a24] flex items-center gap-2">
-              <Icon name="calendar" className="w-3.5 h-3.5 text-[#6b7280]" />
-              28 апр – 11 мая
-            </button>
           </div>
         </div>
 
         {/* KPI row */}
         <div className="grid grid-cols-4 gap-4">
-          <StatCard label="Обращений сегодня" value="82" delta="23%" deltaPositive />
-          <StatCard label="Среднее время ответа" value="2м 38с" delta="12%" deltaPositive />
-          <StatCard label="Закрыто диалогов" value="64" delta="18%" deltaPositive />
-          <StatCard label="ИИ решил без оператора" value="71%" delta="4%" deltaPositive />
+          <StatCard label="Обращений сегодня" value={todayTotal != null ? String(todayTotal) : "—"} />
+          <StatCard label="Среднее время ответа" value="—" />
+          <StatCard label="Закрыто диалогов" value={todayClosed != null ? String(todayClosed) : "—"} />
+          <StatCard label="ИИ решил без оператора" value={aiPct != null ? aiPct + "%" : "—"} />
         </div>
 
         {/* Charts row */}
         <div className="grid grid-cols-3 gap-4">
           <div className="col-span-2">
-            <LineChart data={dailyConversations} />
+            <LineChart data={dailyConversations} days={days} />
           </div>
           <HeatmapChart data={hourly} />
         </div>
