@@ -466,7 +466,7 @@ def build_app(
             raise HTTPException(403, "Admin only")
         data = body.model_dump()
         await db.set_setting_json("ai_settings", data)
-        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(data))
+        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(data, ensure_ascii=False))
         return {"ok": True}
 
     # ── Settings: Schedule ────────────────────────────────────────────────────
@@ -480,7 +480,7 @@ def build_app(
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
         await db.set_setting_json("schedule", body.schedule)
-        await n8n.redis.set("vpn_bot:schedule", json.dumps(body.schedule))
+        await n8n.redis.set("vpn_bot:schedule", json.dumps(body.schedule, ensure_ascii=False))
         return {"ok": True}
 
     # ── Settings: Notifications ───────────────────────────────────────────────
