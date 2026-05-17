@@ -27,7 +27,6 @@ _AI_DEFAULTS = {
         "Отвечай кратко, на русском. "
         "Если не знаешь ответ — предложи передать диалог оператору."
     ),
-    "out_of_hours_message": "Мы сейчас не работаем. Напишите нам в рабочее время — мы ответим как можно скорее.",
     "temperature": 0.7,
     "auto_reply": True,
     "handoff_enabled": True,
@@ -161,7 +160,6 @@ class AISettingsBody(BaseModel):
     auto_reply: bool
     handoff_enabled: bool
     classification_enabled: bool = False
-    out_of_hours_message: str = ""
 
 class NotifPrefsBody(BaseModel):
     new_dialog:      bool = True
@@ -384,7 +382,7 @@ def build_app(
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         username = updated.get("user_username") or dialog_id
-        await n8n.notify_event("operator_called", {"dialog_id": dialog_id, "username": username})
+        await n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/close")

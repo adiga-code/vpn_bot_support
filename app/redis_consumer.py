@@ -1,6 +1,5 @@
 import asyncio
 import json
-from datetime import datetime, timezone
 
 import redis.asyncio as aioredis
 
@@ -10,18 +9,6 @@ from app.database import DatabaseManager
 from app.n8n_client import N8NClient
 from app.web_server import _fmt_dialog, _fmt_message
 from app.ws_manager import WebSocketManager
-
-_SCHEDULE_DEFAULTS = {
-    "mon": {"enabled": True,  "from": "09:00", "to": "21:00"},
-    "tue": {"enabled": True,  "from": "09:00", "to": "21:00"},
-    "wed": {"enabled": True,  "from": "09:00", "to": "21:00"},
-    "thu": {"enabled": True,  "from": "09:00", "to": "21:00"},
-    "fri": {"enabled": True,  "from": "09:00", "to": "21:00"},
-    "sat": {"enabled": False, "from": "10:00", "to": "18:00"},
-    "sun": {"enabled": False, "from": "10:00", "to": "18:00"},
-}
-
-_DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
 class RedisConsumer:
@@ -60,23 +47,6 @@ class RedisConsumer:
             except Exception as e:
                 print(f"Consumer error: {e}")
                 await asyncio.sleep(1)
-
-    # ── Schedule check ────────────────────────────────────────────────────────
-
-    async def _is_within_schedule(self) -> bool:
-        schedule = await self.db.get_setting_json("schedule", _SCHEDULE_DEFAULTS)
-        now = datetime.now(timezone.utc)
-        day_key = _DAY_KEYS[now.weekday()]
-        day = schedule.get(day_key, {})
-        if not day.get("enabled", False):
-            return False
-        try:
-            from_h, from_m = map(int, day["from"].split(":"))
-            to_h,   to_m   = map(int, day["to"].split(":"))
-            current_minutes = now.hour * 60 + now.minute
-            return (from_h * 60 + from_m) <= current_minutes < (to_h * 60 + to_m)
-        except Exception:
-            return True  # if schedule is malformed, don't block
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -126,30 +96,12 @@ class RedisConsumer:
 
         if is_new:
             await self.ws.broadcast({"type": "new_dialog", "dialog": _fmt_dialog(updated)})
-            await self.n8n.notify_event("new_dialog", {"dialog_id": dialog_id, "username": username})
+            await self.n8n.schedule_notify("new_dialog", {"dialog_id": dialog_id, "username": username})
         else:
             await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
 
         if operator_called:
-            await self.n8n.notify_event("operator_called", {"dialog_id": dialog_id, "username": username})
-
-        # Out-of-hours auto-reply (only when AI is enabled and schedule is configured)
-        if ai_enabled and not operator_called and not await self._is_within_schedule():
-            ai_settings = await self.db.get_setting_json("ai_settings", {})
-            if ai_settings.get("auto_reply", True):
-                ooh_msg = (
-                    ai_settings.get("out_of_hours_message") or
-                    "Мы сейчас не работаем. Напишите нам в рабочее время — мы ответим как можно скорее."
-                )
-                await self._send_auto_reply(dialog_id, chat_id, ooh_msg)
-
-    async def _send_auto_reply(self, dialog_id: str, chat_id: str, text: str):
-        await self.redis.lpush("vpn_bot:incoming", json.dumps({
-            "type": "ai_response",
-            "dialog_id": dialog_id,
-            "chat_id": chat_id,
-            "message": text,
-        }))
+            await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
 
     async def _classify_later(self, msg_id: int, text: str):
         try:
@@ -200,4 +152,4 @@ class RedisConsumer:
         await self.ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(sys_row)})
         await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         username = updated.get("user_username") or dialog_id
-        await self.n8n.notify_event("operator_called", {"dialog_id": dialog_id, "username": username})
+        await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})

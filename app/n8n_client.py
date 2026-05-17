@@ -1,16 +1,64 @@
 import json
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
 
 from app.config import Settings
 
+if TYPE_CHECKING:
+    from app.database import DatabaseManager
+
+_DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+_SCHEDULE_DEFAULTS = {
+    "mon": {"enabled": True,  "from": "09:00", "to": "21:00"},
+    "tue": {"enabled": True,  "from": "09:00", "to": "21:00"},
+    "wed": {"enabled": True,  "from": "09:00", "to": "21:00"},
+    "thu": {"enabled": True,  "from": "09:00", "to": "21:00"},
+    "fri": {"enabled": True,  "from": "09:00", "to": "21:00"},
+    "sat": {"enabled": False, "from": "10:00", "to": "18:00"},
+    "sun": {"enabled": False, "from": "10:00", "to": "18:00"},
+}
+
 
 class N8NClient:
     """Publishes outbound events to n8n via Redis channels."""
 
-    def __init__(self, settings: Settings, redis: aioredis.Redis):
-        # settings kept for future use (e.g. channel name overrides)
+    def __init__(self, settings: Settings, redis: aioredis.Redis, db: "DatabaseManager | None" = None):
         self.redis = redis
+        self.db = db
+
+    # ── Schedule helpers ──────────────────────────────────────────────────────
+
+    async def _is_within_schedule(self) -> bool:
+        if not self.db:
+            return True
+        schedule = await self.db.get_setting_json("schedule", _SCHEDULE_DEFAULTS)
+        now = datetime.now(timezone.utc)
+        day = schedule.get(_DAY_KEYS[now.weekday()], {})
+        if not day.get("enabled", False):
+            return False
+        try:
+            fh, fm = map(int, day["from"].split(":"))
+            th, tm = map(int, day["to"].split(":"))
+            mins = now.hour * 60 + now.minute
+            return (fh * 60 + fm) <= mins < (th * 60 + tm)
+        except Exception:
+            return True
+
+    async def _flush_pending(self) -> None:
+        """Publish all queued off-hours notifications."""
+        while True:
+            item = await self.redis.lpop("vpn_bot:pending_notifications")
+            if not item:
+                break
+            try:
+                data = json.loads(item)
+                event_type = data.pop("type")
+                await self.notify_event(event_type, data)
+                print(f"[schedule] flushed: {event_type}")
+            except Exception as e:
+                print(f"[schedule] flush error: {e}")
 
     # ── Outbound messages ─────────────────────────────────────────────────────
 
@@ -66,13 +114,27 @@ class N8NClient:
             print(f"notify_ai_toggled error (non-critical): {e}")
 
     async def notify_event(self, event_type: str, payload: dict) -> None:
-        """Fire-and-forget: publish a notification event for n8n to deliver via Telegram."""
+        """Direct publish — bypasses schedule. Use schedule_notify for operator alerts."""
         try:
             await self.redis.publish("vpn_bot:notifications", json.dumps({
                 "type": event_type, **payload,
             }))
         except Exception as e:
             print(f"notify_event error (non-critical): {e}")
+
+    async def schedule_notify(self, event_type: str, payload: dict) -> None:
+        """Schedule-aware notification: queues during off-hours, flushes at day start."""
+        try:
+            if not await self._is_within_schedule():
+                await self.redis.rpush("vpn_bot:pending_notifications", json.dumps({
+                    "type": event_type, **payload,
+                }))
+                print(f"[schedule] queued {event_type} (outside working hours)")
+                return
+            await self._flush_pending()
+            await self.notify_event(event_type, payload)
+        except Exception as e:
+            print(f"schedule_notify error (non-critical): {e}")
 
     async def send_billing_action(self, dialog_id: str, chat_id: str, action: str) -> bool:
         try:

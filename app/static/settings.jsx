@@ -342,14 +342,10 @@ function ScheduleSection({ showToast }) {
     {key:"mon",label:"Пн"},{key:"tue",label:"Вт"},{key:"wed",label:"Ср"},
     {key:"thu",label:"Чт"},{key:"fri",label:"Пт"},{key:"sat",label:"Сб"},{key:"sun",label:"Вс"},
   ];
-  const [schedule,   setSchedule]   = useStateT(null);
-  const [aiSettings, setAiSettings] = useStateT(null);
+  const [schedule, setSchedule] = useStateT(null);
 
   useEffectT(() => {
-    Promise.all([
-      window.apiFetch("GET", "/api/settings/schedule"),
-      window.apiFetch("GET", "/api/settings/ai"),
-    ]).then(([s, a]) => { setSchedule(s); setAiSettings(a); }).catch(() => {});
+    window.apiFetch("GET", "/api/settings/schedule").then(setSchedule).catch(() => {});
   }, []);
 
   function setDay(key, field, value) {
@@ -358,21 +354,18 @@ function ScheduleSection({ showToast }) {
 
   async function save() {
     try {
-      await Promise.all([
-        window.apiFetch("PUT", "/api/settings/schedule", { schedule }),
-        aiSettings && window.apiFetch("PUT", "/api/settings/ai", aiSettings),
-      ]);
+      await window.apiFetch("PUT", "/api/settings/schedule", { schedule });
       showToast("Расписание сохранено");
     } catch { showToast("Ошибка сохранения"); }
   }
 
-  if (!schedule || !aiSettings) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+  if (!schedule) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
     <div className="max-w-[1100px] mx-auto p-6 space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Расписание</h1>
-        <div className="text-xs text-[#6b7280] mt-0.5">Вне рабочего времени ИИ отправляет автоответ и не отвечает на вопросы</div>
+        <div className="text-xs text-[#6b7280] mt-0.5">Уведомления в нерабочее время накапливаются и отправляются операторам в начале рабочего дня. ИИ работает круглосуточно.</div>
       </div>
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
         {DAYS.map(({ key, label }) => {
@@ -396,13 +389,6 @@ function ScheduleSection({ showToast }) {
             </div>
           );
         })}
-      </div>
-      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5">
-        <div className="text-sm font-medium text-[#f1f1f5] mb-1">Автоответ вне расписания</div>
-        <div className="text-xs text-[#6b7280] mb-3">Этот текст ИИ отправит пользователю если напишет вне рабочего времени</div>
-        <textarea value={aiSettings.out_of_hours_message || ""} rows={3}
-          onChange={(e) => setAiSettings((a) => ({ ...a, out_of_hours_message: e.target.value }))}
-          className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed" />
       </div>
       <div className="flex justify-end">
         <button onClick={save} className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold">Сохранить</button>
