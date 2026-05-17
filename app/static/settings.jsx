@@ -405,6 +405,12 @@ function AISection({ showToast }) {
         <div className="text-xs text-[#6b7280] mb-3">Инструкции для ИИ в начале каждого диалога</div>
         <textarea value={settings.prompt} onChange={(e) => setSettings((s) => ({ ...s, prompt: e.target.value }))} rows={6}
           className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed" />
+        {settings.handoff_enabled && (
+          <div className="mt-2 flex items-start gap-2 text-xs text-[#6b7280] bg-[#4F8EF7]/5 border border-[#4F8EF7]/15 rounded-lg px-3 py-2">
+            <span className="text-[#4F8EF7] mt-0.5 shrink-0">+</span>
+            <span>К промпту автоматически добавляется инструкция про <span className="font-mono text-[#7BA8F9]">[HANDOFF]</span> — ИИ будет знать когда звать оператора. В редакторе не отображается.</span>
+          </div>
+        )}
       </div>
       <div className="flex justify-end">
         <button onClick={save} className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold">Сохранить</button>
