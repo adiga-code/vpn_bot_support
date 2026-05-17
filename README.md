@@ -42,7 +42,7 @@
 | Статистика | SQL-запросы напрямую |
 | Загрузка файлов | Эндпоинт `/api/upload`, хранение на диске |
 | Биллинг (продлить, трафик, ключ) | Прямой вызов внешнего API через `BillingProvider` |
-| Статусы VPN-серверов | Чтение Redis-ключа `vpn_bot:servers` |
+| Статусы VPN-серверов | Фоновая задача `app/servers.py` (TCP/HTTP/stub) |
 
 ### n8n (внешний, не в этом репо)
 
@@ -51,7 +51,6 @@
 | Приём Telegram-вебхука | Telegram API-интеграция |
 | AI воркфлоу (LLM + RAG) | Визуальное редактирование без деплоя |
 | Отправка сообщений пользователю | Telegram Bot API |
-| Мониторинг серверов (cron) | Простой cron + Redis SET |
 
 ---
 
@@ -390,16 +389,7 @@ SUBSCRIBE vpn_bot:toggle_request
 → LPUSH vpn_bot:toggle:{dialog_id}  { "ai_enabled": <новое значение> }
 ```
 
-#### 5. Мониторинг серверов (Cron)
-
-```
-Cron каждые 5 минут
-→ Пинговать каждый VPN-сервер
-→ SET vpn_bot:servers  [{ name, status, load, ping, uptime, location }, ...]
-→ SET vpn_bot:servers_updated  "ДД.ММ.ГГГГ ЧЧ:ММ"
-```
-
-#### 6. Уведомления оператору
+#### 5. Уведомления оператору
 
 ```
 При получении user_message с operator_called=true (или handoff-события)

@@ -75,7 +75,7 @@ function ServersScreen() {
           <div>
             <h1 className="text-xl font-semibold text-[#f1f1f5]">Серверы VPN</h1>
             <div className="text-xs text-[#6b7280] mt-0.5">
-              {data.last_updated ? `Обновлено: ${data.last_updated}` : "Данные не получены от n8n"}
+              {data.last_updated ? `Обновлено: ${data.last_updated}` : "Ожидание первой проверки..."}
             </div>
           </div>
           <button
@@ -129,9 +129,9 @@ function ServersScreen() {
         {!loading && servers.length === 0 && (
           <div className="bg-[#13131a] border border-dashed border-[#2a2a3a] rounded-xl p-12 text-center">
             <Icon name="settings" className="w-10 h-10 text-[#2a2a3a] mx-auto mb-3" />
-            <div className="text-sm font-medium text-[#f1f1f5] mb-1">Данные не получены</div>
+            <div className="text-sm font-medium text-[#f1f1f5] mb-1">Серверы не настроены</div>
             <div className="text-xs text-[#6b7280] max-w-sm mx-auto">
-              Настройте в n8n cron-воркфлоу, который проверяет серверы и пушит статус в Redis ключ <code className="bg-[#1a1a24] px-1 rounded">vpn_bot:servers</code>
+              Добавьте серверы в <code className="bg-[#1a1a24] px-1 rounded">.env</code> через переменную <code className="bg-[#1a1a24] px-1 rounded">SERVERS</code> и задайте <code className="bg-[#1a1a24] px-1 rounded">SERVERS_MONITOR_TYPE=tcp</code>
             </div>
           </div>
         )}
