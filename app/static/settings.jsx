@@ -2,20 +2,23 @@
 
 const { useState: useStateT, useEffect: useEffectT } = React;
 
-function SettingsScreen({ operators: ops, setOperators, showToast }) {
-  const [section, setSection] = useStateT("operators");
+function SettingsScreen({ operators: ops, setOperators, showToast, currentOperator }) {
+  const isAdmin = currentOperator?.role === "admin";
+  const defaultSection = isAdmin ? "operators" : "profile";
+  const [section, setSection] = useStateT(defaultSection);
   const [modalOpen, setModalOpen] = useStateT(false);
   const [editingOp, setEditingOp] = useStateT(null);
   const [confirmDelete, setConfirmDelete] = useStateT(null);
 
-  const sections = [
-    { id: "operators",     label: "Операторы",    icon: "operators" },
-    { id: "profile",       label: "Профиль",      icon: "user"      },
-    { id: "schedule",      label: "Расписание",   icon: "clock"     },
-    { id: "ai",            label: "ИИ-настройки", icon: "sparkles"  },
-    { id: "notifications", label: "Уведомления",  icon: "bell"      },
-    { id: "kb",            label: "База знаний",  icon: "book"      },
+  const allSections = [
+    { id: "operators",     label: "Операторы",    icon: "operators", adminOnly: true  },
+    { id: "profile",       label: "Профиль",      icon: "user",      adminOnly: false },
+    { id: "schedule",      label: "Расписание",   icon: "clock",     adminOnly: true  },
+    { id: "ai",            label: "ИИ-настройки", icon: "sparkles",  adminOnly: true  },
+    { id: "notifications", label: "Уведомления",  icon: "bell",      adminOnly: true  },
+    { id: "kb",            label: "База знаний",  icon: "book",      adminOnly: true  },
   ];
+  const sections = allSections.filter(s => !s.adminOnly || isAdmin);
 
   async function saveOperator(data) {
     try {

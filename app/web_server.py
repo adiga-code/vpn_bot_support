@@ -413,6 +413,8 @@ def build_app(
 
     @app.get("/api/stats")
     async def get_stats(days: int = 14, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
         return await db.get_stats(days)
 
     # ── Operators ─────────────────────────────────────────────────────────────
@@ -460,6 +462,8 @@ def build_app(
 
     @app.put("/api/settings/ai")
     async def save_ai_settings(body: AISettingsBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
         data = body.model_dump()
         await db.set_setting_json("ai_settings", data)
         await n8n.redis.set("vpn_bot:ai_settings", json.dumps(data))
@@ -473,6 +477,8 @@ def build_app(
 
     @app.put("/api/settings/schedule")
     async def save_schedule(body: ScheduleBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
         await db.set_setting_json("schedule", body.schedule)
         await n8n.redis.set("vpn_bot:schedule", json.dumps(body.schedule))
         return {"ok": True}
@@ -485,6 +491,8 @@ def build_app(
 
     @app.put("/api/settings/notifications")
     async def save_notifications(body: NotificationsBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
         await db.set_setting_json("notifications", body.model_dump())
         return {"ok": True}
 
@@ -502,6 +510,8 @@ def build_app(
 
     @app.post("/api/kb/upload")
     async def upload_kb(file: UploadFile = File(...), operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
         if not settings.OPENAI_API_KEY:
             raise HTTPException(400, "OPENAI_API_KEY is required for embeddings")
         if not file.filename.endswith((".txt", ".md")):
@@ -520,6 +530,8 @@ def build_app(
 
     @app.delete("/api/kb/{article_id}")
     async def delete_kb_article(article_id: str, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
         ok = await db.delete_kb_article(article_id)
         if not ok:
             raise HTTPException(404)

@@ -236,7 +236,7 @@
           </div>
 
           <nav className="flex items-center gap-0.5">
-            {screens.map((s) => (
+            {screens.filter(s => s.id !== "stats" || currentOperator?.role === "admin").map((s) => (
               <button
                 key={s.id}
                 onClick={() => setScreen(s.id)}
@@ -323,9 +323,12 @@
                 </div>
                 <button
                   onClick={() => { onCloseMenus(); setScreen && setScreen("settings"); }}
-                  className="w-full text-left px-4 py-2 text-sm text-[#f1f1f5] hover:bg-[#1a1a24]"
+                  className="w-full text-left px-4 py-2 text-sm text-[#f1f1f5] hover:bg-[#1a1a24] flex items-center justify-between"
                 >
-                  Профиль
+                  <span>Профиль</span>
+                  <span className={"text-[10px] px-1.5 py-0.5 rounded font-medium " + (currentOperator?.role === "admin" ? "bg-[#4F8EF7]/20 text-[#7BA8F9]" : "bg-[#2a2a3a] text-[#6b7280]")}>
+                    {currentOperator?.role === "admin" ? "Админ" : "Агент"}
+                  </span>
                 </button>
                 <button
                   onClick={() => { onCloseMenus(); onLogout(); }}
@@ -625,7 +628,7 @@
             )}
             {screen === "servers" && <ServersScreen />}
             {screen === "settings" && (
-              <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast} />
+              <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast} currentOperator={currentOperator} />
             )}
           </main>
           <Toast msg={toast} />
