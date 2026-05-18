@@ -241,7 +241,7 @@ class DatabaseManager:
                 last_payment_date   = COALESCE(EXCLUDED.last_payment_date,  dialogs.last_payment_date),
                 unread_count        = dialogs.unread_count + 1,
                 updated_at          = NOW()
-            RETURNING *
+            RETURNING *, (xmax = 0) AS is_new_dialog
             """,
             dialog_id, chat_id, ai_enabled,
             ui.get("user_name"), ui.get("user_username"),

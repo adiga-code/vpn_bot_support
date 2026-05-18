@@ -57,6 +57,9 @@ class RedisConsumer:
         file_id = data.get("file_id")
         file_type = data.get("file_type", "text")
         file_url = data.get("file_url")
+        # n8n sometimes puts the uploaded URL into file_id instead of file_url
+        if not file_url and file_id and str(file_id).startswith("http"):
+            file_url, file_id = file_id, None
         ai_enabled = data.get("ai_enabled", True)
         operator_called = bool(data.get("operator_called", False))
 
@@ -67,7 +70,7 @@ class RedisConsumer:
         )}
 
         dialog_row = await self.db.upsert_dialog(dialog_id, chat_id, ai_enabled, user_info)
-        is_new = dialog_row["unread_count"] == 1
+        is_new = dialog_row["is_new_dialog"]
 
         msg_row = await self.db.save_message(
             dialog_id,
