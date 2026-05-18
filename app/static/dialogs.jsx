@@ -108,7 +108,10 @@ function MessageBubble({ msg, onImageClick }) {
       <div className="flex justify-start">
         <div className="max-w-[70%]">
           {hasFile
-            ? <FileContent msg={msg} side="left" onImageClick={onImageClick} />
+            ? <>
+                <FileContent msg={msg} side="left" onImageClick={onImageClick} />
+                {msg.text ? <div className="bg-[#1a1a24] text-[#f1f1f5] px-3.5 py-2 rounded-2xl rounded-tl-md text-sm leading-relaxed mt-1">{msg.text}</div> : null}
+              </>
             : <div className="bg-[#1a1a24] text-[#f1f1f5] px-3.5 py-2.5 rounded-2xl rounded-tl-md text-sm leading-relaxed">{msg.text}</div>
           }
           <div className="text-[10px] text-[#6b7280] mt-1 ml-2">{msg.time}</div>
@@ -138,7 +141,10 @@ function MessageBubble({ msg, onImageClick }) {
       <div className="flex justify-end">
         <div className="max-w-[70%]">
           {hasFile
-            ? <FileContent msg={msg} side="right" onImageClick={onImageClick} />
+            ? <>
+                <FileContent msg={msg} side="right" onImageClick={onImageClick} />
+                {msg.text ? <div className="bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5] px-3.5 py-2 rounded-2xl rounded-tr-md text-sm leading-relaxed mt-1">{msg.text}</div> : null}
+              </>
             : <div className="bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5] px-3.5 py-2.5 rounded-2xl rounded-tr-md text-sm leading-relaxed">{msg.text}</div>
           }
           <div className="text-[10px] text-[#6b7280] mt-1 mr-2 text-right">
