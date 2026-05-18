@@ -10,8 +10,6 @@ from app.n8n_client import N8NClient
 from app.web_server import _fmt_dialog, _fmt_message
 from app.ws_manager import WebSocketManager
 
-_NOTIF_DEFAULTS = {"new_dialog": True, "operator_called": True, "server_down": True}
-
 
 class RedisConsumer:
     """Reads inbound n8n events from the Redis queue and pushes them to the UI via WebSocket."""
@@ -50,12 +48,6 @@ class RedisConsumer:
                 print(f"Consumer error: {e}")
                 await asyncio.sleep(1)
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
-    async def _notif_enabled(self, key: str) -> bool:
-        settings = await self.db.get_setting_json("notifications", _NOTIF_DEFAULTS)
-        return bool(settings.get(key, True))
-
     # ── Handlers ──────────────────────────────────────────────────────────────
 
     async def _handle_user_message(self, data: dict):
@@ -65,6 +57,9 @@ class RedisConsumer:
         file_id = data.get("file_id")
         file_type = data.get("file_type", "text")
         file_url = data.get("file_url")
+        # n8n sometimes puts the uploaded URL into file_id instead of file_url
+        if not file_url and file_id and str(file_id).startswith("http"):
+            file_url, file_id = file_id, None
         ai_enabled = data.get("ai_enabled", True)
         operator_called = bool(data.get("operator_called", False))
 
@@ -75,7 +70,7 @@ class RedisConsumer:
         )}
 
         dialog_row = await self.db.upsert_dialog(dialog_id, chat_id, ai_enabled, user_info)
-        is_new = dialog_row["unread_count"] == 1
+        is_new = dialog_row["is_new_dialog"]
 
         msg_row = await self.db.save_message(
             dialog_id,
@@ -104,13 +99,12 @@ class RedisConsumer:
 
         if is_new:
             await self.ws.broadcast({"type": "new_dialog", "dialog": _fmt_dialog(updated)})
-            if await self._notif_enabled("new_dialog"):
-                await self.n8n.notify_event("new_dialog", {"dialog_id": dialog_id, "username": username})
+            await self.n8n.schedule_notify("new_dialog", {"dialog_id": dialog_id, "username": username})
         else:
             await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
 
-        if operator_called and await self._notif_enabled("operator_called"):
-            await self.n8n.notify_event("operator_called", {"dialog_id": dialog_id, "username": username})
+        if operator_called:
+            await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
 
     async def _classify_later(self, msg_id: int, text: str):
         try:
@@ -133,13 +127,32 @@ class RedisConsumer:
             print(f"AI response for unknown dialog: {dialog_id}")
             return
 
-        msg_row = await self.db.save_message(dialog_id, "ai", text)
-        await self.db.update_last_message(dialog_id, f"ИИ: {text}")
+        wants_handoff = "[HANDOFF]" in text
+        clean_text = text.replace("[HANDOFF]", "").strip()
 
+        if clean_text:
+            msg_row = await self.db.save_message(dialog_id, "ai", clean_text)
+            await self.db.update_last_message(dialog_id, f"ИИ: {clean_text}")
+            updated = await self.db.get_dialog(dialog_id)
+            await self.ws.broadcast({
+                "type": "new_message",
+                "dialog_id": dialog_id,
+                "message": _fmt_message(msg_row),
+            })
+            await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+
+        if wants_handoff and not dialog.get("operator_called"):
+            ai_settings = await self.db.get_setting_json("ai_settings", {})
+            if ai_settings.get("handoff_enabled", True):
+                await self._auto_handoff(dialog_id, dialog)
+
+    async def _auto_handoff(self, dialog_id: str, dialog: dict):
+        print(f"[auto-handoff] dialog={dialog_id}")
+        sys_row = await self.db.save_message(dialog_id, "system", "ИИ передал диалог оператору")
+        await self.db.update_status(dialog_id, "in_progress")
+        await self.db.update_operator_called(dialog_id, True)
         updated = await self.db.get_dialog(dialog_id)
-        await self.ws.broadcast({
-            "type": "new_message",
-            "dialog_id": dialog_id,
-            "message": _fmt_message(msg_row),
-        })
+        await self.ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(sys_row)})
         await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        username = updated.get("user_username") or dialog_id
+        await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})

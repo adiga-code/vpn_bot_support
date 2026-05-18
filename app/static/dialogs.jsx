@@ -48,6 +48,50 @@ function ConvCard({ conv, active, onClick }) {
   );
 }
 
+function FileContent({ msg, side, onImageClick }) {
+  const ft = msg.fileType;
+  const url = msg.fileUrl;
+  const tl = side === "left" ? "rounded-tl-md" : "rounded-tr-md";
+  if (ft === "photo" || ft === "sticker") {
+    if (url) {
+      return (
+        <button onClick={() => onImageClick(url)} className={"block overflow-hidden rounded-2xl " + tl + " hover:ring-2 hover:ring-[#4F8EF7]/40 transition"}>
+          <img src={url} alt="" className="max-w-[260px] max-h-[300px] object-cover" onError={(e) => { e.target.style.display="none"; }} />
+        </button>
+      );
+    }
+    return (
+      <div className={"bg-[#1a1a24] rounded-2xl " + tl + " px-3.5 py-3 flex items-center gap-2 text-[#6b7280] text-sm"}>
+        <Icon name="image" className="w-4 h-4" /> Фото
+      </div>
+    );
+  }
+  if (ft === "video") {
+    return url
+      ? <video controls src={url} className={"max-w-[260px] rounded-2xl " + tl} />
+      : <div className={"bg-[#1a1a24] rounded-2xl " + tl + " px-3.5 py-3 flex items-center gap-2 text-[#6b7280] text-sm"}><Icon name="video" className="w-4 h-4" /> Видео</div>;
+  }
+  if (ft === "voice" || ft === "audio") {
+    return url
+      ? <audio controls src={url} className="max-w-[260px]" />
+      : <div className={"bg-[#1a1a24] rounded-2xl " + tl + " px-3.5 py-3 flex items-center gap-2 text-[#6b7280] text-sm"}><Icon name="mic" className="w-4 h-4" /> Голосовое</div>;
+  }
+  if (ft === "document") {
+    const name = url ? url.split("/").pop() : "файл";
+    return (
+      <a href={url || "#"} target="_blank" rel="noreferrer"
+        className={"bg-[#1a1a24] rounded-2xl " + tl + " px-3.5 py-3 flex items-center gap-2 text-[#7BA8F9] text-sm hover:underline"}>
+        <Icon name="paperclip" className="w-4 h-4 shrink-0" />{name}
+      </a>
+    );
+  }
+  return (
+    <div className={"bg-[#1a1a24] text-[#f1f1f5] px-3.5 py-2.5 rounded-2xl " + tl + " text-sm leading-relaxed"}>
+      {msg.text || `[${ft}]`}
+    </div>
+  );
+}
+
 function MessageBubble({ msg, onImageClick }) {
   if (msg.kind === "system") {
     return (
@@ -59,30 +103,17 @@ function MessageBubble({ msg, onImageClick }) {
     );
   }
   if (msg.kind === "user") {
+    const hasFile = msg.fileType && msg.fileType !== "text";
     return (
       <div className="flex justify-start">
         <div className="max-w-[70%]">
-          {msg.fileType === "photo" || msg.kindOfContent === "image" ? (
-            <button
-              onClick={() => onImageClick(msg)}
-              className="block bg-[#1a1a24] rounded-2xl rounded-tl-md overflow-hidden hover:ring-2 hover:ring-[#4F8EF7]/40 transition"
-            >
-              <div className="w-[260px] h-[180px] relative" style={{ background: "linear-gradient(135deg,#1f1f2a,#0d0d12)" }}>
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="text-center">
-                    <Icon name="image" className="w-8 h-8 text-[#4F8EF7]/60 mx-auto mb-2" />
-                    <div className="text-[11px] text-[#6b7280] font-mono">screenshot.png</div>
-                    <div className="text-[10px] text-[#6b7280]/60 mt-0.5">нажмите чтобы открыть</div>
-                  </div>
-                </div>
-                <div className="absolute inset-0 opacity-[0.04]" style={{ backgroundImage: "repeating-linear-gradient(45deg, #fff 0 1px, transparent 1px 8px)" }}></div>
-              </div>
-            </button>
-          ) : (
-            <div className="bg-[#1a1a24] text-[#f1f1f5] px-3.5 py-2.5 rounded-2xl rounded-tl-md text-sm leading-relaxed">
-              {msg.text}
-            </div>
-          )}
+          {hasFile
+            ? <>
+                <FileContent msg={msg} side="left" onImageClick={onImageClick} />
+                {msg.text ? <div className="bg-[#1a1a24] text-[#f1f1f5] px-3.5 py-2 rounded-2xl rounded-tl-md text-sm leading-relaxed mt-1">{msg.text}</div> : null}
+              </>
+            : <div className="bg-[#1a1a24] text-[#f1f1f5] px-3.5 py-2.5 rounded-2xl rounded-tl-md text-sm leading-relaxed">{msg.text}</div>
+          }
           <div className="text-[10px] text-[#6b7280] mt-1 ml-2">{msg.time}</div>
         </div>
       </div>
@@ -105,12 +136,17 @@ function MessageBubble({ msg, onImageClick }) {
     );
   }
   if (msg.kind === "operator") {
+    const hasFile = msg.fileType && msg.fileType !== "text";
     return (
       <div className="flex justify-end">
         <div className="max-w-[70%]">
-          <div className="bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5] px-3.5 py-2.5 rounded-2xl rounded-tr-md text-sm leading-relaxed">
-            {msg.text}
-          </div>
+          {hasFile
+            ? <>
+                <FileContent msg={msg} side="right" onImageClick={onImageClick} />
+                {msg.text ? <div className="bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5] px-3.5 py-2 rounded-2xl rounded-tr-md text-sm leading-relaxed mt-1">{msg.text}</div> : null}
+              </>
+            : <div className="bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5] px-3.5 py-2.5 rounded-2xl rounded-tr-md text-sm leading-relaxed">{msg.text}</div>
+          }
           <div className="text-[10px] text-[#6b7280] mt-1 mr-2 text-right">
             {msg.operator} · {msg.time}
           </div>
@@ -132,9 +168,11 @@ function DialogsScreen({
   const [filter, setFilter] = useStateD("all");
   const [draft, setDraft] = useStateD("");
   const [aiEnabled, setAiEnabled] = useStateD(true);
-  const [lightboxOpen, setLightboxOpen] = useStateD(false);
+  const [lightboxUrl, setLightboxUrl] = useStateD(null);
+  const [pendingFile, setPendingFile] = useStateD(null);
   const [confirmClose, setConfirmClose] = useStateD(false);
   const scrollRef = useRefD(null);
+  const fileInputRef = useRefD(null);
 
   const active = conversations.find((c) => c.id === activeId) || conversations[0];
 
@@ -170,11 +208,25 @@ function DialogsScreen({
     closed: conversations.filter((c) => c.status === "closed").length,
   }), [conversations]);
 
+  async function handleFileSelect(e) {
+    const file = e.target.files?.[0];
+    if (!file || !active) return;
+    e.target.value = "";
+    try {
+      const { url } = await window.apiFetch("UPLOAD", "/api/upload", file);
+      const type = file.type.startsWith("image/") ? "photo" : file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") ? "audio" : "document";
+      setPendingFile({ url, type, name: file.name });
+    } catch { showToast("Ошибка загрузки файла"); }
+  }
+
   function sendMessage() {
     const text = draft.trim();
-    if (!text || !active) return;
+    if (!text && !pendingFile) return;
+    if (!active) return;
     setDraft("");
-    if (onReply) onReply(active.id, text);
+    const fileArgs = pendingFile ? { file_url: pendingFile.url, file_type: pendingFile.type } : {};
+    setPendingFile(null);
+    if (onReply) onReply(active.id, text, fileArgs);
   }
 
   function handoffToOperator() {
@@ -292,12 +344,22 @@ function DialogsScreen({
                   <div className="text-center text-xs text-[#6b7280] py-8">Загрузка сообщений...</div>
                 )}
                 {(active.messages || []).map((m) => (
-                  <MessageBubble key={m.id} msg={m} onImageClick={() => setLightboxOpen(true)} />
+                  <MessageBubble key={m.id} msg={m} onImageClick={(url) => setLightboxUrl(url)} />
                 ))}
               </div>
 
               {/* Composer */}
               <div className="border-t border-[#2a2a3a] p-3.5 bg-[#13131a]/40">
+                <input ref={fileInputRef} type="file" className="hidden"
+                  accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.zip,.txt"
+                  onChange={handleFileSelect} />
+                {pendingFile && (
+                  <div className="mb-2 flex items-center gap-2 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg px-3 py-2">
+                    <Icon name="paperclip" className="w-4 h-4 text-[#4F8EF7] shrink-0" />
+                    <span className="text-xs text-[#f1f1f5] truncate flex-1">{pendingFile.name}</span>
+                    <button onClick={() => setPendingFile(null)} className="text-[#6b7280] hover:text-[#ef4444]"><Icon name="x" className="w-3.5 h-3.5" /></button>
+                  </div>
+                )}
                 <div className="bg-[#1a1a24] border border-[#2a2a3a] rounded-xl focus-within:border-[#4F8EF7]/50 transition">
                   <textarea
                     value={draft}
@@ -317,7 +379,8 @@ function DialogsScreen({
                     <div className="flex items-center gap-1">
                       <button
                         className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"
-                        onClick={() => showToast("Прикрепить файл")}
+                        disabled={active.status === "closed"}
+                        onClick={() => fileInputRef.current?.click()}
                       >
                         <Icon name="paperclip" />
                       </button>
@@ -343,7 +406,7 @@ function DialogsScreen({
                     </div>
                     <button
                       onClick={sendMessage}
-                      disabled={!draft.trim() || active.status === "closed"}
+                      disabled={(!draft.trim() && !pendingFile) || active.status === "closed"}
                       className="px-4 py-1.5 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
                     >
                       <Icon name="send" className="w-3.5 h-3.5" />
@@ -365,30 +428,22 @@ function DialogsScreen({
               showToast={showToast}
               servers={servers || []}
               onBillingAction={onBillingAction}
+              onTicketClick={setActiveId}
             />
           )}
         </aside>
       </div>
 
       {/* Lightbox */}
-      {lightboxOpen && (
+      {lightboxUrl && (
         <div
-          onClick={() => setLightboxOpen(false)}
+          onClick={() => setLightboxUrl(null)}
           className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-8"
         >
-          <div className="relative max-w-3xl w-full bg-[#1a1a24] rounded-xl overflow-hidden border border-[#2a2a3a]">
-            <div className="aspect-video relative" style={{ background: "linear-gradient(135deg,#1f1f2a,#0d0d12)" }}>
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="text-center">
-                  <Icon name="image" className="w-16 h-16 text-[#4F8EF7]/40 mx-auto mb-3" />
-                  <div className="text-sm text-[#6b7280] font-mono">screenshot.png</div>
-                  <div className="text-xs text-[#6b7280]/60 mt-1">1280 × 720 · 284 KB</div>
-                </div>
-              </div>
-              <div className="absolute inset-0 opacity-[0.04]" style={{ backgroundImage: "repeating-linear-gradient(45deg, #fff 0 1px, transparent 1px 12px)" }}></div>
-            </div>
+          <div className="relative max-w-4xl max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+            <img src={lightboxUrl} alt="" className="max-w-full max-h-[90vh] rounded-xl object-contain" />
             <button
-              onClick={() => setLightboxOpen(false)}
+              onClick={() => setLightboxUrl(null)}
               className="absolute top-3 right-3 w-8 h-8 rounded-full bg-black/60 hover:bg-black text-white flex items-center justify-center"
             >
               <Icon name="x" />
@@ -418,7 +473,7 @@ function DialogsScreen({
   );
 }
 
-function UserInfoPanel({ conv, showToast, servers, onBillingAction }) {
+function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClick }) {
   const [historyOpen, setHistoryOpen] = useStateD(true);
   const [billingOpen, setBillingOpen] = useStateD(null);
   const [months, setMonths] = useStateD(1);
@@ -609,7 +664,9 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction }) {
               <div className="text-xs text-[#6b7280] italic px-3 py-2">Нет закрытых обращений</div>
             )}
             {(conv.tickets || []).map((t) => (
-              <div key={t.id} className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 hover:border-[#2a2a3a] transition cursor-pointer">
+              <div key={t.id}
+                onClick={() => t.dialogId && onTicketClick && onTicketClick(t.dialogId)}
+                className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 hover:border-[#4F8EF7]/40 hover:bg-[#1a1a2e] transition cursor-pointer">
                 <div className="flex items-center justify-between mb-0.5">
                   <span className="text-[10px] font-mono text-[#6b7280]">{t.id}</span>
                   <span className="inline-flex items-center gap-1 text-[10px] text-[#22c55e]">

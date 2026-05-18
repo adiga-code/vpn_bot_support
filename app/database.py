@@ -117,6 +117,7 @@ class DatabaseManager:
                 online     BOOLEAN DEFAULT FALSE,
                 initials   TEXT,
                 color      TEXT DEFAULT '#4F8EF7',
+                notif_prefs TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
@@ -190,6 +191,7 @@ class DatabaseManager:
             ("dialogs", "last_message_text",    "TEXT"),
             ("dialogs", "last_message_time",    "TIMESTAMPTZ DEFAULT NOW()"),
             ("dialogs", "updated_at",           "TIMESTAMPTZ DEFAULT NOW()"),
+            ("dialogs", "summary",              "TEXT"),
             # messages
             ("messages", "kind",          "TEXT"),
             ("messages", "text",          "TEXT"),
@@ -203,6 +205,7 @@ class DatabaseManager:
             ("operators", "online",        "BOOLEAN DEFAULT FALSE"),
             ("operators", "initials",      "TEXT"),
             ("operators", "color",         "TEXT DEFAULT '#4F8EF7'"),
+            ("operators", "notif_prefs",   "TEXT"),
             ("operators", "password_hash", "TEXT"),
         ]
         for table, col, typedef in new_cols:
@@ -238,7 +241,7 @@ class DatabaseManager:
                 last_payment_date   = COALESCE(EXCLUDED.last_payment_date,  dialogs.last_payment_date),
                 unread_count        = dialogs.unread_count + 1,
                 updated_at          = NOW()
-            RETURNING *
+            RETURNING *, (xmax = 0) AS is_new_dialog
             """,
             dialog_id, chat_id, ai_enabled,
             ui.get("user_name"), ui.get("user_username"),
@@ -260,7 +263,7 @@ class DatabaseManager:
 
     async def get_dialog_history(self, chat_id: str, exclude_dialog_id: str = "") -> list[dict]:
         rows = await self.pool.fetch(
-            """SELECT dialog_id, last_message_text, status, updated_at
+            """SELECT dialog_id, last_message_text, summary, status, updated_at
                FROM dialogs WHERE chat_id=$1 AND status='closed' AND dialog_id!=$2
                ORDER BY updated_at DESC LIMIT 10""",
             chat_id, exclude_dialog_id,
@@ -316,6 +319,20 @@ class DatabaseManager:
         )
         return [dict(r) for r in rows]
 
+    async def save_dialog_summary(self, dialog_id: str, summary: str):
+        await self.pool.execute(
+            "UPDATE dialogs SET summary=$1 WHERE dialog_id=$2", summary, dialog_id,
+        )
+
+    async def get_messages_for_summary(self, dialog_id: str) -> list[dict]:
+        rows = await self.pool.fetch(
+            """SELECT kind, text FROM messages
+               WHERE dialog_id=$1 AND kind IN ('user','ai','operator') AND text IS NOT NULL AND text != ''
+               ORDER BY created_at ASC LIMIT 40""",
+            dialog_id,
+        )
+        return [dict(r) for r in rows]
+
     async def update_message_category(self, msg_id: int, category: str):
         await self.pool.execute(
             "UPDATE messages SET category=$1 WHERE id=$2", category, msg_id,
@@ -365,6 +382,12 @@ class DatabaseManager:
 
     async def set_operator_online(self, op_id: int, online: bool):
         await self.pool.execute("UPDATE operators SET online=$1 WHERE id=$2", online, op_id)
+
+    async def update_operator_notif_prefs(self, op_id: int, prefs: dict):
+        await self.pool.execute(
+            "UPDATE operators SET notif_prefs=$1 WHERE id=$2",
+            json.dumps(prefs, ensure_ascii=False), op_id,
+        )
 
     # ── Settings ──────────────────────────────────────────────────────────────
 

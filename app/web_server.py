@@ -1,10 +1,11 @@
+import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Body, Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -15,6 +16,8 @@ from app.billing import BillingProvider
 from app.config import Settings
 from app.database import DatabaseManager, avatar_color, make_initials
 from app.kb import delete_from_qdrant, process_document
+from app.storage import make_storage
+from app.summarizer import summarize_dialog
 from app.n8n_client import N8NClient
 from app.servers import ServerMonitor, StubServerMonitor
 from app.ws_manager import WebSocketManager
@@ -33,7 +36,7 @@ _AI_DEFAULTS = {
     "classification_enabled": False,
 }
 
-_NOTIF_DEFAULTS = {"new_dialog": True, "operator_called": True, "server_down": True}
+_NOTIF_PREFS_DEFAULT = {"new_dialog": True, "operator_called": True, "server_down": True}
 
 _SCHEDULE_DEFAULTS = {
     "mon": {"enabled": True,  "from": "09:00", "to": "21:00"},
@@ -95,19 +98,26 @@ def _fmt_dialog(row: dict, tickets: list = None) -> dict:
 
 
 def _fmt_message(row: dict) -> dict:
+    file_id = row.get("file_id")
+    file_url = row.get("file_url")
+    # handle legacy records where n8n put the URL into file_id
+    if not file_url and file_id and str(file_id).startswith("http"):
+        file_url, file_id = file_id, None
     return {
         "id": row["id"],
         "kind": row["kind"],
         "text": row.get("text") or "",
-        "fileId": row.get("file_id"),
+        "fileId": file_id,
         "fileType": row.get("file_type"),
-        "fileUrl": row.get("file_url"),
+        "fileUrl": file_url,
         "operator": row.get("operator_name"),
         "time": _fmt_time(row.get("created_at")),
     }
 
 
 def _fmt_operator(op: dict) -> dict:
+    raw_prefs = op.get("notif_prefs")
+    notif_prefs = json.loads(raw_prefs) if raw_prefs else _NOTIF_PREFS_DEFAULT
     return {
         "id": op["id"],
         "name": op["name"],
@@ -117,6 +127,7 @@ def _fmt_operator(op: dict) -> dict:
         "initials": op.get("initials") or make_initials(op["name"]),
         "color": op.get("color") or "#4F8EF7",
         "online": op.get("online", False),
+        "notifPrefs": notif_prefs,
     }
 
 
@@ -158,13 +169,13 @@ class AISettingsBody(BaseModel):
     handoff_enabled: bool
     classification_enabled: bool = False
 
-class ScheduleBody(BaseModel):
-    schedule: dict
-
-class NotificationsBody(BaseModel):
+class NotifPrefsBody(BaseModel):
     new_dialog:      bool = True
     operator_called: bool = True
     server_down:     bool = True
+
+class ScheduleBody(BaseModel):
+    schedule: dict
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -180,12 +191,25 @@ def build_app(
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
     chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
+    storage = make_storage(settings)
 
     if _STATIC.exists():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
     @app.middleware("http")
-    async def no_cache_static(request, call_next):
+    async def strip_root_prefix(request: Request, call_next):
+        # When nginx proxies without stripping the subpath prefix (e.g. /files/),
+        # rewrite the path so routes match correctly.
+        path = request.scope["path"]
+        root = settings.BASE_URL_PATH
+        if root and path.startswith(root + "/"):
+            request.scope["path"] = path[len(root):]
+            if "raw_path" in request.scope:
+                request.scope["raw_path"] = request.scope["raw_path"][len(root):]
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def no_cache_static(request: Request, call_next):
         response = await call_next(request)
         if request.url.path.endswith((".jsx", ".js", ".html")):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -294,12 +318,30 @@ def build_app(
         return _fmt_dialog(row, [
             {
                 "id": f"T-{t['dialog_id'][-4:]}",
-                "title": t["last_message_text"] or "Диалог",
+                "dialogId": t["dialog_id"],
+                "title": t.get("summary") or t["last_message_text"] or "Диалог",
                 "date": _fmt_time(t["updated_at"]),
                 "solved": True,
             }
             for t in tickets
         ])
+
+    @app.get("/api/dialogs/{dialog_id}/history")
+    async def get_dialog_history(dialog_id: str, operator: dict = Depends(require_auth)):
+        row = await db.get_dialog(dialog_id)
+        if not row:
+            raise HTTPException(404)
+        history = await db.get_dialog_history(row["chat_id"], dialog_id)
+        return [
+            {
+                "id": f"T-{t['dialog_id'][-4:]}",
+                "dialogId": t["dialog_id"],
+                "title": t.get("summary") or t["last_message_text"] or "Диалог",
+                "date": _fmt_time(t["updated_at"]),
+                "solved": True,
+            }
+            for t in history
+        ]
 
     @app.get("/api/dialogs/{dialog_id}/messages")
     async def get_messages(dialog_id: str, operator: dict = Depends(require_auth)):
@@ -361,10 +403,8 @@ def build_app(
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        notif = await db.get_setting_json("notifications", _NOTIF_DEFAULTS)
-        if notif.get("operator_called"):
-            username = updated.get("user_username") or dialog_id
-            await n8n.notify_event("operator_called", {"dialog_id": dialog_id, "username": username})
+        username = updated.get("user_username") or dialog_id
+        await n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/close")
@@ -379,7 +419,19 @@ def build_app(
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         await n8n.notify_dialog_closed(dialog_id, dialog["chat_id"], operator["name"])
+        if chat_client:
+            asyncio.create_task(_summarize_dialog_bg(dialog_id))
         return {"ok": True}
+
+    async def _summarize_dialog_bg(dialog_id: str):
+        try:
+            messages = await db.get_messages_for_summary(dialog_id)
+            summary = await summarize_dialog(messages, chat_client)
+            if summary:
+                await db.save_dialog_summary(dialog_id, summary)
+                print(f"[summarizer] dialog={dialog_id} → {summary}")
+        except Exception as e:
+            print(f"[summarizer] bg error: {e}")
 
     @app.post("/api/dialogs/{dialog_id}/billing/{action}")
     async def billing_action(dialog_id: str, action: str, body: dict = Body(default={}), operator: dict = Depends(require_auth)):
@@ -399,10 +451,23 @@ def build_app(
     async def upload_file(file: UploadFile = File(...), operator: dict = Depends(require_auth)):
         ext = Path(file.filename).suffix if file.filename else ""
         filename = f"{uuid.uuid4().hex}{ext}"
-        dest = uploads / filename
         content = await file.read()
-        dest.write_bytes(content)
-        return {"url": f"/api/files/{filename}", "filename": filename}
+        url = await storage.save(content, filename)
+        return {"url": url, "filename": filename}
+
+    @app.post("/api/n8n/upload")
+    async def n8n_upload(
+        request: Request,
+        file: UploadFile = File(...),
+    ):
+        key = request.headers.get("X-API-Key", "")
+        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
+            raise HTTPException(401, "Invalid API key")
+        ext = Path(file.filename).suffix if file.filename else ""
+        filename = f"{uuid.uuid4().hex}{ext}"
+        content = await file.read()
+        url = await storage.save(content, filename)
+        return {"url": url, "filename": filename}
 
     # ── Servers ───────────────────────────────────────────────────────────────
 
@@ -424,7 +489,16 @@ def build_app(
 
     @app.get("/api/operators")
     async def get_operators(operator: dict = Depends(require_auth)):
-        return await db.get_operators()
+        return [_fmt_operator(op) for op in await db.get_operators()]
+
+    @app.get("/api/operators/me/notifications")
+    async def get_my_notif_prefs(operator: dict = Depends(require_auth)):
+        return _fmt_operator(operator)["notifPrefs"]
+
+    @app.put("/api/operators/me/notifications")
+    async def save_my_notif_prefs(body: NotifPrefsBody, operator: dict = Depends(require_auth)):
+        await db.update_operator_notif_prefs(operator["id"], body.model_dump())
+        return {"ok": True}
 
     @app.post("/api/operators")
     async def create_operator(body: OperatorBody, operator: dict = Depends(require_auth)):
@@ -435,7 +509,7 @@ def build_app(
             if len(body.password) < 6:
                 raise HTTPException(400, "Password must be at least 6 characters")
             await db.set_password(op["id"], hash_password(body.password))
-        return op
+        return _fmt_operator(op)
 
     @app.put("/api/operators/{op_id}")
     async def update_operator(op_id: int, body: OperatorBody, operator: dict = Depends(require_auth)):
@@ -444,7 +518,7 @@ def build_app(
         result = await db.update_operator(op_id, body.name, body.tg, body.role, tg_id=body.tg_id)
         if not result:
             raise HTTPException(404)
-        return result
+        return _fmt_operator(result)
 
     @app.delete("/api/operators/{op_id}")
     async def delete_operator(op_id: int, operator: dict = Depends(require_auth)):
@@ -469,7 +543,16 @@ def build_app(
             raise HTTPException(403, "Admin only")
         data = body.model_dump()
         await db.set_setting_json("ai_settings", data)
-        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(data, ensure_ascii=False))
+        # For n8n: append [HANDOFF] instruction when handoff is enabled
+        n8n_data = dict(data)
+        if data.get("handoff_enabled"):
+            n8n_data["prompt"] = (data["prompt"] or "").rstrip() + (
+                "\n\nЕсли вопрос сложный, ты не уверен в ответе или пользователь просит живого оператора — "
+                "добавь [HANDOFF] в самое начало своего ответа. "
+                "Пример: «[HANDOFF] Передаю вас оператору, он скоро ответит.» "
+                "Без [HANDOFF] — отвечай самостоятельно."
+            )
+        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
         return {"ok": True}
 
     # ── Settings: Schedule ────────────────────────────────────────────────────
@@ -484,19 +567,6 @@ def build_app(
             raise HTTPException(403, "Admin only")
         await db.set_setting_json("schedule", body.schedule)
         await n8n.redis.set("vpn_bot:schedule", json.dumps(body.schedule, ensure_ascii=False))
-        return {"ok": True}
-
-    # ── Settings: Notifications ───────────────────────────────────────────────
-
-    @app.get("/api/settings/notifications")
-    async def get_notifications(operator: dict = Depends(require_auth)):
-        return await db.get_setting_json("notifications", _NOTIF_DEFAULTS)
-
-    @app.put("/api/settings/notifications")
-    async def save_notifications(body: NotificationsBody, operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
-        await db.set_setting_json("notifications", body.model_dump())
         return {"ok": True}
 
     # ── Knowledge Base ────────────────────────────────────────────────────────
@@ -549,11 +619,17 @@ def build_app(
         if not op_id:
             await websocket.close(code=4001)
             return
-        await ws.connect(websocket)
+        went_online = await ws.connect(websocket, op_id)
+        if went_online:
+            await db.set_operator_online(op_id, True)
+            await ws.broadcast({"type": "operator_status", "op_id": op_id, "online": True})
         try:
             while True:
                 await websocket.receive_text()
         except WebSocketDisconnect:
-            ws.disconnect(websocket)
+            departed_id, went_offline = ws.disconnect(websocket)
+            if went_offline and departed_id:
+                await db.set_operator_online(departed_id, False)
+                await ws.broadcast({"type": "operator_status", "op_id": departed_id, "online": False})
 
     return app

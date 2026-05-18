@@ -20,6 +20,26 @@ class Settings(BaseSettings):
 
     # ── File uploads ──────────────────────────────────────────────────────────
     UPLOADS_DIR: str = "app/uploads"
+    # Public base URL for absolute file links (scheme+host only, no path suffix)
+    # e.g. BASE_URL=https://helpdesk.example.com
+    # Required for n8n → Telegram file forwarding. Leave empty for dev/local use.
+    BASE_URL: str = ""
+    # Subpath prefix nginx proxies WITHOUT stripping, e.g. /files
+    # If nginx passes /files/api/... to the app as-is, set BASE_URL_PATH=/files
+    BASE_URL_PATH: str = ""
+    # Static API key for n8n file uploads — set any random string, e.g.:
+    # python -c "import secrets; print(secrets.token_hex(24))"
+    N8N_API_KEY: str = ""
+
+    # ── S3-compatible storage (optional) ──────────────────────────────────────
+    # If S3_BUCKET + S3_ACCESS_KEY are set, S3 is used instead of local disk.
+    # Compatible with AWS S3, Cloudflare R2, MinIO, Yandex Object Storage, etc.
+    S3_BUCKET:       str = ""
+    S3_ENDPOINT_URL: str = ""   # e.g. https://s3.amazonaws.com or MinIO URL
+    S3_ACCESS_KEY:   str = ""
+    S3_SECRET_KEY:   str = ""
+    S3_REGION:       str = "us-east-1"
+    S3_PUBLIC_URL:   str = ""   # CDN / custom domain override for public file URLs
 
     # ── Auth ──────────────────────────────────────────────────────────────────
     # Required — generate with: python -c "import secrets; print(secrets.token_hex(32))"
