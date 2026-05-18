@@ -67,7 +67,7 @@ class RedisConsumer:
         )}
 
         dialog_row = await self.db.upsert_dialog(dialog_id, chat_id, ai_enabled, user_info)
-        is_new = dialog_row["unread_count"] == 1
+        is_new = dialog_row["is_new_dialog"]
 
         msg_row = await self.db.save_message(
             dialog_id,
