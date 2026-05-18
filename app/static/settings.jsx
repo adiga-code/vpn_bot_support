@@ -13,9 +13,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
   const allSections = [
     { id: "operators",     label: "Операторы",    icon: "operators", adminOnly: true  },
     { id: "profile",       label: "Профиль",      icon: "user",      adminOnly: false },
-    { id: "schedule",      label: "Расписание",   icon: "clock",     adminOnly: true  },
     { id: "ai",            label: "ИИ-настройки", icon: "sparkles",  adminOnly: true  },
-    { id: "kb",            label: "База знаний",  icon: "book",      adminOnly: true  },
   ];
   const sections = allSections.filter(s => !s.adminOnly || isAdmin);
 
@@ -66,9 +64,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       <div className="flex-1 overflow-y-auto scrollbar-thin">
         {section === "operators"     && <OperatorsSection operators={ops} onAdd={() => { setEditingOp(null); setModalOpen(true); }} onEdit={(op) => { setEditingOp(op); setModalOpen(true); }} onDelete={(op) => setConfirmDelete(op)} />}
         {section === "profile"       && <ProfileSection showToast={showToast} />}
-        {section === "schedule"      && <ScheduleSection showToast={showToast} />}
         {section === "ai"            && <AISection showToast={showToast} />}
-        {section === "kb"            && <KBSection />}
       </div>
 
       {modalOpen && <OperatorModal editing={editingOp} onClose={() => setModalOpen(false)} onSave={saveOperator} />}
@@ -291,7 +287,6 @@ function ProfileSection({ showToast }) {
           {[
             ["new_dialog",      "Новый диалог",        "Пользователь впервые написал в бот"],
             ["operator_called", "Вызов оператора",     "Пользователь или ИИ запросили человека"],
-            ["server_down",     "Сервер недоступен",   "VPN-сервер перестал отвечать"],
           ].map(([key, title, desc]) => (
             <div key={key} className="px-5 py-3 flex items-center justify-between">
               <div>
@@ -421,8 +416,6 @@ function AISection({ showToast }) {
       </div>
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
         <SettingsRow title="Автоматические ответы" desc="ИИ сам отвечает на сообщения" control={<Switch on={settings.auto_reply} onChange={() => setSettings((s) => ({ ...s, auto_reply: !s.auto_reply }))} />} />
-        <SettingsRow title="Передавать при низкой уверенности" desc="Если ИИ не уверен — зовёт оператора" control={<Switch on={settings.handoff_enabled} onChange={() => setSettings((s) => ({ ...s, handoff_enabled: !s.handoff_enabled }))} />} />
-        <SettingsRow title="Классификация вопросов" desc="Автоматически определять тему каждого сообщения через OpenAI. Требует OPENAI_API_KEY. Результат — в Статистике → Топ вопросов." control={<Switch on={!!settings.classification_enabled} onChange={() => setSettings((s) => ({ ...s, classification_enabled: !s.classification_enabled }))} />} />
         <div className="px-5 py-4">
           <div className="flex justify-between mb-2">
             <div>
@@ -441,12 +434,6 @@ function AISection({ showToast }) {
         <div className="text-xs text-[#6b7280] mb-3">Инструкции для ИИ в начале каждого диалога</div>
         <textarea value={settings.prompt} onChange={(e) => setSettings((s) => ({ ...s, prompt: e.target.value }))} rows={6}
           className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed" />
-        {settings.handoff_enabled && (
-          <div className="mt-2 flex items-start gap-2 text-xs text-[#6b7280] bg-[#4F8EF7]/5 border border-[#4F8EF7]/15 rounded-lg px-3 py-2">
-            <span className="text-[#4F8EF7] mt-0.5 shrink-0">+</span>
-            <span>К промпту автоматически добавляется инструкция про <span className="font-mono text-[#7BA8F9]">[HANDOFF]</span> — ИИ будет знать когда звать оператора. В редакторе не отображается.</span>
-          </div>
-        )}
       </div>
       <div className="flex justify-end">
         <button onClick={save} className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold">Сохранить</button>
