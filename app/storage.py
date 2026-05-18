@@ -8,12 +8,14 @@ if TYPE_CHECKING:
 
 
 class LocalStorage:
-    def __init__(self, uploads_path: Path):
+    def __init__(self, uploads_path: Path, base_url: str):
         self.uploads_path = uploads_path
+        # base_url must be scheme+host only, e.g. https://example.com (no path suffix)
+        self.base_url = base_url.rstrip("/") if base_url else ""
 
     async def save(self, content: bytes, filename: str) -> str:
         (self.uploads_path / filename).write_bytes(content)
-        return f"/api/files/{filename}"
+        return f"{self.base_url}/api/files/{filename}"
 
 
 class S3Storage:
@@ -59,4 +61,4 @@ def make_storage(settings: "Settings") -> "LocalStorage | S3Storage":
             region=settings.S3_REGION,
             public_url=settings.S3_PUBLIC_URL,
         )
-    return LocalStorage(settings.uploads_path())
+    return LocalStorage(settings.uploads_path(), settings.BASE_URL)

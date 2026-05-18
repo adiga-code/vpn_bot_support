@@ -20,8 +20,9 @@ class Settings(BaseSettings):
 
     # ── File uploads ──────────────────────────────────────────────────────────
     UPLOADS_DIR: str = "app/uploads"
-    # Public base URL for absolute links when using local storage
-    # e.g. https://helpdesk.example.com  — leave empty for relative URLs
+    # Public base URL for absolute file links (scheme+host only, no path suffix)
+    # e.g. BASE_URL=https://helpdesk.example.com
+    # Required for n8n → Telegram file forwarding. Leave empty for dev/local use.
     BASE_URL: str = ""
 
     # ── S3-compatible storage (optional) ──────────────────────────────────────
