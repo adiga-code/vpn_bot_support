@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ from app.billing import BillingProvider
 from app.config import Settings
 from app.database import DatabaseManager, avatar_color, make_initials
 from app.kb import delete_from_qdrant, process_document
+from app.summarizer import summarize_dialog
 from app.n8n_client import N8NClient
 from app.servers import ServerMonitor, StubServerMonitor
 from app.ws_manager import WebSocketManager
@@ -297,7 +299,8 @@ def build_app(
         return _fmt_dialog(row, [
             {
                 "id": f"T-{t['dialog_id'][-4:]}",
-                "title": t["last_message_text"] or "Диалог",
+                "dialogId": t["dialog_id"],
+                "title": t.get("summary") or t["last_message_text"] or "Диалог",
                 "date": _fmt_time(t["updated_at"]),
                 "solved": True,
             }
@@ -314,7 +317,7 @@ def build_app(
             {
                 "id": f"T-{t['dialog_id'][-4:]}",
                 "dialogId": t["dialog_id"],
-                "title": t["last_message_text"] or "Диалог",
+                "title": t.get("summary") or t["last_message_text"] or "Диалог",
                 "date": _fmt_time(t["updated_at"]),
                 "solved": True,
             }
@@ -397,7 +400,19 @@ def build_app(
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         await n8n.notify_dialog_closed(dialog_id, dialog["chat_id"], operator["name"])
+        if chat_client:
+            asyncio.create_task(_summarize_dialog_bg(dialog_id))
         return {"ok": True}
+
+    async def _summarize_dialog_bg(dialog_id: str):
+        try:
+            messages = await db.get_messages_for_summary(dialog_id)
+            summary = await summarize_dialog(messages, chat_client)
+            if summary:
+                await db.save_dialog_summary(dialog_id, summary)
+                print(f"[summarizer] dialog={dialog_id} → {summary}")
+        except Exception as e:
+            print(f"[summarizer] bg error: {e}")
 
     @app.post("/api/dialogs/{dialog_id}/billing/{action}")
     async def billing_action(dialog_id: str, action: str, body: dict = Body(default={}), operator: dict = Depends(require_auth)):

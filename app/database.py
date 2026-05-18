@@ -191,6 +191,7 @@ class DatabaseManager:
             ("dialogs", "last_message_text",    "TEXT"),
             ("dialogs", "last_message_time",    "TIMESTAMPTZ DEFAULT NOW()"),
             ("dialogs", "updated_at",           "TIMESTAMPTZ DEFAULT NOW()"),
+            ("dialogs", "summary",              "TEXT"),
             # messages
             ("messages", "kind",          "TEXT"),
             ("messages", "text",          "TEXT"),
@@ -262,7 +263,7 @@ class DatabaseManager:
 
     async def get_dialog_history(self, chat_id: str, exclude_dialog_id: str = "") -> list[dict]:
         rows = await self.pool.fetch(
-            """SELECT dialog_id, last_message_text, status, updated_at
+            """SELECT dialog_id, last_message_text, summary, status, updated_at
                FROM dialogs WHERE chat_id=$1 AND status='closed' AND dialog_id!=$2
                ORDER BY updated_at DESC LIMIT 10""",
             chat_id, exclude_dialog_id,
@@ -315,6 +316,20 @@ class DatabaseManager:
     async def get_messages(self, dialog_id: str) -> list[dict]:
         rows = await self.pool.fetch(
             "SELECT * FROM messages WHERE dialog_id=$1 ORDER BY created_at ASC", dialog_id,
+        )
+        return [dict(r) for r in rows]
+
+    async def save_dialog_summary(self, dialog_id: str, summary: str):
+        await self.pool.execute(
+            "UPDATE dialogs SET summary=$1 WHERE dialog_id=$2", summary, dialog_id,
+        )
+
+    async def get_messages_for_summary(self, dialog_id: str) -> list[dict]:
+        rows = await self.pool.fetch(
+            """SELECT kind, text FROM messages
+               WHERE dialog_id=$1 AND kind IN ('user','ai','operator') AND text IS NOT NULL AND text != ''
+               ORDER BY created_at ASC LIMIT 40""",
+            dialog_id,
         )
         return [dict(r) for r in rows]
 

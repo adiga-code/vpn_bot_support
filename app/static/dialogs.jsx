@@ -422,6 +422,7 @@ function DialogsScreen({
               showToast={showToast}
               servers={servers || []}
               onBillingAction={onBillingAction}
+              onTicketClick={setActiveId}
             />
           )}
         </aside>
@@ -466,7 +467,7 @@ function DialogsScreen({
   );
 }
 
-function UserInfoPanel({ conv, showToast, servers, onBillingAction }) {
+function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClick }) {
   const [historyOpen, setHistoryOpen] = useStateD(true);
   const [billingOpen, setBillingOpen] = useStateD(null);
   const [months, setMonths] = useStateD(1);
@@ -657,7 +658,9 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction }) {
               <div className="text-xs text-[#6b7280] italic px-3 py-2">Нет закрытых обращений</div>
             )}
             {(conv.tickets || []).map((t) => (
-              <div key={t.id} className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 hover:border-[#2a2a3a] transition cursor-pointer">
+              <div key={t.id}
+                onClick={() => t.dialogId && onTicketClick && onTicketClick(t.dialogId)}
+                className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 hover:border-[#4F8EF7]/40 hover:bg-[#1a1a2e] transition cursor-pointer">
                 <div className="flex items-center justify-between mb-0.5">
                   <span className="text-[10px] font-mono text-[#6b7280]">{t.id}</span>
                   <span className="inline-flex items-center gap-1 text-[10px] text-[#22c55e]">
