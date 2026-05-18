@@ -14,6 +14,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
     { id: "operators",     label: "Операторы",    icon: "operators", adminOnly: true  },
     { id: "profile",       label: "Профиль",      icon: "user",      adminOnly: false },
     { id: "ai",            label: "ИИ-настройки", icon: "sparkles",  adminOnly: true  },
+    { id: "kb",            label: "База знаний",  icon: "book",      adminOnly: true  },
   ];
   const sections = allSections.filter(s => !s.adminOnly || isAdmin);
 
@@ -65,6 +66,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
         {section === "operators"     && <OperatorsSection operators={ops} onAdd={() => { setEditingOp(null); setModalOpen(true); }} onEdit={(op) => { setEditingOp(op); setModalOpen(true); }} onDelete={(op) => setConfirmDelete(op)} />}
         {section === "profile"       && <ProfileSection showToast={showToast} />}
         {section === "ai"            && <AISection showToast={showToast} />}
+        {section === "kb"            && <KBSection />}
       </div>
 
       {modalOpen && <OperatorModal editing={editingOp} onClose={() => setModalOpen(false)} onSave={saveOperator} />}
