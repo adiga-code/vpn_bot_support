@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Body, Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -432,6 +432,20 @@ def build_app(
 
     @app.post("/api/upload")
     async def upload_file(file: UploadFile = File(...), operator: dict = Depends(require_auth)):
+        ext = Path(file.filename).suffix if file.filename else ""
+        filename = f"{uuid.uuid4().hex}{ext}"
+        content = await file.read()
+        url = await storage.save(content, filename)
+        return {"url": url, "filename": filename}
+
+    @app.post("/api/n8n/upload")
+    async def n8n_upload(
+        request: Request,
+        file: UploadFile = File(...),
+    ):
+        key = request.headers.get("X-API-Key", "")
+        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
+            raise HTTPException(401, "Invalid API key")
         ext = Path(file.filename).suffix if file.filename else ""
         filename = f"{uuid.uuid4().hex}{ext}"
         content = await file.read()
