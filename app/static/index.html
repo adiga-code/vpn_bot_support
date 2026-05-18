@@ -217,13 +217,11 @@
       const screens = [
         { id: "dialogs",  label: "Диалоги",    icon: "chat"     },
         { id: "stats",    label: "Статистика", icon: "chart"    },
-        { id: "servers",  label: "Серверы",    icon: "server"   },
         { id: "settings", label: "Настройки",  icon: "settings" },
       ];
       const breadcrumbMap = {
         dialogs:  ["Диалоги", activeName ? "@" + activeName : null],
         stats:    ["Статистика"],
-        servers:  ["Серверы VPN"],
         settings: ["Настройки"],
       };
       const crumbs = breadcrumbMap[screen].filter(Boolean);
@@ -658,7 +656,6 @@
                 aiPct={stats ? stats.ai_pct : null}
               />
             )}
-            {screen === "servers" && <ServersScreen />}
             {screen === "settings" && (
               <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast} currentOperator={currentOperator} />
             )}
