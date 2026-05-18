@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # e.g. BASE_URL=https://helpdesk.example.com
     # Required for n8n → Telegram file forwarding. Leave empty for dev/local use.
     BASE_URL: str = ""
+    # Static API key for n8n file uploads — set any random string, e.g.:
+    # python -c "import secrets; print(secrets.token_hex(24))"
+    N8N_API_KEY: str = ""
 
     # ── S3-compatible storage (optional) ──────────────────────────────────────
     # If S3_BUCKET + S3_ACCESS_KEY are set, S3 is used instead of local disk.
