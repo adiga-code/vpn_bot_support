@@ -57,6 +57,9 @@ class RedisConsumer:
         file_id = data.get("file_id")
         file_type = data.get("file_type", "text")
         file_url = data.get("file_url")
+        # n8n sometimes puts the uploaded URL into file_id instead of file_url
+        if not file_url and file_id and str(file_id).startswith("http"):
+            file_url, file_id = file_id, None
         ai_enabled = data.get("ai_enabled", True)
         operator_called = bool(data.get("operator_called", False))
 

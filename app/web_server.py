@@ -98,13 +98,18 @@ def _fmt_dialog(row: dict, tickets: list = None) -> dict:
 
 
 def _fmt_message(row: dict) -> dict:
+    file_id = row.get("file_id")
+    file_url = row.get("file_url")
+    # handle legacy records where n8n put the URL into file_id
+    if not file_url and file_id and str(file_id).startswith("http"):
+        file_url, file_id = file_id, None
     return {
         "id": row["id"],
         "kind": row["kind"],
         "text": row.get("text") or "",
-        "fileId": row.get("file_id"),
+        "fileId": file_id,
         "fileType": row.get("file_type"),
-        "fileUrl": row.get("file_url"),
+        "fileUrl": file_url,
         "operator": row.get("operator_name"),
         "time": _fmt_time(row.get("created_at")),
     }
