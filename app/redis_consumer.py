@@ -10,8 +10,6 @@ from app.n8n_client import N8NClient
 from app.web_server import _fmt_dialog, _fmt_message
 from app.ws_manager import WebSocketManager
 
-_NOTIF_DEFAULTS = {"new_dialog": True, "operator_called": True, "server_down": True}
-
 
 class RedisConsumer:
     """Reads inbound n8n events from the Redis queue and pushes them to the UI via WebSocket."""
@@ -49,12 +47,6 @@ class RedisConsumer:
             except Exception as e:
                 print(f"Consumer error: {e}")
                 await asyncio.sleep(1)
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
-    async def _notif_enabled(self, key: str) -> bool:
-        settings = await self.db.get_setting_json("notifications", _NOTIF_DEFAULTS)
-        return bool(settings.get(key, True))
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -104,13 +96,12 @@ class RedisConsumer:
 
         if is_new:
             await self.ws.broadcast({"type": "new_dialog", "dialog": _fmt_dialog(updated)})
-            if await self._notif_enabled("new_dialog"):
-                await self.n8n.notify_event("new_dialog", {"dialog_id": dialog_id, "username": username})
+            await self.n8n.schedule_notify("new_dialog", {"dialog_id": dialog_id, "username": username})
         else:
             await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
 
-        if operator_called and await self._notif_enabled("operator_called"):
-            await self.n8n.notify_event("operator_called", {"dialog_id": dialog_id, "username": username})
+        if operator_called:
+            await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
 
     async def _classify_later(self, msg_id: int, text: str):
         try:
@@ -160,6 +151,5 @@ class RedisConsumer:
         updated = await self.db.get_dialog(dialog_id)
         await self.ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(sys_row)})
         await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        if await self._notif_enabled("operator_called"):
-            username = updated.get("user_username") or dialog_id
-            await self.n8n.notify_event("operator_called", {"dialog_id": dialog_id, "username": username})
+        username = updated.get("user_username") or dialog_id
+        await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})

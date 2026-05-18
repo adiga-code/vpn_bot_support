@@ -59,12 +59,17 @@
     async function apiFetch(method, path, body) {
       const headers = {};
       if (_token) headers["Authorization"] = "Bearer " + _token;
-      if (body !== undefined) headers["Content-Type"] = "application/json";
-      const res = await fetch(path, {
-        method,
-        headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-      });
+      let fetchBody;
+      if (method === "UPLOAD" && body instanceof File) {
+        const fd = new FormData();
+        fd.append("file", body);
+        fetchBody = fd;
+        method = "POST";
+      } else if (body !== undefined) {
+        headers["Content-Type"] = "application/json";
+        fetchBody = JSON.stringify(body);
+      }
+      const res = await fetch(path, { method, headers, body: fetchBody });
       if (res.status === 401) {
         setToken("");
         if (_authExpiredCb) _authExpiredCb();
@@ -361,8 +366,9 @@
       const [profileOpen,     setProfileOpen]     = useState(false);
       const [toast,           setToast]           = useState(null);
 
-      const loadedRef = useRef(new Set());
-      const wsRef     = useRef(null);
+      const loadedRef        = useRef(new Set());
+      const ticketsLoadedRef = useRef(new Set());
+      const wsRef            = useRef(null);
 
       function showToast(msg) {
         setToast(msg);
@@ -473,18 +479,30 @@
         return () => ws.close();
       }, [authState]);
 
-      // ── Lazy-load messages ────────────────────────────────────────────────
+      // ── Lazy-load messages + history ──────────────────────────────────────
 
       useEffect(() => {
-        if (!activeId || loadedRef.current.has(activeId)) return;
-        loadedRef.current.add(activeId);
-        apiGet(`/api/dialogs/${activeId}/messages`)
-          .then((msgs) =>
-            setConversations((prev) =>
-              prev.map((c) => (c.id === activeId ? { ...c, messages: msgs } : c))
+        if (!activeId) return;
+        if (!loadedRef.current.has(activeId)) {
+          loadedRef.current.add(activeId);
+          apiGet(`/api/dialogs/${activeId}/messages`)
+            .then((msgs) =>
+              setConversations((prev) =>
+                prev.map((c) => (c.id === activeId ? { ...c, messages: msgs } : c))
+              )
             )
-          )
-          .catch((e) => console.error("Failed to load messages:", e));
+            .catch((e) => console.error("Failed to load messages:", e));
+        }
+        if (!ticketsLoadedRef.current.has(activeId)) {
+          ticketsLoadedRef.current.add(activeId);
+          apiGet(`/api/dialogs/${activeId}/history`)
+            .then((tickets) =>
+              setConversations((prev) =>
+                prev.map((c) => (c.id === activeId ? { ...c, tickets } : c))
+              )
+            )
+            .catch(() => {});
+        }
       }, [activeId]);
 
       // ── Auth actions ──────────────────────────────────────────────────────
@@ -510,17 +528,19 @@
         setConversations([]);
         setActiveId(null);
         loadedRef.current = new Set();
+        ticketsLoadedRef.current = new Set();
         if (wsRef.current) wsRef.current.close();
         setAuthState("login");
       }
 
       // ── API callbacks ─────────────────────────────────────────────────────
 
-      async function handleReply(dialog_id, text) {
+      async function handleReply(dialog_id, text, fileArgs) {
         try {
           await apiPost(`/api/dialogs/${dialog_id}/reply`, {
             text,
             operator_name: currentOperator?.name || "Оператор",
+            ...(fileArgs || {}),
           });
         } catch (e) {
           console.error("Reply failed:", e);
