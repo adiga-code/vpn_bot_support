@@ -192,7 +192,19 @@ def build_app(
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
     @app.middleware("http")
-    async def no_cache_static(request, call_next):
+    async def strip_root_prefix(request: Request, call_next):
+        # When nginx proxies without stripping the subpath prefix (e.g. /files/),
+        # rewrite the path so routes match correctly.
+        path = request.scope["path"]
+        root = settings.BASE_URL_PATH
+        if root and path.startswith(root + "/"):
+            request.scope["path"] = path[len(root):]
+            if "raw_path" in request.scope:
+                request.scope["raw_path"] = request.scope["raw_path"][len(root):]
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def no_cache_static(request: Request, call_next):
         response = await call_next(request)
         if request.url.path.endswith((".jsx", ".js", ".html")):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
