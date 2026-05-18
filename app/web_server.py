@@ -16,6 +16,7 @@ from app.billing import BillingProvider
 from app.config import Settings
 from app.database import DatabaseManager, avatar_color, make_initials
 from app.kb import delete_from_qdrant, process_document
+from app.storage import make_storage
 from app.summarizer import summarize_dialog
 from app.n8n_client import N8NClient
 from app.servers import ServerMonitor, StubServerMonitor
@@ -185,6 +186,7 @@ def build_app(
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
     chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
+    storage = make_storage(settings)
 
     if _STATIC.exists():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
@@ -432,10 +434,9 @@ def build_app(
     async def upload_file(file: UploadFile = File(...), operator: dict = Depends(require_auth)):
         ext = Path(file.filename).suffix if file.filename else ""
         filename = f"{uuid.uuid4().hex}{ext}"
-        dest = uploads / filename
         content = await file.read()
-        dest.write_bytes(content)
-        return {"url": f"/api/files/{filename}", "filename": filename}
+        url = await storage.save(content, filename)
+        return {"url": url, "filename": filename}
 
     # ── Servers ───────────────────────────────────────────────────────────────
 

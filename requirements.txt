@@ -11,3 +11,4 @@ PyJWT==2.8.0
 openai==1.30.0
 httpx>=0.23.0,<0.28.0
 qdrant-client==1.9.1
+boto3>=1.34

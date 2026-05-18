@@ -20,6 +20,19 @@ class Settings(BaseSettings):
 
     # ── File uploads ──────────────────────────────────────────────────────────
     UPLOADS_DIR: str = "app/uploads"
+    # Public base URL for absolute links when using local storage
+    # e.g. https://helpdesk.example.com  — leave empty for relative URLs
+    BASE_URL: str = ""
+
+    # ── S3-compatible storage (optional) ──────────────────────────────────────
+    # If S3_BUCKET + S3_ACCESS_KEY are set, S3 is used instead of local disk.
+    # Compatible with AWS S3, Cloudflare R2, MinIO, Yandex Object Storage, etc.
+    S3_BUCKET:       str = ""
+    S3_ENDPOINT_URL: str = ""   # e.g. https://s3.amazonaws.com or MinIO URL
+    S3_ACCESS_KEY:   str = ""
+    S3_SECRET_KEY:   str = ""
+    S3_REGION:       str = "us-east-1"
+    S3_PUBLIC_URL:   str = ""   # CDN / custom domain override for public file URLs
 
     # ── Auth ──────────────────────────────────────────────────────────────────
     # Required — generate with: python -c "import secrets; print(secrets.token_hex(32))"
