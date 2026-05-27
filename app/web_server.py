@@ -202,6 +202,11 @@ class AutomationSettingsBody(BaseModel):
 class BroadcastBody(BaseModel):
     text: str
 
+class TemplateBody(BaseModel):
+    group_name: str = "Общие"
+    title: str
+    text: str
+
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
@@ -694,6 +699,38 @@ def build_app(
         # Rate-limiting (30 msg/sec Telegram limit) is handled by n8n — add a
         # 50 ms Wait node between iterations in the "Send to User" workflow.
         return {"sent": sent, "failed": failed, "total": len(chat_ids)}
+
+    # ── Templates ─────────────────────────────────────────────────────────────
+
+    @app.get("/api/templates")
+    async def get_templates(operator: dict = Depends(require_auth)):
+        return await db.get_templates()
+
+    @app.post("/api/templates")
+    async def create_template(body: TemplateBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not body.title.strip() or not body.text.strip():
+            raise HTTPException(400, "Название и текст обязательны")
+        return await db.save_template(None, body.group_name.strip() or "Общие", body.title.strip(), body.text.strip())
+
+    @app.put("/api/templates/{template_id}")
+    async def update_template(template_id: int, body: TemplateBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        row = await db.save_template(template_id, body.group_name.strip() or "Общие", body.title.strip(), body.text.strip())
+        if not row:
+            raise HTTPException(404)
+        return row
+
+    @app.delete("/api/templates/{template_id}")
+    async def delete_template_ep(template_id: int, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        ok = await db.delete_template(template_id)
+        if not ok:
+            raise HTTPException(404)
+        return {"ok": True}
 
     # ── WebSocket ─────────────────────────────────────────────────────────────
 

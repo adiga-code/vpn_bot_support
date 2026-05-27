@@ -1,6 +1,6 @@
 // Settings screen
 
-const { useState: useStateT, useEffect: useEffectT } = React;
+const { useState: useStateT, useEffect: useEffectT, useMemo: useMemoT } = React;
 
 function SettingsScreen({ operators: ops, setOperators, showToast, currentOperator }) {
   const isAdmin = currentOperator?.role === "admin";
@@ -17,6 +17,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
     { id: "kb",            label: "База знаний",  icon: "book",      adminOnly: true  },
     { id: "automation",    label: "Автоматизация",icon: "zap",       adminOnly: true  },
     { id: "broadcast",     label: "Рассылка",     icon: "megaphone", adminOnly: true  },
+    { id: "templates",     label: "Шаблоны",      icon: "template",  adminOnly: true  },
   ];
   const sections = allSections.filter(s => !s.adminOnly || isAdmin);
 
@@ -71,6 +72,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
         {section === "kb"            && <KBSection />}
         {section === "automation"    && <AutomationSection showToast={showToast} />}
         {section === "broadcast"     && <BroadcastSection showToast={showToast} />}
+        {section === "templates"     && <TemplatesSection showToast={showToast} />}
       </div>
 
       {modalOpen && <OperatorModal editing={editingOp} onClose={() => setModalOpen(false)} onSave={saveOperator} />}
@@ -848,6 +850,168 @@ function Switch({ on, onChange }) {
       className={"relative w-10 h-[22px] rounded-full transition shrink-0 " + (on ? "bg-[#4F8EF7]" : "bg-[#2a2a3a]")}>
       <span className={"absolute top-[2px] w-[18px] h-[18px] bg-white rounded-full transition-all " + (on ? "left-[20px]" : "left-[2px]")}></span>
     </button>
+  );
+}
+
+function TemplateModal({ template, groups, onSave, onClose }) {
+  const [form, setForm] = useStateT({
+    title: template?.title || "",
+    group_name: template?.group_name || (groups[0] || "Общие"),
+    text: template?.text || "",
+  });
+  function set(k, v) { setForm(f => ({ ...f, [k]: v })); }
+  function submit(e) {
+    e.preventDefault();
+    if (!form.title.trim() || !form.text.trim()) return;
+    onSave({ ...form, id: template?.id });
+  }
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-lg" onClick={e => e.stopPropagation()}>
+        <div className="font-semibold text-[#f1f1f5] mb-4">{template ? "Редактировать шаблон" : "Добавить шаблон"}</div>
+        <form onSubmit={submit} className="space-y-4">
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Название</label>
+            <input value={form.title} onChange={e => set("title", e.target.value)} required
+              placeholder="Занимаюсь решением вопроса"
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 placeholder:text-[#6b7280]" />
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Группа</label>
+            <input value={form.group_name} onChange={e => set("group_name", e.target.value)}
+              list="tpl-groups" placeholder="Общие"
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 placeholder:text-[#6b7280]" />
+            <datalist id="tpl-groups">
+              {groups.map(g => <option key={g} value={g} />)}
+            </datalist>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Текст шаблона</label>
+            <textarea value={form.text} onChange={e => set("text", e.target.value)} required rows={4}
+              placeholder="Принял вашу заявку. Как только у меня будет решение, вернусь к вам..."
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed resize-none placeholder:text-[#6b7280]" />
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose}
+              className="px-3 py-1.5 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+            <button type="submit"
+              className="px-4 py-1.5 rounded-lg text-sm font-medium bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white">Сохранить</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function TemplatesSection({ showToast }) {
+  const [templates, setTemplates] = useStateT(null);
+  const [modal, setModal] = useStateT(null); // null | { template?: obj }
+  const [deleting, setDeleting] = useStateT(null);
+
+  useEffectT(() => {
+    window.apiFetch("GET", "/api/templates").then(setTemplates).catch(() => setTemplates([]));
+  }, []);
+
+  const groups = useMemoT(() => {
+    if (!templates) return [];
+    return [...new Set(templates.map(t => t.group_name))];
+  }, [templates]);
+
+  const grouped = useMemoT(() => {
+    if (!templates) return {};
+    return templates.reduce((acc, t) => {
+      (acc[t.group_name] = acc[t.group_name] || []).push(t);
+      return acc;
+    }, {});
+  }, [templates]);
+
+  async function saveTemplate(data) {
+    try {
+      const method = data.id ? "PUT" : "POST";
+      const url = data.id ? `/api/templates/${data.id}` : "/api/templates";
+      const saved = await window.apiFetch(method, url, data);
+      setTemplates(prev => data.id
+        ? prev.map(t => t.id === data.id ? saved : t)
+        : [...prev, saved].sort((a, b) => a.group_name.localeCompare(b.group_name) || a.title.localeCompare(b.title)));
+      showToast(data.id ? "Шаблон обновлён" : "Шаблон добавлен");
+    } catch { showToast("Ошибка сохранения"); }
+    setModal(null);
+  }
+
+  async function deleteTemplate(id) {
+    setDeleting(id);
+    try {
+      await window.apiFetch("DELETE", `/api/templates/${id}`);
+      setTemplates(prev => prev.filter(t => t.id !== id));
+      showToast("Шаблон удалён");
+    } catch { showToast("Ошибка удаления"); }
+    setDeleting(null);
+  }
+
+  if (templates === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+
+  return (
+    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold text-[#f1f1f5]">Шаблоны сообщений</h1>
+          <div className="text-xs text-[#6b7280] mt-0.5">{templates.length} шаблонов · {groups.length} групп</div>
+        </div>
+        <button onClick={() => setModal({})}
+          className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5">
+          <Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />
+          Добавить шаблон
+        </button>
+      </div>
+
+      {templates.length === 0 && (
+        <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-10 text-center">
+          <div className="w-12 h-12 rounded-xl bg-[#4F8EF7]/10 text-[#7BA8F9] flex items-center justify-center mx-auto mb-3">
+            <Icon name="template" className="w-6 h-6" />
+          </div>
+          <div className="text-sm text-[#f1f1f5] font-medium mb-1">Шаблонов пока нет</div>
+          <div className="text-xs text-[#6b7280]">Добавьте готовые ответы — операторы смогут вставлять их в один клик</div>
+        </div>
+      )}
+
+      {Object.entries(grouped).map(([group, items]) => (
+        <div key={group} className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
+          <div className="px-5 py-2.5 bg-[#1a1a24]/60 border-b border-[#2a2a3a]/60">
+            <span className="text-xs font-semibold text-[#6b7280] uppercase tracking-wider">{group}</span>
+            <span className="ml-2 text-xs text-[#4a4a5a]">{items.length}</span>
+          </div>
+          <div className="divide-y divide-[#2a2a3a]/40">
+            {items.map(t => (
+              <div key={t.id} className="px-5 py-3 flex items-start justify-between gap-3 hover:bg-[#1a1a24]/40 transition">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-[#f1f1f5] font-medium">{t.title}</div>
+                  <div className="text-xs text-[#6b7280] mt-0.5 truncate">{t.text}</div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button onClick={() => setModal({ template: t })}
+                    className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition">
+                    <Icon name="edit" className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => deleteTemplate(t.id)} disabled={deleting === t.id}
+                    className="p-1.5 text-[#6b7280] hover:text-[#ef4444] hover:bg-[#ef4444]/10 rounded transition disabled:opacity-40">
+                    <Icon name="trash" className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {modal !== null && (
+        <TemplateModal
+          template={modal.template}
+          groups={groups}
+          onSave={saveTemplate}
+          onClose={() => setModal(null)}
+        />
+      )}
+    </div>
   );
 }
 

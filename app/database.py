@@ -139,6 +139,16 @@ class DatabaseManager:
             )
         """)
 
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS message_templates (
+                id         SERIAL PRIMARY KEY,
+                group_name TEXT NOT NULL DEFAULT 'Общие',
+                title      TEXT NOT NULL,
+                text       TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+
         # ── n8n shared tables ────────────────────────────────────────────────
         # n8n connects to the same PostgreSQL and uses these tables.
         # Names are prefixed with n8n_ to avoid collisions with helpdesk tables.
@@ -500,6 +510,31 @@ class DatabaseManager:
 
     async def delete_kb_article(self, article_id: str) -> bool:
         result = await self.pool.execute("DELETE FROM kb_articles WHERE id=$1", article_id)
+        return result == "DELETE 1"
+
+    async def get_templates(self) -> list[dict]:
+        rows = await self.pool.fetch(
+            "SELECT * FROM message_templates ORDER BY group_name, title"
+        )
+        return [dict(r) for r in rows]
+
+    async def save_template(self, id: int | None, group_name: str, title: str, text: str) -> dict | None:
+        if id:
+            row = await self.pool.fetchrow(
+                "UPDATE message_templates SET group_name=$1, title=$2, text=$3 WHERE id=$4 RETURNING *",
+                group_name, title, text, id,
+            )
+        else:
+            row = await self.pool.fetchrow(
+                "INSERT INTO message_templates (group_name, title, text) VALUES ($1,$2,$3) RETURNING *",
+                group_name, title, text,
+            )
+        return dict(row) if row else None
+
+    async def delete_template(self, template_id: int) -> bool:
+        result = await self.pool.execute(
+            "DELETE FROM message_templates WHERE id=$1", template_id
+        )
         return result == "DELETE 1"
 
     async def get_user_message_count(self, dialog_id: str) -> int:

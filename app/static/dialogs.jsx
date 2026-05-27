@@ -173,6 +173,78 @@ function MessageBubble({ msg, onImageClick }) {
   return null;
 }
 
+function TemplatePickerModal({ onSelect, onClose }) {
+  const [templates, setTemplates] = useStateD(null);
+  const [search, setSearch] = useStateD("");
+  const [group, setGroup] = useStateD("all");
+
+  useEffectD(() => {
+    window.apiFetch("GET", "/api/templates").then(setTemplates).catch(() => setTemplates([]));
+  }, []);
+
+  const groups = useMemoD(() => {
+    if (!templates) return [];
+    return [...new Set(templates.map(t => t.group_name))];
+  }, [templates]);
+
+  const filtered = useMemoD(() => {
+    if (!templates) return [];
+    let list = group === "all" ? templates : templates.filter(t => t.group_name === group);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(t => t.title.toLowerCase().includes(q) || t.text.toLowerCase().includes(q));
+    }
+    return list;
+  }, [templates, group, search]);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-2xl flex flex-col"
+           style={{ maxHeight: "70vh" }} onClick={e => e.stopPropagation()}>
+        {/* Search header */}
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-[#2a2a3a] shrink-0">
+          <Icon name="search" className="w-4 h-4 text-[#6b7280] shrink-0" />
+          <input autoFocus value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Поиск шаблонов..."
+            className="flex-1 bg-transparent text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none" />
+          <button onClick={onClose} className="text-[#6b7280] hover:text-[#f1f1f5]">
+            <Icon name="x" className="w-4 h-4" />
+          </button>
+        </div>
+        {/* Body */}
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {/* Template list */}
+          <div className="flex-1 overflow-y-auto py-1 scrollbar-thin">
+            {filtered.length === 0 ? (
+              <div className="px-4 py-10 text-center text-sm text-[#6b7280]">
+                {templates === null ? "Загрузка..." : "Шаблоны не найдены"}
+              </div>
+            ) : filtered.map(t => (
+              <button key={t.id} onClick={() => onSelect(t.text)}
+                className="w-full px-4 py-3 text-left hover:bg-[#1a1a24] transition group">
+                <div className="text-sm text-[#f1f1f5] font-medium group-hover:text-[#7BA8F9] transition">{t.title}</div>
+                <div className="text-xs text-[#6b7280] mt-0.5 line-clamp-2 leading-relaxed">{t.text}</div>
+              </button>
+            ))}
+          </div>
+          {/* Groups sidebar */}
+          <div className="w-44 shrink-0 border-l border-[#2a2a3a] overflow-y-auto py-1 scrollbar-thin">
+            {["all", ...groups].map(g => (
+              <button key={g} onClick={() => setGroup(g)}
+                className={"w-full px-4 py-2.5 text-left text-sm transition " +
+                  (group === g
+                    ? "text-[#7BA8F9] bg-[#4F8EF7]/10 font-medium"
+                    : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}>
+                {g === "all" ? "Все" : g}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DialogsScreen({
   conversations, setConversations,
   activeId, setActiveId,
@@ -188,6 +260,7 @@ function DialogsScreen({
   const [lightboxUrl, setLightboxUrl] = useStateD(null);
   const [pendingFile, setPendingFile] = useStateD(null);
   const [confirmClose, setConfirmClose] = useStateD(false);
+  const [showTemplates, setShowTemplates] = useStateD(false);
   const scrollRef = useRefD(null);
   const fileInputRef = useRefD(null);
 
@@ -255,6 +328,11 @@ function DialogsScreen({
     const fileArgs = pendingFile ? { file_url: pendingFile.url, file_type: pendingFile.type } : {};
     setPendingFile(null);
     if (onReply) onReply(active.id, text, fileArgs);
+  }
+
+  function pickTemplate(text) {
+    setDraft(prev => prev ? prev + "\n" + text : text);
+    setShowTemplates(false);
   }
 
   function handoffToOperator() {
@@ -430,8 +508,17 @@ function DialogsScreen({
                               className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"
                               disabled={active.status === "closed"}
                               onClick={() => fileInputRef.current?.click()}
+                              title="Прикрепить файл"
                             >
                               <Icon name="paperclip" />
+                            </button>
+                            <button
+                              className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"
+                              disabled={active.status === "closed"}
+                              onClick={() => setShowTemplates(true)}
+                              title="Шаблоны сообщений"
+                            >
+                              <Icon name="template" />
                             </button>
                             <div className="w-px h-4 bg-[#2a2a3a] mx-1"></div>
                           </>
@@ -522,6 +609,7 @@ function DialogsScreen({
           </div>
         </div>
       )}
+      {showTemplates && <TemplatePickerModal onSelect={pickTemplate} onClose={() => setShowTemplates(false)} />}
     </>
   );
 }
