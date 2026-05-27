@@ -574,6 +574,14 @@
         }
       }
 
+      async function handleReopen(dialog_id) {
+        try {
+          await apiPost(`/api/dialogs/${dialog_id}/reopen`);
+        } catch (e) {
+          console.error("Reopen failed:", e);
+        }
+      }
+
       async function handleBillingAction(dialog_id, action, params) {
         try {
           await apiPost(`/api/dialogs/${dialog_id}/billing/${action}`, params || {});
@@ -641,7 +649,9 @@
                 onToggleAI={handleToggleAI}
                 onClose={handleClose}
                 onHandoff={handleHandoff}
+                onReopen={handleReopen}
                 onBillingAction={handleBillingAction}
+                currentOperator={currentOperator}
                 servers={[]}
               />
             )}

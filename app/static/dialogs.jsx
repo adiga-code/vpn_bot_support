@@ -42,6 +42,12 @@ function ConvCard({ conv, active, onClick }) {
               </span>
             )}
           </div>
+          {conv.assignedOperator && (
+            <div className="flex items-center gap-1 mt-1 text-[10px] text-[#6b7280]">
+              <Icon name="user" className="w-2.5 h-2.5 shrink-0" />
+              <span className="truncate">{conv.assignedOperator}</span>
+            </div>
+          )}
         </div>
       </div>
     </button>
@@ -249,7 +255,8 @@ function DialogsScreen({
   conversations, setConversations,
   activeId, setActiveId,
   showToast,
-  onReply, onToggleAI, onClose, onHandoff, onBillingAction,
+  onReply, onToggleAI, onClose, onHandoff, onReopen, onBillingAction,
+  currentOperator,
   servers,
 }) {
   const [searchQ, setSearchQ] = useStateD("");
@@ -341,6 +348,12 @@ function DialogsScreen({
     if (onHandoff) onHandoff(active.id);
   }
 
+  function reopenDialog() {
+    if (!active) return;
+    showToast("Диалог возвращён в очередь");
+    if (onReopen) onReopen(active.id);
+  }
+
   function closeDialog() {
     if (!active) return;
     setConfirmClose(false);
@@ -427,13 +440,32 @@ function DialogsScreen({
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={handoffToOperator}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#A855F7]/15 text-[#C084FC] border border-[#A855F7]/30 hover:bg-[#A855F7]/25 transition flex items-center gap-1.5"
-                  >
-                    <Icon name="user" className="w-3.5 h-3.5" />
-                    Передать оператору
-                  </button>
+                  {active.status === "new" && (
+                    <button
+                      onClick={handoffToOperator}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#A855F7]/15 text-[#C084FC] border border-[#A855F7]/30 hover:bg-[#A855F7]/25 transition flex items-center gap-1.5"
+                    >
+                      <Icon name="user" className="w-3.5 h-3.5" />
+                      Взять в работу
+                    </button>
+                  )}
+                  {active.status === "in_progress" && (
+                    <>
+                      {active.assignedOperator && (
+                        <span className="flex items-center gap-1.5 text-xs text-[#6b7280] px-2">
+                          <Icon name="user" className="w-3.5 h-3.5" />
+                          {active.assignedOperator}
+                        </span>
+                      )}
+                      <button
+                        onClick={reopenDialog}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
+                      >
+                        <Icon name="arrowLeft" className="w-3.5 h-3.5" />
+                        Вернуть в очередь
+                      </button>
+                    </>
+                  )}
                   <button
                     onClick={() => setConfirmClose(true)}
                     disabled={active.status === "closed"}

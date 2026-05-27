@@ -204,6 +204,7 @@ class DatabaseManager:
             ("dialogs", "summary",              "TEXT"),
             ("dialogs", "rating",               "SMALLINT"),
             ("dialogs", "closed_at",            "TIMESTAMPTZ"),
+            ("dialogs", "assigned_operator",    "TEXT"),
             # messages
             ("messages", "kind",          "TEXT"),
             ("messages", "text",          "TEXT"),
@@ -304,6 +305,12 @@ class DatabaseManager:
         await self.pool.execute(
             "UPDATE dialogs SET ai_enabled=$1, updated_at=NOW() WHERE dialog_id=$2",
             ai_enabled, dialog_id,
+        )
+
+    async def set_assigned_operator(self, dialog_id: str, operator_name):
+        await self.pool.execute(
+            "UPDATE dialogs SET assigned_operator=$1, updated_at=NOW() WHERE dialog_id=$2",
+            operator_name, dialog_id,
         )
 
     async def update_operator_called(self, dialog_id: str, called: bool):

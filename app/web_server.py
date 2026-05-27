@@ -103,6 +103,7 @@ def _fmt_dialog(row: dict, tickets: list = None) -> dict:
         },
         "preview": row.get("last_message_text") or "",
         "time": _fmt_time(row.get("last_message_time")),
+        "assignedOperator": row.get("assigned_operator"),
         "tickets": tickets or [],
     }
 
@@ -440,14 +441,30 @@ def build_app(
         if not dialog:
             raise HTTPException(404)
         op_name = body.operator_name or operator["name"]
-        msg_row = await db.save_message(dialog_id, "system", f"Диалог передан оператору {op_name}")
+        msg_row = await db.save_message(dialog_id, "system", f"Диалог взят в работу оператором {op_name}")
         await db.update_status(dialog_id, "in_progress")
         await db.update_operator_called(dialog_id, True)
+        await db.set_assigned_operator(dialog_id, op_name)
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         username = updated.get("user_username") or dialog_id
         await n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/reopen")
+    async def reopen_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        if dialog["status"] == "closed":
+            raise HTTPException(400, "Cannot reopen closed dialog")
+        msg_row = await db.save_message(dialog_id, "system", "Диалог возвращён в очередь")
+        await db.update_status(dialog_id, "new")
+        await db.set_assigned_operator(dialog_id, None)
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/close")
