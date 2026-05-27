@@ -668,14 +668,16 @@ def build_app(
             raise HTTPException(400, "Текст не может быть пустым")
         chat_ids = await db.get_all_chat_ids()
         sent = 0
+        failed = 0
         for cid in chat_ids:
             try:
                 await n8n.send_to_user(cid, body.text)
                 sent += 1
-                await asyncio.sleep(0.05)  # ~20 сообщений/сек, чтобы не спамить Redis
             except Exception:
-                pass
-        return {"sent": sent, "failed": len(chat_ids) - sent, "total": len(chat_ids)}
+                failed += 1
+        # Rate-limiting (30 msg/sec Telegram limit) is handled by n8n — add a
+        # 50 ms Wait node between iterations in the "Send to User" workflow.
+        return {"sent": sent, "failed": failed, "total": len(chat_ids)}
 
     # ── WebSocket ─────────────────────────────────────────────────────────────
 
