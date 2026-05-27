@@ -534,6 +534,12 @@ def build_app(
             raise HTTPException(403, "Admin only")
         return await db.get_stats(days)
 
+    @app.get("/api/stats/times")
+    async def get_time_stats(days: int = 30, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        return await db.get_time_stats(days)
+
     # ── Operators ─────────────────────────────────────────────────────────────
 
     @app.get("/api/operators")

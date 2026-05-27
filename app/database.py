@@ -203,6 +203,7 @@ class DatabaseManager:
             ("dialogs", "updated_at",           "TIMESTAMPTZ DEFAULT NOW()"),
             ("dialogs", "summary",              "TEXT"),
             ("dialogs", "rating",               "SMALLINT"),
+            ("dialogs", "closed_at",            "TIMESTAMPTZ"),
             # messages
             ("messages", "kind",          "TEXT"),
             ("messages", "text",          "TEXT"),
@@ -288,10 +289,16 @@ class DatabaseManager:
         )
 
     async def update_status(self, dialog_id: str, status: str):
-        await self.pool.execute(
-            "UPDATE dialogs SET status=$1, updated_at=NOW() WHERE dialog_id=$2",
-            status, dialog_id,
-        )
+        if status == "closed":
+            await self.pool.execute(
+                "UPDATE dialogs SET status=$1, updated_at=NOW(), closed_at=NOW() WHERE dialog_id=$2",
+                status, dialog_id,
+            )
+        else:
+            await self.pool.execute(
+                "UPDATE dialogs SET status=$1, updated_at=NOW() WHERE dialog_id=$2",
+                status, dialog_id,
+            )
 
     async def update_ai_enabled(self, dialog_id: str, ai_enabled: bool):
         await self.pool.execute(
@@ -491,6 +498,95 @@ class DatabaseManager:
                GROUP BY category ORDER BY count DESC LIMIT 10"""
         )
         return [{"q": r["q"], "count": r["count"]} for r in rows]
+
+    async def get_time_stats(self, days: int = 30) -> dict:
+        interval = f"{days} days"
+
+        team_first = await self.pool.fetchval("""
+            SELECT AVG(EXTRACT(EPOCH FROM (m.created_at - d.created_at)))
+            FROM dialogs d
+            JOIN LATERAL (
+                SELECT created_at, operator_name FROM messages
+                WHERE dialog_id = d.dialog_id AND kind = 'operator'
+                ORDER BY created_at ASC LIMIT 1
+            ) m ON true
+            WHERE d.created_at >= NOW() - $1::interval
+        """, interval)
+
+        team_next = await self.pool.fetchval("""
+            SELECT AVG(EXTRACT(EPOCH FROM (m_op.created_at - m_usr.created_at)))
+            FROM messages m_op
+            JOIN LATERAL (
+                SELECT created_at FROM messages
+                WHERE dialog_id = m_op.dialog_id AND kind = 'user'
+                  AND created_at < m_op.created_at
+                ORDER BY created_at DESC LIMIT 1
+            ) m_usr ON true
+            WHERE m_op.kind = 'operator'
+              AND m_op.created_at >= NOW() - $1::interval
+        """, interval)
+
+        team_close = await self.pool.fetchval("""
+            SELECT AVG(EXTRACT(EPOCH FROM (closed_at - created_at)))
+            FROM dialogs
+            WHERE status = 'closed' AND closed_at IS NOT NULL
+              AND created_at >= NOW() - $1::interval
+        """, interval)
+
+        op_first_rows = await self.pool.fetch("""
+            SELECT m.operator_name,
+                   AVG(EXTRACT(EPOCH FROM (m.created_at - d.created_at))) AS avg_sec,
+                   COUNT(*) AS cnt
+            FROM dialogs d
+            JOIN LATERAL (
+                SELECT created_at, operator_name FROM messages
+                WHERE dialog_id = d.dialog_id AND kind = 'operator'
+                ORDER BY created_at ASC LIMIT 1
+            ) m ON true
+            WHERE d.created_at >= NOW() - $1::interval
+              AND m.operator_name IS NOT NULL
+            GROUP BY m.operator_name
+        """, interval)
+
+        op_next_rows = await self.pool.fetch("""
+            SELECT m_op.operator_name,
+                   AVG(EXTRACT(EPOCH FROM (m_op.created_at - m_usr.created_at))) AS avg_sec
+            FROM messages m_op
+            JOIN LATERAL (
+                SELECT created_at FROM messages
+                WHERE dialog_id = m_op.dialog_id AND kind = 'user'
+                  AND created_at < m_op.created_at
+                ORDER BY created_at DESC LIMIT 1
+            ) m_usr ON true
+            WHERE m_op.kind = 'operator'
+              AND m_op.created_at >= NOW() - $1::interval
+              AND m_op.operator_name IS NOT NULL
+            GROUP BY m_op.operator_name
+        """, interval)
+
+        op_first_map = {r["operator_name"]: {"avg": float(r["avg_sec"]), "cnt": int(r["cnt"])}
+                        for r in op_first_rows}
+        op_next_map  = {r["operator_name"]: float(r["avg_sec"]) for r in op_next_rows}
+
+        op_rows = await self.pool.fetch("SELECT * FROM operators ORDER BY id")
+        operators = [{
+            "id": op["id"], "name": op["name"], "online": op["online"],
+            "initials": op["initials"], "color": op["color"],
+            "role": op["role"], "tg": op["tg"],
+            "first_response_avg": op_first_map.get(op["name"], {}).get("avg"),
+            "next_response_avg":  op_next_map.get(op["name"]),
+            "dialogs_count":      op_first_map.get(op["name"], {}).get("cnt", 0),
+        } for op in op_rows]
+
+        return {
+            "period_days": days,
+            "team": {
+                "first_response_avg": float(team_first) if team_first else None,
+                "next_response_avg":  float(team_next)  if team_next  else None,
+                "close_time_avg":     float(team_close) if team_close else None,
+            },
+            "operators": operators,
+        }
 
     # ── Knowledge Base ────────────────────────────────────────────────────────
 

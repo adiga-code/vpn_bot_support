@@ -646,15 +646,7 @@
               />
             )}
             {screen === "stats" && (
-              <StatisticsScreen
-                dailyConversations={stats ? stats.daily : []}
-                hourly={stats ? stats.hourly : []}
-                operators={opsState}
-                topQuestions={stats ? stats.top_questions : []}
-                todayTotal={stats ? stats.today_total : null}
-                todayClosed={stats ? stats.today_closed : null}
-                aiPct={stats ? stats.ai_pct : null}
-              />
+              <StatisticsScreen />
             )}
             {screen === "settings" && (
               <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast} currentOperator={currentOperator} />
