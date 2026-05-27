@@ -154,13 +154,13 @@ class N8NClient:
         keyboard = [[{"text": "👨‍💼 Позвать оператора", "callback_data": f"call_op:{dialog_id}"}]]
         return await self.send_to_user(chat_id, "Нужна помощь живого оператора? 👇", keyboard)
 
-    async def send_rating_request(self, chat_id: str, dialog_id: str) -> bool:
+    async def send_rating_request(self, chat_id: str, dialog_id: str, text: str = "Оцените качество поддержки:") -> bool:
         stars = ["⭐", "⭐⭐", "⭐⭐⭐", "⭐⭐⭐⭐", "⭐⭐⭐⭐⭐"]
         keyboard = [[
             {"text": s, "callback_data": f"rate:{dialog_id}:{i + 1}"}
             for i, s in enumerate(stars)
         ]]
-        return await self.send_to_user(chat_id, "Оцените качество поддержки:", keyboard)
+        return await self.send_to_user(chat_id, text, keyboard)
 
     async def send_billing_action(self, dialog_id: str, chat_id: str, action: str) -> bool:
         try:

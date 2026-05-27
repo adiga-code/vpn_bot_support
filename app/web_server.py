@@ -43,6 +43,7 @@ _AUTOMATION_DEFAULTS = {
     "operator_button_after_msgs": 3,
     "auto_handoff_enabled": False,
     "rating_enabled": False,
+    "rating_message_text": "Оцените качество поддержки:",
     "close_message_enabled": False,
     "close_message_text": "Спасибо за обращение! Если появятся вопросы — просто напишите нам.",
 }
@@ -191,6 +192,7 @@ class AutomationSettingsBody(BaseModel):
     operator_button_after_msgs: int = 3
     auto_handoff_enabled: bool = False
     rating_enabled: bool = False
+    rating_message_text: str = "Оцените качество поддержки:"
     close_message_enabled: bool = False
     close_message_text: str = ""
 
@@ -445,7 +447,8 @@ def build_app(
         if automation.get("close_message_enabled") and automation.get("close_message_text"):
             asyncio.create_task(n8n.send_to_user(dialog["chat_id"], automation["close_message_text"]))
         if automation.get("rating_enabled"):
-            asyncio.create_task(n8n.send_rating_request(dialog["chat_id"], dialog_id))
+            rating_text = automation.get("rating_message_text") or "Оцените качество поддержки:"
+            asyncio.create_task(n8n.send_rating_request(dialog["chat_id"], dialog_id, rating_text))
         return {"ok": True}
 
     async def _summarize_dialog_bg(dialog_id: str):
