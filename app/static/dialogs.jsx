@@ -154,6 +154,22 @@ function MessageBubble({ msg, onImageClick }) {
       </div>
     );
   }
+  if (msg.kind === "comment") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[70%]">
+          <div className="bg-[#eab308]/10 border border-[#eab308]/20 rounded-2xl rounded-tr-sm px-4 py-2.5">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <Icon name="edit" className="w-3 h-3 text-[#eab308]/60" />
+              <span className="text-[10px] text-[#eab308]/70 font-semibold uppercase tracking-wider">Комментарий</span>
+            </div>
+            <p className="text-sm text-[#f1f1f5]/90 leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+            <p className="text-[10px] text-[#6b7280] mt-1.5 text-right">{msg.operator} · {msg.time}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return null;
 }
 
@@ -167,6 +183,7 @@ function DialogsScreen({
   const [searchQ, setSearchQ] = useStateD("");
   const [filter, setFilter] = useStateD("all");
   const [draft, setDraft] = useStateD("");
+  const [mode, setMode] = useStateD("message"); // "message" | "comment"
   const [aiEnabled, setAiEnabled] = useStateD(true);
   const [lightboxUrl, setLightboxUrl] = useStateD(null);
   const [pendingFile, setPendingFile] = useStateD(null);
@@ -176,9 +193,10 @@ function DialogsScreen({
 
   const active = conversations.find((c) => c.id === activeId) || conversations[0];
 
-  // Sync AI toggle state when active dialog changes
+  // Sync AI toggle state when active dialog changes; reset composer mode
   useEffectD(() => {
     if (active) setAiEnabled(active.aiEnabled ?? true);
+    setMode("message");
   }, [active?.id, active?.aiEnabled]);
 
   useEffectD(() => {
@@ -219,10 +237,20 @@ function DialogsScreen({
     } catch { showToast("Ошибка загрузки файла"); }
   }
 
-  function sendMessage() {
+  async function sendMessage() {
     const text = draft.trim();
-    if (!text && !pendingFile) return;
     if (!active) return;
+    if (mode === "comment") {
+      if (!text) return;
+      setDraft("");
+      try {
+        await window.apiFetch("POST", `/api/dialogs/${active.id}/comment`, { text });
+      } catch (e) {
+        console.error("Comment error", e);
+      }
+      return;
+    }
+    if (!text && !pendingFile) return;
     setDraft("");
     const fileArgs = pendingFile ? { file_url: pendingFile.url, file_type: pendingFile.type } : {};
     setPendingFile(null);
@@ -349,72 +377,97 @@ function DialogsScreen({
               </div>
 
               {/* Composer */}
-              <div className="border-t border-[#2a2a3a] p-3.5 bg-[#13131a]/40">
+              <div className="border-t border-[#2a2a3a] bg-[#13131a]/40">
                 <input ref={fileInputRef} type="file" className="hidden"
                   accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.zip,.txt"
                   onChange={handleFileSelect} />
-                {pendingFile && (
-                  <div className="mb-2 flex items-center gap-2 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg px-3 py-2">
-                    <Icon name="paperclip" className="w-4 h-4 text-[#4F8EF7] shrink-0" />
-                    <span className="text-xs text-[#f1f1f5] truncate flex-1">{pendingFile.name}</span>
-                    <button onClick={() => setPendingFile(null)} className="text-[#6b7280] hover:text-[#ef4444]"><Icon name="x" className="w-3.5 h-3.5" /></button>
-                  </div>
-                )}
-                <div className="bg-[#1a1a24] border border-[#2a2a3a] rounded-xl focus-within:border-[#4F8EF7]/50 transition">
-                  <textarea
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                        e.preventDefault();
-                        sendMessage();
-                      }
-                    }}
-                    placeholder={active.status === "closed" ? "Диалог закрыт" : "Написать сообщение..."}
-                    disabled={active.status === "closed"}
-                    rows={2}
-                    className="w-full bg-transparent px-3.5 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none resize-none disabled:opacity-50"
-                  />
-                  <div className="flex items-center justify-between px-2 py-2 border-t border-[#2a2a3a]/60">
-                    <div className="flex items-center gap-1">
-                      <button
-                        className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"
-                        disabled={active.status === "closed"}
-                        onClick={() => fileInputRef.current?.click()}
-                      >
-                        <Icon name="paperclip" />
-                      </button>
-                      <div className="w-px h-4 bg-[#2a2a3a] mx-1"></div>
-                      <label className="flex items-center gap-2 text-xs text-[#6b7280] cursor-pointer select-none px-2 py-1 hover:text-[#f1f1f5]">
-                        <span>ИИ отвечает</span>
-                        <button
-                          type="button"
-                          onClick={toggleAI}
-                          className={
-                            "relative w-8 h-[18px] rounded-full transition " +
-                            (aiEnabled ? "bg-[#4F8EF7]" : "bg-[#2a2a3a]")
-                          }
-                        >
-                          <span
-                            className={
-                              "absolute top-[2px] w-[14px] h-[14px] bg-white rounded-full transition-all " +
-                              (aiEnabled ? "left-[16px]" : "left-[2px]")
-                            }
-                          ></span>
-                        </button>
-                      </label>
-                    </div>
-                    <button
-                      onClick={sendMessage}
-                      disabled={(!draft.trim() && !pendingFile) || active.status === "closed"}
-                      className="px-4 py-1.5 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
-                    >
-                      <Icon name="send" className="w-3.5 h-3.5" />
-                      Отправить
+                {/* Mode tabs */}
+                <div className="flex border-b border-[#2a2a3a] px-3.5">
+                  {[["message", "Сообщение"], ["comment", "Комментарий"]].map(([m, label]) => (
+                    <button key={m} onClick={() => { setMode(m); if (m === "comment") setPendingFile(null); }}
+                      disabled={active.status === "closed"}
+                      className={"px-3 py-2 text-xs font-medium transition border-b-2 -mb-px disabled:opacity-40 " +
+                        (mode === m
+                          ? (m === "comment" ? "border-[#eab308] text-[#eab308]" : "border-[#4F8EF7] text-[#7BA8F9]")
+                          : "border-transparent text-[#6b7280] hover:text-[#f1f1f5]")}>
+                      {label}
                     </button>
-                  </div>
+                  ))}
                 </div>
-                <div className="text-[10px] text-[#6b7280] mt-1.5 ml-1">Cmd/Ctrl + Enter для отправки</div>
+                <div className="p-3.5">
+                  {pendingFile && mode === "message" && (
+                    <div className="mb-2 flex items-center gap-2 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg px-3 py-2">
+                      <Icon name="paperclip" className="w-4 h-4 text-[#4F8EF7] shrink-0" />
+                      <span className="text-xs text-[#f1f1f5] truncate flex-1">{pendingFile.name}</span>
+                      <button onClick={() => setPendingFile(null)} className="text-[#6b7280] hover:text-[#ef4444]"><Icon name="x" className="w-3.5 h-3.5" /></button>
+                    </div>
+                  )}
+                  <div className={"bg-[#1a1a24] border rounded-xl focus-within:border-[#4F8EF7]/50 transition " +
+                    (mode === "comment" ? "border-[#eab308]/30 focus-within:border-[#eab308]/50" : "border-[#2a2a3a]")}>
+                    <textarea
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                          e.preventDefault();
+                          sendMessage();
+                        }
+                      }}
+                      placeholder={
+                        active.status === "closed" ? "Диалог закрыт" :
+                        mode === "comment" ? "Комментарий виден только операторам..." :
+                        "Написать сообщение..."
+                      }
+                      disabled={active.status === "closed"}
+                      rows={2}
+                      className="w-full bg-transparent px-3.5 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none resize-none disabled:opacity-50"
+                    />
+                    <div className="flex items-center justify-between px-2 py-2 border-t border-[#2a2a3a]/60">
+                      <div className="flex items-center gap-1">
+                        {mode === "message" && (
+                          <>
+                            <button
+                              className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"
+                              disabled={active.status === "closed"}
+                              onClick={() => fileInputRef.current?.click()}
+                            >
+                              <Icon name="paperclip" />
+                            </button>
+                            <div className="w-px h-4 bg-[#2a2a3a] mx-1"></div>
+                          </>
+                        )}
+                        <label className="flex items-center gap-2 text-xs text-[#6b7280] cursor-pointer select-none px-2 py-1 hover:text-[#f1f1f5]">
+                          <span>ИИ отвечает</span>
+                          <button
+                            type="button"
+                            onClick={toggleAI}
+                            className={
+                              "relative w-8 h-[18px] rounded-full transition " +
+                              (aiEnabled ? "bg-[#4F8EF7]" : "bg-[#2a2a3a]")
+                            }
+                          >
+                            <span
+                              className={
+                                "absolute top-[2px] w-[14px] h-[14px] bg-white rounded-full transition-all " +
+                                (aiEnabled ? "left-[16px]" : "left-[2px]")
+                              }
+                            ></span>
+                          </button>
+                        </label>
+                      </div>
+                      <button
+                        onClick={sendMessage}
+                        disabled={(mode === "message" ? (!draft.trim() && !pendingFile) : !draft.trim()) || active.status === "closed"}
+                        className={"px-4 py-1.5 rounded-lg text-white text-xs font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 " +
+                          (mode === "comment" ? "bg-[#eab308]/80 hover:bg-[#eab308]" : "bg-[#4F8EF7] hover:bg-[#3d7ce8]")}
+                      >
+                        <Icon name="send" className="w-3.5 h-3.5" />
+                        {mode === "comment" ? "Комментарий" : "Отправить"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-[#6b7280] mt-1.5 ml-1">Cmd/Ctrl + Enter для отправки</div>
+                </div>
               </div>
             </>
           )}

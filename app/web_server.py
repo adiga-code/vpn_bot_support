@@ -162,6 +162,9 @@ class ReplyBody(BaseModel):
     file_url: Optional[str] = None
     file_type: Optional[str] = None
 
+class CommentBody(BaseModel):
+    text: str
+
 class HandoffBody(BaseModel):
     operator_name: str = "Оператор"
 
@@ -399,6 +402,19 @@ def build_app(
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/comment")
+    async def add_comment(dialog_id: str, body: CommentBody, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        if not body.text.strip():
+            raise HTTPException(400, "Пустой комментарий")
+        msg_row = await db.save_message(
+            dialog_id, "comment", body.text.strip(), operator_name=operator["name"]
+        )
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/toggle_ai")
