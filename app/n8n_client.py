@@ -136,6 +136,32 @@ class N8NClient:
         except Exception as e:
             print(f"schedule_notify error (non-critical): {e}")
 
+    # ── Direct user messaging (via vpn_bot:outgoing → n8n → Telegram) ──────────
+
+    async def send_to_user(self, chat_id: str, text: str, keyboard: list = None) -> bool:
+        """Публикует событие в vpn_bot:outgoing — n8n подхватывает и отправляет в Telegram."""
+        try:
+            payload = {"type": "send_to_user", "chat_id": chat_id, "text": text}
+            if keyboard:
+                payload["keyboard"] = keyboard
+            await self.redis.rpush("vpn_bot:outgoing", json.dumps(payload, ensure_ascii=False))
+            return True
+        except Exception as e:
+            print(f"send_to_user error: {e}")
+            return False
+
+    async def send_operator_button(self, chat_id: str, dialog_id: str) -> bool:
+        keyboard = [[{"text": "👨‍💼 Позвать оператора", "callback_data": f"call_op:{dialog_id}"}]]
+        return await self.send_to_user(chat_id, "Нужна помощь живого оператора? 👇", keyboard)
+
+    async def send_rating_request(self, chat_id: str, dialog_id: str) -> bool:
+        stars = ["⭐", "⭐⭐", "⭐⭐⭐", "⭐⭐⭐⭐", "⭐⭐⭐⭐⭐"]
+        keyboard = [[
+            {"text": s, "callback_data": f"rate:{dialog_id}:{i + 1}"}
+            for i, s in enumerate(stars)
+        ]]
+        return await self.send_to_user(chat_id, "Оцените качество поддержки:", keyboard)
+
     async def send_billing_action(self, dialog_id: str, chat_id: str, action: str) -> bool:
         try:
             await self.redis.publish("vpn_bot:billing", json.dumps({

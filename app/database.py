@@ -192,6 +192,7 @@ class DatabaseManager:
             ("dialogs", "last_message_time",    "TIMESTAMPTZ DEFAULT NOW()"),
             ("dialogs", "updated_at",           "TIMESTAMPTZ DEFAULT NOW()"),
             ("dialogs", "summary",              "TEXT"),
+            ("dialogs", "rating",               "SMALLINT"),
             # messages
             ("messages", "kind",          "TEXT"),
             ("messages", "text",          "TEXT"),
@@ -500,6 +501,22 @@ class DatabaseManager:
     async def delete_kb_article(self, article_id: str) -> bool:
         result = await self.pool.execute("DELETE FROM kb_articles WHERE id=$1", article_id)
         return result == "DELETE 1"
+
+    async def get_user_message_count(self, dialog_id: str) -> int:
+        return await self.pool.fetchval(
+            "SELECT COUNT(*) FROM messages WHERE dialog_id=$1 AND kind='user'", dialog_id
+        ) or 0
+
+    async def set_dialog_rating(self, dialog_id: str, rating: int):
+        await self.pool.execute(
+            "UPDATE dialogs SET rating=$1 WHERE dialog_id=$2", rating, dialog_id
+        )
+
+    async def get_all_chat_ids(self) -> list:
+        rows = await self.pool.fetch(
+            "SELECT DISTINCT chat_id FROM dialogs WHERE chat_id IS NOT NULL"
+        )
+        return [r["chat_id"] for r in rows]
 
     async def close(self):
         if self.pool:

@@ -38,6 +38,15 @@ _AI_DEFAULTS = {
 
 _NOTIF_PREFS_DEFAULT = {"new_dialog": True, "operator_called": True, "server_down": True}
 
+_AUTOMATION_DEFAULTS = {
+    "operator_button_enabled": False,
+    "operator_button_after_msgs": 3,
+    "auto_handoff_enabled": False,
+    "rating_enabled": False,
+    "close_message_enabled": False,
+    "close_message_text": "Спасибо за обращение! Если появятся вопросы — просто напишите нам.",
+}
+
 _SCHEDULE_DEFAULTS = {
     "mon": {"enabled": True,  "from": "09:00", "to": "21:00"},
     "tue": {"enabled": True,  "from": "09:00", "to": "21:00"},
@@ -176,6 +185,17 @@ class NotifPrefsBody(BaseModel):
 
 class ScheduleBody(BaseModel):
     schedule: dict
+
+class AutomationSettingsBody(BaseModel):
+    operator_button_enabled: bool = False
+    operator_button_after_msgs: int = 3
+    auto_handoff_enabled: bool = False
+    rating_enabled: bool = False
+    close_message_enabled: bool = False
+    close_message_text: str = ""
+
+class BroadcastBody(BaseModel):
+    text: str
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -421,6 +441,11 @@ def build_app(
         await n8n.notify_dialog_closed(dialog_id, dialog["chat_id"], operator["name"])
         if chat_client:
             asyncio.create_task(_summarize_dialog_bg(dialog_id))
+        automation = await db.get_setting_json("automation", _AUTOMATION_DEFAULTS)
+        if automation.get("close_message_enabled") and automation.get("close_message_text"):
+            asyncio.create_task(n8n.send_to_user(dialog["chat_id"], automation["close_message_text"]))
+        if automation.get("rating_enabled"):
+            asyncio.create_task(n8n.send_rating_request(dialog["chat_id"], dialog_id))
         return {"ok": True}
 
     async def _summarize_dialog_bg(dialog_id: str):
@@ -610,6 +635,44 @@ def build_app(
             raise HTTPException(404)
         await delete_from_qdrant(article_id, settings.QDRANT_URL)
         return {"ok": True}
+
+    # ── Settings: Automation ─────────────────────────────────────────────────
+
+    @app.get("/api/settings/automation")
+    async def get_automation(operator: dict = Depends(require_auth)):
+        return await db.get_setting_json("automation", _AUTOMATION_DEFAULTS)
+
+    @app.put("/api/settings/automation")
+    async def save_automation(body: AutomationSettingsBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        data = body.model_dump()
+        await db.set_setting_json("automation", data)
+        # Синхронизировать auto_handoff_enabled → ai_settings для RedisConsumer
+        ai = await db.get_setting_json("ai_settings", _AI_DEFAULTS)
+        ai["handoff_enabled"] = data["auto_handoff_enabled"]
+        await db.set_setting_json("ai_settings", ai)
+        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(ai, ensure_ascii=False))
+        return {"ok": True}
+
+    # ── Broadcast ─────────────────────────────────────────────────────────────
+
+    @app.post("/api/broadcast")
+    async def broadcast_msg(body: BroadcastBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not body.text.strip():
+            raise HTTPException(400, "Текст не может быть пустым")
+        chat_ids = await db.get_all_chat_ids()
+        sent = 0
+        for cid in chat_ids:
+            try:
+                await n8n.send_to_user(cid, body.text)
+                sent += 1
+                await asyncio.sleep(0.05)  # ~20 сообщений/сек, чтобы не спамить Redis
+            except Exception:
+                pass
+        return {"sent": sent, "failed": len(chat_ids) - sent, "total": len(chat_ids)}
 
     # ── WebSocket ─────────────────────────────────────────────────────────────
 

@@ -39,6 +39,8 @@ class RedisConsumer:
                     await self._handle_user_message(data)
                 elif msg_type == "ai_response":
                     await self._handle_ai_response(data)
+                elif msg_type == "callback":
+                    await self._handle_callback(data)
                 else:
                     print(f"Unknown type: {msg_type}")
 
@@ -106,6 +108,14 @@ class RedisConsumer:
         if operator_called:
             await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
 
+        # Кнопка вызова оператора после N-го сообщения
+        automation = await self.db.get_setting_json("automation", {})
+        if automation.get("operator_button_enabled") and not operator_called:
+            n = int(automation.get("operator_button_after_msgs") or 3)
+            count = await self.db.get_user_message_count(dialog_id)
+            if count == n:
+                asyncio.create_task(self.n8n.send_operator_button(chat_id, dialog_id))
+
     async def _classify_later(self, msg_id: int, text: str):
         try:
             ai_settings = await self.db.get_setting_json("ai_settings", {})
@@ -145,6 +155,32 @@ class RedisConsumer:
             ai_settings = await self.db.get_setting_json("ai_settings", {})
             if ai_settings.get("handoff_enabled", True):
                 await self._auto_handoff(dialog_id, dialog)
+
+    async def _handle_callback(self, data: dict):
+        callback_data = data.get("callback_data", "")
+
+        if callback_data.startswith("call_op:"):
+            dialog_id = callback_data.split(":")[1]
+            dialog = await self.db.get_dialog(dialog_id)
+            if not dialog or dialog.get("operator_called"):
+                return
+            await self.db.update_operator_called(dialog_id, True)
+            await self.db.update_status(dialog_id, "in_progress")
+            updated = await self.db.get_dialog(dialog_id)
+            await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+            username = updated.get("user_username") or dialog_id
+            await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+            print(f"[callback] operator called for dialog={dialog_id}")
+
+        elif callback_data.startswith("rate:"):
+            parts = callback_data.split(":")
+            if len(parts) == 3:
+                dialog_id, score = parts[1], parts[2]
+                try:
+                    await self.db.set_dialog_rating(dialog_id, int(score))
+                    print(f"[callback] rating={score} for dialog={dialog_id}")
+                except ValueError:
+                    pass
 
     async def _auto_handoff(self, dialog_id: str, dialog: dict):
         print(f"[auto-handoff] dialog={dialog_id}")

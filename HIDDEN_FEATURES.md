@@ -56,25 +56,10 @@ git show HEAD~2:app/static/statistics.jsx
 
 ## 5. Настройки → ИИ: «Передавать при низкой уверенности» (`settings.jsx`)
 
-Авто-вызов оператора когда ИИ не уверен в ответе.
+~~Авто-вызов оператора когда ИИ не уверен в ответе.~~
 
-**Как вернуть** → `app/static/settings.jsx`, компонент `AISection`, в блок `div` с настройками добавить:
-```jsx
-<SettingsRow
-  title="Передавать при низкой уверенности"
-  desc="Если ИИ не уверен — зовёт оператора"
-  control={<Switch on={settings.handoff_enabled} onChange={() => setSettings((s) => ({ ...s, handoff_enabled: !s.handoff_enabled }))} />}
-/>
-```
-Также вернуть хинт под промптом:
-```jsx
-{settings.handoff_enabled && (
-  <div className="mt-2 flex items-start gap-2 text-xs text-[#6b7280] bg-[#4F8EF7]/5 border border-[#4F8EF7]/15 rounded-lg px-3 py-2">
-    <span className="text-[#4F8EF7] mt-0.5 shrink-0">+</span>
-    <span>К промпту автоматически добавляется инструкция про <span className="font-mono text-[#7BA8F9]">[HANDOFF]</span> — ИИ будет знать когда звать оператора. В редакторе не отображается.</span>
-  </div>
-)}
-```
+**Реализовано** в секции «Автоматизация» → «Авто-вызов от ИИ» (`auto_handoff_enabled`).
+Управляется через `GET/PUT /api/settings/automation`.
 
 ---
 

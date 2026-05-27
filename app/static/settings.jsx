@@ -15,6 +15,8 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
     { id: "profile",       label: "Профиль",      icon: "user",      adminOnly: false },
     { id: "ai",            label: "ИИ-настройки", icon: "sparkles",  adminOnly: true  },
     { id: "kb",            label: "База знаний",  icon: "book",      adminOnly: true  },
+    { id: "automation",    label: "Автоматизация",icon: "zap",       adminOnly: true  },
+    { id: "broadcast",     label: "Рассылка",     icon: "megaphone", adminOnly: true  },
   ];
   const sections = allSections.filter(s => !s.adminOnly || isAdmin);
 
@@ -67,6 +69,8 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
         {section === "profile"       && <ProfileSection showToast={showToast} />}
         {section === "ai"            && <AISection showToast={showToast} />}
         {section === "kb"            && <KBSection />}
+        {section === "automation"    && <AutomationSection showToast={showToast} />}
+        {section === "broadcast"     && <BroadcastSection showToast={showToast} />}
       </div>
 
       {modalOpen && <OperatorModal editing={editingOp} onClose={() => setModalOpen(false)} onSave={saveOperator} />}
@@ -627,6 +631,187 @@ function KBSection() {
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AutomationSection({ showToast }) {
+  const [s, setS] = useStateT(null);
+
+  useEffectT(() => {
+    window.apiFetch("GET", "/api/settings/automation").then(setS).catch(() => {});
+  }, []);
+
+  async function save() {
+    try {
+      await window.apiFetch("PUT", "/api/settings/automation", s);
+      showToast("Настройки автоматизации сохранены");
+    } catch { showToast("Ошибка сохранения"); }
+  }
+
+  function toggle(key) { setS(v => ({ ...v, [key]: !v[key] })); }
+  function set(key, val) { setS(v => ({ ...v, [key]: val })); }
+
+  if (!s) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+
+  return (
+    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+      <div>
+        <h1 className="text-xl font-semibold text-[#f1f1f5]">Автоматизация</h1>
+        <div className="text-xs text-[#6b7280] mt-0.5">Автоматические действия при диалогах</div>
+      </div>
+
+      {/* Operator button */}
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
+        <div className="px-5 py-3.5">
+          <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">Кнопка вызова оператора</div>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-[#f1f1f5]">Показывать кнопку «Позвать оператора»</div>
+              <div className="text-xs text-[#6b7280] mt-0.5">Кнопка появляется у пользователя в Telegram</div>
+            </div>
+            <Switch on={s.operator_button_enabled} onChange={() => toggle("operator_button_enabled")} />
+          </div>
+          {s.operator_button_enabled && (
+            <div className="mt-3 flex items-center gap-3">
+              <span className="text-sm text-[#6b7280] shrink-0">Показать после</span>
+              <input
+                type="number" min="1" max="20" value={s.operator_button_after_msgs}
+                onChange={e => set("operator_button_after_msgs", Math.max(1, parseInt(e.target.value) || 1))}
+                className="w-20 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-1.5 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 text-center"
+              />
+              <span className="text-sm text-[#6b7280] shrink-0">сообщений от пользователя</span>
+            </div>
+          )}
+        </div>
+        <SettingsRow
+          title="Авто-вызов от ИИ"
+          desc="ИИ сам передаёт диалог оператору, если не уверен в ответе"
+          control={<Switch on={s.auto_handoff_enabled} onChange={() => toggle("auto_handoff_enabled")} />}
+        />
+      </div>
+
+      {/* Rating */}
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
+        <SettingsRow
+          title="Запрашивать оценку после закрытия"
+          desc="Пользователь получает кнопки ⭐ — ⭐⭐⭐⭐⭐ в Telegram"
+          control={<Switch on={s.rating_enabled} onChange={() => toggle("rating_enabled")} />}
+        />
+      </div>
+
+      {/* Close message */}
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
+        <SettingsRow
+          title="Отправлять сообщение при закрытии"
+          desc="Пользователь получает текст после закрытия диалога оператором"
+          control={<Switch on={s.close_message_enabled} onChange={() => toggle("close_message_enabled")} />}
+        />
+        {s.close_message_enabled && (
+          <div className="px-5 py-4">
+            <label className="block text-xs text-[#6b7280] mb-2">Текст сообщения</label>
+            <textarea
+              value={s.close_message_text}
+              onChange={e => set("close_message_text", e.target.value)}
+              rows={3}
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
+              placeholder="Спасибо за обращение!..."
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="flex justify-end">
+        <button onClick={save} className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold">
+          Сохранить
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BroadcastSection({ showToast }) {
+  const [text, setText] = useStateT("");
+  const [confirm, setConfirm] = useStateT(false);
+  const [result, setResult] = useStateT(null);
+  const [loading, setLoading] = useStateT(false);
+
+  async function sendBroadcast() {
+    setConfirm(false);
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = await window.apiFetch("POST", "/api/broadcast", { text });
+      setResult(res);
+      if (res.failed === 0) showToast(`Отправлено ${res.sent} пользователям`);
+      else showToast(`Отправлено ${res.sent}, ошибок ${res.failed}`);
+    } catch (e) {
+      showToast("Ошибка рассылки");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="max-w-[700px] mx-auto p-6 space-y-5">
+      <div>
+        <h1 className="text-xl font-semibold text-[#f1f1f5]">Рассылка</h1>
+        <div className="text-xs text-[#6b7280] mt-0.5">Отправить сообщение всем пользователям из базы</div>
+      </div>
+
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5 space-y-4">
+        <div>
+          <label className="block text-xs text-[#6b7280] mb-2">Текст сообщения</label>
+          <textarea
+            value={text}
+            onChange={e => setText(e.target.value)}
+            rows={5}
+            placeholder="Введите текст рассылки..."
+            className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
+          />
+        </div>
+
+        {result && (
+          <div className="bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-4 py-3 text-sm">
+            <div className="flex items-center gap-4">
+              <span className="text-[#22c55e]">✓ Отправлено: <span className="font-semibold tabular-nums">{result.sent}</span></span>
+              {result.failed > 0 && <span className="text-[#ef4444]">✗ Ошибок: <span className="font-semibold tabular-nums">{result.failed}</span></span>}
+              <span className="text-[#6b7280]">Всего: {result.total}</span>
+            </div>
+          </div>
+        )}
+
+        <div className="flex justify-end">
+          <button
+            onClick={() => setConfirm(true)}
+            disabled={!text.trim() || loading}
+            className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            <Icon name="megaphone" className="w-4 h-4" />
+            {loading ? "Отправка..." : "Отправить всем"}
+          </button>
+        </div>
+      </div>
+
+      {confirm && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirm(false)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={e => e.stopPropagation()}>
+            <div className="font-semibold text-[#f1f1f5] mb-2">Отправить рассылку?</div>
+            <div className="text-sm text-[#6b7280] mb-4 leading-relaxed">
+              Сообщение получат все пользователи, которые когда-либо писали боту. Отменить нельзя.
+            </div>
+            <div className="bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-xs text-[#f1f1f5] mb-5 leading-relaxed max-h-24 overflow-y-auto">
+              {text}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirm(false)} className="px-3 py-1.5 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+              <button onClick={sendBroadcast} className="px-4 py-1.5 rounded-lg text-sm font-semibold bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white transition">
+                Отправить
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
