@@ -42,6 +42,14 @@ function ConvCard({ conv, active, onClick }) {
               </span>
             )}
           </div>
+          {conv.assignedOperator ? (
+            <div className="flex items-center gap-1 mt-1 text-[10px] text-[#6b7280]">
+              <Icon name="user" className="w-2.5 h-2.5 shrink-0" />
+              <span className="truncate">{conv.assignedOperator}</span>
+            </div>
+          ) : conv.status !== "closed" ? (
+            <div className="mt-1 text-[10px] text-[#6b7280]/60">В очереди</div>
+          ) : null}
         </div>
       </div>
     </button>
@@ -154,31 +162,158 @@ function MessageBubble({ msg, onImageClick }) {
       </div>
     );
   }
+  if (msg.kind === "comment") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[70%]">
+          <div className="bg-[#eab308]/10 border border-[#eab308]/20 rounded-2xl rounded-tr-sm px-4 py-2.5">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <Icon name="edit" className="w-3 h-3 text-[#eab308]/60" />
+              <span className="text-[10px] text-[#eab308]/70 font-semibold uppercase tracking-wider">Комментарий</span>
+            </div>
+            <p className="text-sm text-[#f1f1f5]/90 leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+            <p className="text-[10px] text-[#6b7280] mt-1.5 text-right">{msg.operator} · {msg.time}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return null;
+}
+
+function TemplatePickerModal({ onSelect, onClose }) {
+  const [templates, setTemplates] = useStateD(null);
+  const [search, setSearch] = useStateD("");
+  const [group, setGroup] = useStateD("all");
+
+  useEffectD(() => {
+    window.apiFetch("GET", "/api/templates").then(setTemplates).catch(() => setTemplates([]));
+  }, []);
+
+  const groups = useMemoD(() => {
+    if (!templates) return [];
+    return [...new Set(templates.map(t => t.group_name))];
+  }, [templates]);
+
+  const filtered = useMemoD(() => {
+    if (!templates) return [];
+    let list = group === "all" ? templates : templates.filter(t => t.group_name === group);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(t => t.title.toLowerCase().includes(q) || t.text.toLowerCase().includes(q));
+    }
+    return list;
+  }, [templates, group, search]);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-2xl flex flex-col"
+           style={{ maxHeight: "70vh" }} onClick={e => e.stopPropagation()}>
+        {/* Search header */}
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-[#2a2a3a] shrink-0">
+          <Icon name="search" className="w-4 h-4 text-[#6b7280] shrink-0" />
+          <input autoFocus value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Поиск шаблонов..."
+            className="flex-1 bg-transparent text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none" />
+          <button onClick={onClose} className="text-[#6b7280] hover:text-[#f1f1f5]">
+            <Icon name="x" className="w-4 h-4" />
+          </button>
+        </div>
+        {/* Body */}
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {/* Template list */}
+          <div className="flex-1 overflow-y-auto py-1 scrollbar-thin">
+            {filtered.length === 0 ? (
+              <div className="px-4 py-10 text-center text-sm text-[#6b7280]">
+                {templates === null ? "Загрузка..." : "Шаблоны не найдены"}
+              </div>
+            ) : filtered.map(t => (
+              <button key={t.id} onClick={() => onSelect(t.text)}
+                className="w-full px-4 py-3 text-left hover:bg-[#1a1a24] transition group">
+                <div className="text-sm text-[#f1f1f5] font-medium group-hover:text-[#7BA8F9] transition">{t.title}</div>
+                <div className="text-xs text-[#6b7280] mt-0.5 line-clamp-2 leading-relaxed">{t.text}</div>
+              </button>
+            ))}
+          </div>
+          {/* Groups sidebar */}
+          <div className="w-44 shrink-0 border-l border-[#2a2a3a] overflow-y-auto py-1 scrollbar-thin">
+            {["all", ...groups].map(g => (
+              <button key={g} onClick={() => setGroup(g)}
+                className={"w-full px-4 py-2.5 text-left text-sm transition " +
+                  (group === g
+                    ? "text-[#7BA8F9] bg-[#4F8EF7]/10 font-medium"
+                    : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}>
+                {g === "all" ? "Все" : g}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TransferModal({ activeDialog, operators, currentOperator, onTransfer, onClose }) {
+  const candidates = (operators || []).filter(op => op.name !== activeDialog?.assignedOperator);
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
+          <div className="font-medium text-sm text-[#f1f1f5]">Передать тикет</div>
+          <button onClick={onClose} className="text-[#6b7280] hover:text-[#f1f1f5]"><Icon name="x" className="w-4 h-4" /></button>
+        </div>
+        <div className="divide-y divide-[#2a2a3a]/60 max-h-[360px] overflow-y-auto scrollbar-thin">
+          {candidates.length === 0 && (
+            <div className="px-5 py-8 text-center text-sm text-[#6b7280]">Нет доступных операторов</div>
+          )}
+          {candidates.map(op => (
+            <button key={op.id} onClick={() => onTransfer(op.name)}
+              className="w-full px-5 py-3 flex items-center gap-3 hover:bg-[#1a1a24] transition">
+              <Avatar initials={op.initials} color={op.color} size={32} />
+              <div className="flex-1 text-left min-w-0">
+                <div className="text-sm text-[#f1f1f5]">{op.name}</div>
+                <div className="text-xs text-[#6b7280]">{op.role === "admin" ? "Администратор" : "Агент"}</div>
+              </div>
+              <span className={"flex items-center gap-1 text-xs " + (op.online ? "text-[#22c55e]" : "text-zinc-500")}>
+                <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
+                {op.online ? "Онлайн" : "Офлайн"}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function DialogsScreen({
   conversations, setConversations,
   activeId, setActiveId,
   showToast,
-  onReply, onToggleAI, onClose, onHandoff, onBillingAction,
+  onReply, onToggleAI, onClose, onHandoff, onReopen, onBillingAction,
+  currentOperator, operators,
   servers,
 }) {
   const [searchQ, setSearchQ] = useStateD("");
+  const [view,   setView]   = useStateD("my");  // "my" | "all"
   const [filter, setFilter] = useStateD("all");
   const [draft, setDraft] = useStateD("");
+  const [mode, setMode] = useStateD("message"); // "message" | "comment"
   const [aiEnabled, setAiEnabled] = useStateD(true);
   const [lightboxUrl, setLightboxUrl] = useStateD(null);
   const [pendingFile, setPendingFile] = useStateD(null);
   const [confirmClose, setConfirmClose] = useStateD(false);
+  const [showTemplates, setShowTemplates] = useStateD(false);
+  const [showTransfer, setShowTransfer] = useStateD(false);
   const scrollRef = useRefD(null);
   const fileInputRef = useRefD(null);
 
   const active = conversations.find((c) => c.id === activeId) || conversations[0];
 
-  // Sync AI toggle state when active dialog changes
+  // Sync AI toggle state when active dialog changes; reset composer mode
   useEffectD(() => {
     if (active) setAiEnabled(active.aiEnabled ?? true);
+    setMode("message");
   }, [active?.id, active?.aiEnabled]);
 
   useEffectD(() => {
@@ -188,7 +323,9 @@ function DialogsScreen({
   }, [active?.id, active?.messages?.length]);
 
   const filtered = useMemoD(() => {
-    let list = conversations;
+    let list = view === "my"
+      ? conversations.filter((c) => c.assignedOperator === currentOperator?.name)
+      : conversations;
     if (filter === "open") list = list.filter((c) => c.status === "new");
     if (filter === "wip") list = list.filter((c) => c.status === "in_progress");
     if (filter === "closed") list = list.filter((c) => c.status === "closed");
@@ -199,14 +336,30 @@ function DialogsScreen({
       );
     }
     return list;
-  }, [conversations, filter, searchQ]);
+  }, [conversations, view, filter, searchQ, currentOperator]);
+
+  const baseList = useMemoD(() =>
+    view === "my"
+      ? conversations.filter((c) => c.assignedOperator === currentOperator?.name)
+      : conversations,
+    [conversations, view, currentOperator]
+  );
 
   const counts = useMemoD(() => ({
-    all: conversations.length,
-    open: conversations.filter((c) => c.status === "new").length,
-    wip: conversations.filter((c) => c.status === "in_progress").length,
-    closed: conversations.filter((c) => c.status === "closed").length,
-  }), [conversations]);
+    all: baseList.length,
+    open: baseList.filter((c) => c.status === "new").length,
+    wip: baseList.filter((c) => c.status === "in_progress").length,
+    closed: baseList.filter((c) => c.status === "closed").length,
+  }), [baseList]);
+
+  async function handleTransfer(operatorName) {
+    setShowTransfer(false);
+    if (!active) return;
+    try {
+      await window.apiFetch("POST", `/api/dialogs/${active.id}/transfer`, { operator_name: operatorName });
+      showToast(`Тикет передан: ${operatorName}`);
+    } catch { showToast("Ошибка передачи"); }
+  }
 
   async function handleFileSelect(e) {
     const file = e.target.files?.[0];
@@ -219,20 +372,41 @@ function DialogsScreen({
     } catch { showToast("Ошибка загрузки файла"); }
   }
 
-  function sendMessage() {
+  async function sendMessage() {
     const text = draft.trim();
-    if (!text && !pendingFile) return;
     if (!active) return;
+    if (mode === "comment") {
+      if (!text) return;
+      setDraft("");
+      try {
+        await window.apiFetch("POST", `/api/dialogs/${active.id}/comment`, { text });
+      } catch (e) {
+        console.error("Comment error", e);
+      }
+      return;
+    }
+    if (!text && !pendingFile) return;
     setDraft("");
     const fileArgs = pendingFile ? { file_url: pendingFile.url, file_type: pendingFile.type } : {};
     setPendingFile(null);
     if (onReply) onReply(active.id, text, fileArgs);
   }
 
+  function pickTemplate(text) {
+    setDraft(prev => prev ? prev + "\n" + text : text);
+    setShowTemplates(false);
+  }
+
   function handoffToOperator() {
     if (!active) return;
     showToast("Диалог взят в работу");
     if (onHandoff) onHandoff(active.id);
+  }
+
+  function reopenDialog() {
+    if (!active) return;
+    showToast("Диалог возвращён в очередь");
+    if (onReopen) onReopen(active.id);
   }
 
   function closeDialog() {
@@ -267,6 +441,16 @@ function DialogsScreen({
         {/* Left: conversation list */}
         <aside className="w-[260px] shrink-0 bg-[#13131a] border-r border-[#2a2a3a] flex flex-col min-h-0">
           <div className="p-3 border-b border-[#2a2a3a] space-y-2.5">
+            {/* Мои / Все */}
+            <div className="flex bg-[#0d0d12] rounded-lg p-0.5 gap-0.5">
+              {[["my", "Мои"], ["all", "Все"]].map(([v, label]) => (
+                <button key={v} onClick={() => setView(v)}
+                  className={"flex-1 py-1.5 rounded-md text-xs font-medium transition " +
+                    (view === v ? "bg-[#4F8EF7] text-white" : "text-[#6b7280] hover:text-[#f1f1f5]")}>
+                  {label}
+                </button>
+              ))}
+            </div>
             <div className="relative">
               <Icon name="search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#6b7280]" />
               <input
@@ -321,13 +505,41 @@ function DialogsScreen({
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={handoffToOperator}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#A855F7]/15 text-[#C084FC] border border-[#A855F7]/30 hover:bg-[#A855F7]/25 transition flex items-center gap-1.5"
-                  >
-                    <Icon name="user" className="w-3.5 h-3.5" />
-                    Передать оператору
-                  </button>
+                  {active.status === "new" && (
+                    <button
+                      onClick={handoffToOperator}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#A855F7]/15 text-[#C084FC] border border-[#A855F7]/30 hover:bg-[#A855F7]/25 transition flex items-center gap-1.5"
+                    >
+                      <Icon name="user" className="w-3.5 h-3.5" />
+                      Взять в работу
+                    </button>
+                  )}
+                  {active.status === "in_progress" && (
+                    <>
+                      {active.assignedOperator && (
+                        <span className="flex items-center gap-1.5 text-xs text-[#6b7280] px-2">
+                          <Icon name="user" className="w-3.5 h-3.5" />
+                          {active.assignedOperator}
+                        </span>
+                      )}
+                      <button
+                        onClick={reopenDialog}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
+                      >
+                        <Icon name="arrowLeft" className="w-3.5 h-3.5" />
+                        Вернуть в очередь
+                      </button>
+                    </>
+                  )}
+                  {active.status !== "closed" && (
+                    <button
+                      onClick={() => setShowTransfer(true)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
+                    >
+                      <Icon name="arrowRight" className="w-3.5 h-3.5" />
+                      Передать
+                    </button>
+                  )}
                   <button
                     onClick={() => setConfirmClose(true)}
                     disabled={active.status === "closed"}
@@ -349,72 +561,106 @@ function DialogsScreen({
               </div>
 
               {/* Composer */}
-              <div className="border-t border-[#2a2a3a] p-3.5 bg-[#13131a]/40">
+              <div className="border-t border-[#2a2a3a] bg-[#13131a]/40">
                 <input ref={fileInputRef} type="file" className="hidden"
                   accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.zip,.txt"
                   onChange={handleFileSelect} />
-                {pendingFile && (
-                  <div className="mb-2 flex items-center gap-2 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg px-3 py-2">
-                    <Icon name="paperclip" className="w-4 h-4 text-[#4F8EF7] shrink-0" />
-                    <span className="text-xs text-[#f1f1f5] truncate flex-1">{pendingFile.name}</span>
-                    <button onClick={() => setPendingFile(null)} className="text-[#6b7280] hover:text-[#ef4444]"><Icon name="x" className="w-3.5 h-3.5" /></button>
-                  </div>
-                )}
-                <div className="bg-[#1a1a24] border border-[#2a2a3a] rounded-xl focus-within:border-[#4F8EF7]/50 transition">
-                  <textarea
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                        e.preventDefault();
-                        sendMessage();
-                      }
-                    }}
-                    placeholder={active.status === "closed" ? "Диалог закрыт" : "Написать сообщение..."}
-                    disabled={active.status === "closed"}
-                    rows={2}
-                    className="w-full bg-transparent px-3.5 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none resize-none disabled:opacity-50"
-                  />
-                  <div className="flex items-center justify-between px-2 py-2 border-t border-[#2a2a3a]/60">
-                    <div className="flex items-center gap-1">
-                      <button
-                        className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"
-                        disabled={active.status === "closed"}
-                        onClick={() => fileInputRef.current?.click()}
-                      >
-                        <Icon name="paperclip" />
-                      </button>
-                      <div className="w-px h-4 bg-[#2a2a3a] mx-1"></div>
-                      <label className="flex items-center gap-2 text-xs text-[#6b7280] cursor-pointer select-none px-2 py-1 hover:text-[#f1f1f5]">
-                        <span>ИИ отвечает</span>
-                        <button
-                          type="button"
-                          onClick={toggleAI}
-                          className={
-                            "relative w-8 h-[18px] rounded-full transition " +
-                            (aiEnabled ? "bg-[#4F8EF7]" : "bg-[#2a2a3a]")
-                          }
-                        >
-                          <span
-                            className={
-                              "absolute top-[2px] w-[14px] h-[14px] bg-white rounded-full transition-all " +
-                              (aiEnabled ? "left-[16px]" : "left-[2px]")
-                            }
-                          ></span>
-                        </button>
-                      </label>
-                    </div>
-                    <button
-                      onClick={sendMessage}
-                      disabled={(!draft.trim() && !pendingFile) || active.status === "closed"}
-                      className="px-4 py-1.5 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
-                    >
-                      <Icon name="send" className="w-3.5 h-3.5" />
-                      Отправить
+                {/* Mode tabs */}
+                <div className="flex border-b border-[#2a2a3a] px-3.5">
+                  {[["message", "Сообщение"], ["comment", "Комментарий"]].map(([m, label]) => (
+                    <button key={m} onClick={() => { setMode(m); if (m === "comment") setPendingFile(null); }}
+                      disabled={active.status === "closed"}
+                      className={"px-3 py-2 text-xs font-medium transition border-b-2 -mb-px disabled:opacity-40 " +
+                        (mode === m
+                          ? (m === "comment" ? "border-[#eab308] text-[#eab308]" : "border-[#4F8EF7] text-[#7BA8F9]")
+                          : "border-transparent text-[#6b7280] hover:text-[#f1f1f5]")}>
+                      {label}
                     </button>
-                  </div>
+                  ))}
                 </div>
-                <div className="text-[10px] text-[#6b7280] mt-1.5 ml-1">Cmd/Ctrl + Enter для отправки</div>
+                <div className="p-3.5">
+                  {pendingFile && mode === "message" && (
+                    <div className="mb-2 flex items-center gap-2 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg px-3 py-2">
+                      <Icon name="paperclip" className="w-4 h-4 text-[#4F8EF7] shrink-0" />
+                      <span className="text-xs text-[#f1f1f5] truncate flex-1">{pendingFile.name}</span>
+                      <button onClick={() => setPendingFile(null)} className="text-[#6b7280] hover:text-[#ef4444]"><Icon name="x" className="w-3.5 h-3.5" /></button>
+                    </div>
+                  )}
+                  <div className={"bg-[#1a1a24] border rounded-xl focus-within:border-[#4F8EF7]/50 transition " +
+                    (mode === "comment" ? "border-[#eab308]/30 focus-within:border-[#eab308]/50" : "border-[#2a2a3a]")}>
+                    <textarea
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                          e.preventDefault();
+                          sendMessage();
+                        }
+                      }}
+                      placeholder={
+                        active.status === "closed" ? "Диалог закрыт" :
+                        mode === "comment" ? "Комментарий виден только операторам..." :
+                        "Написать сообщение..."
+                      }
+                      disabled={active.status === "closed"}
+                      rows={2}
+                      className="w-full bg-transparent px-3.5 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none resize-none disabled:opacity-50"
+                    />
+                    <div className="flex items-center justify-between px-2 py-2 border-t border-[#2a2a3a]/60">
+                      <div className="flex items-center gap-1">
+                        {mode === "message" && (
+                          <>
+                            <button
+                              className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"
+                              disabled={active.status === "closed"}
+                              onClick={() => fileInputRef.current?.click()}
+                              title="Прикрепить файл"
+                            >
+                              <Icon name="paperclip" />
+                            </button>
+                            <button
+                              className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"
+                              disabled={active.status === "closed"}
+                              onClick={() => setShowTemplates(true)}
+                              title="Шаблоны сообщений"
+                            >
+                              <Icon name="template" />
+                            </button>
+                            <div className="w-px h-4 bg-[#2a2a3a] mx-1"></div>
+                          </>
+                        )}
+                        <label className="flex items-center gap-2 text-xs text-[#6b7280] cursor-pointer select-none px-2 py-1 hover:text-[#f1f1f5]">
+                          <span>ИИ отвечает</span>
+                          <button
+                            type="button"
+                            onClick={toggleAI}
+                            className={
+                              "relative w-8 h-[18px] rounded-full transition " +
+                              (aiEnabled ? "bg-[#4F8EF7]" : "bg-[#2a2a3a]")
+                            }
+                          >
+                            <span
+                              className={
+                                "absolute top-[2px] w-[14px] h-[14px] bg-white rounded-full transition-all " +
+                                (aiEnabled ? "left-[16px]" : "left-[2px]")
+                              }
+                            ></span>
+                          </button>
+                        </label>
+                      </div>
+                      <button
+                        onClick={sendMessage}
+                        disabled={(mode === "message" ? (!draft.trim() && !pendingFile) : !draft.trim()) || active.status === "closed"}
+                        className={"px-4 py-1.5 rounded-lg text-white text-xs font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 " +
+                          (mode === "comment" ? "bg-[#eab308]/80 hover:bg-[#eab308]" : "bg-[#4F8EF7] hover:bg-[#3d7ce8]")}
+                      >
+                        <Icon name="send" className="w-3.5 h-3.5" />
+                        {mode === "comment" ? "Комментарий" : "Отправить"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-[#6b7280] mt-1.5 ml-1">Cmd/Ctrl + Enter для отправки</div>
+                </div>
               </div>
             </>
           )}
@@ -468,6 +714,16 @@ function DialogsScreen({
             </div>
           </div>
         </div>
+      )}
+      {showTemplates && <TemplatePickerModal onSelect={pickTemplate} onClose={() => setShowTemplates(false)} />}
+      {showTransfer && (
+        <TransferModal
+          activeDialog={active}
+          operators={operators}
+          currentOperator={currentOperator}
+          onTransfer={handleTransfer}
+          onClose={() => setShowTransfer(false)}
+        />
       )}
     </>
   );

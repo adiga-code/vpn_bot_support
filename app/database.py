@@ -25,6 +25,7 @@ def make_initials(name: str) -> str:
 # ── Manager ───────────────────────────────────────────────────────────────────
 
 class DatabaseManager:
+    _ASSIGN_LOCK = 7_777_777  # pg advisory lock key — serializes all assignment operations
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -139,6 +140,16 @@ class DatabaseManager:
             )
         """)
 
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS message_templates (
+                id         SERIAL PRIMARY KEY,
+                group_name TEXT NOT NULL DEFAULT 'Общие',
+                title      TEXT NOT NULL,
+                text       TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+
         # ── n8n shared tables ────────────────────────────────────────────────
         # n8n connects to the same PostgreSQL and uses these tables.
         # Names are prefixed with n8n_ to avoid collisions with helpdesk tables.
@@ -192,6 +203,9 @@ class DatabaseManager:
             ("dialogs", "last_message_time",    "TIMESTAMPTZ DEFAULT NOW()"),
             ("dialogs", "updated_at",           "TIMESTAMPTZ DEFAULT NOW()"),
             ("dialogs", "summary",              "TEXT"),
+            ("dialogs", "rating",               "SMALLINT"),
+            ("dialogs", "closed_at",            "TIMESTAMPTZ"),
+            ("dialogs", "assigned_operator",    "TEXT"),
             # messages
             ("messages", "kind",          "TEXT"),
             ("messages", "text",          "TEXT"),
@@ -277,15 +291,27 @@ class DatabaseManager:
         )
 
     async def update_status(self, dialog_id: str, status: str):
-        await self.pool.execute(
-            "UPDATE dialogs SET status=$1, updated_at=NOW() WHERE dialog_id=$2",
-            status, dialog_id,
-        )
+        if status == "closed":
+            await self.pool.execute(
+                "UPDATE dialogs SET status=$1, updated_at=NOW(), closed_at=NOW() WHERE dialog_id=$2",
+                status, dialog_id,
+            )
+        else:
+            await self.pool.execute(
+                "UPDATE dialogs SET status=$1, updated_at=NOW() WHERE dialog_id=$2",
+                status, dialog_id,
+            )
 
     async def update_ai_enabled(self, dialog_id: str, ai_enabled: bool):
         await self.pool.execute(
             "UPDATE dialogs SET ai_enabled=$1, updated_at=NOW() WHERE dialog_id=$2",
             ai_enabled, dialog_id,
+        )
+
+    async def set_assigned_operator(self, dialog_id: str, operator_name):
+        await self.pool.execute(
+            "UPDATE dialogs SET assigned_operator=$1, updated_at=NOW() WHERE dialog_id=$2",
+            operator_name, dialog_id,
         )
 
     async def update_operator_called(self, dialog_id: str, called: bool):
@@ -481,6 +507,95 @@ class DatabaseManager:
         )
         return [{"q": r["q"], "count": r["count"]} for r in rows]
 
+    async def get_time_stats(self, days: int = 30) -> dict:
+        interval = f"{days} days"
+
+        team_first = await self.pool.fetchval("""
+            SELECT AVG(EXTRACT(EPOCH FROM (m.created_at - d.created_at)))
+            FROM dialogs d
+            JOIN LATERAL (
+                SELECT created_at, operator_name FROM messages
+                WHERE dialog_id = d.dialog_id AND kind = 'operator'
+                ORDER BY created_at ASC LIMIT 1
+            ) m ON true
+            WHERE d.created_at >= NOW() - $1::interval
+        """, interval)
+
+        team_next = await self.pool.fetchval("""
+            SELECT AVG(EXTRACT(EPOCH FROM (m_op.created_at - m_usr.created_at)))
+            FROM messages m_op
+            JOIN LATERAL (
+                SELECT created_at FROM messages
+                WHERE dialog_id = m_op.dialog_id AND kind = 'user'
+                  AND created_at < m_op.created_at
+                ORDER BY created_at DESC LIMIT 1
+            ) m_usr ON true
+            WHERE m_op.kind = 'operator'
+              AND m_op.created_at >= NOW() - $1::interval
+        """, interval)
+
+        team_close = await self.pool.fetchval("""
+            SELECT AVG(EXTRACT(EPOCH FROM (closed_at - created_at)))
+            FROM dialogs
+            WHERE status = 'closed' AND closed_at IS NOT NULL
+              AND created_at >= NOW() - $1::interval
+        """, interval)
+
+        op_first_rows = await self.pool.fetch("""
+            SELECT m.operator_name,
+                   AVG(EXTRACT(EPOCH FROM (m.created_at - d.created_at))) AS avg_sec,
+                   COUNT(*) AS cnt
+            FROM dialogs d
+            JOIN LATERAL (
+                SELECT created_at, operator_name FROM messages
+                WHERE dialog_id = d.dialog_id AND kind = 'operator'
+                ORDER BY created_at ASC LIMIT 1
+            ) m ON true
+            WHERE d.created_at >= NOW() - $1::interval
+              AND m.operator_name IS NOT NULL
+            GROUP BY m.operator_name
+        """, interval)
+
+        op_next_rows = await self.pool.fetch("""
+            SELECT m_op.operator_name,
+                   AVG(EXTRACT(EPOCH FROM (m_op.created_at - m_usr.created_at))) AS avg_sec
+            FROM messages m_op
+            JOIN LATERAL (
+                SELECT created_at FROM messages
+                WHERE dialog_id = m_op.dialog_id AND kind = 'user'
+                  AND created_at < m_op.created_at
+                ORDER BY created_at DESC LIMIT 1
+            ) m_usr ON true
+            WHERE m_op.kind = 'operator'
+              AND m_op.created_at >= NOW() - $1::interval
+              AND m_op.operator_name IS NOT NULL
+            GROUP BY m_op.operator_name
+        """, interval)
+
+        op_first_map = {r["operator_name"]: {"avg": float(r["avg_sec"]), "cnt": int(r["cnt"])}
+                        for r in op_first_rows}
+        op_next_map  = {r["operator_name"]: float(r["avg_sec"]) for r in op_next_rows}
+
+        op_rows = await self.pool.fetch("SELECT * FROM operators ORDER BY id")
+        operators = [{
+            "id": op["id"], "name": op["name"], "online": op["online"],
+            "initials": op["initials"], "color": op["color"],
+            "role": op["role"], "tg": op["tg"],
+            "first_response_avg": op_first_map.get(op["name"], {}).get("avg"),
+            "next_response_avg":  op_next_map.get(op["name"]),
+            "dialogs_count":      op_first_map.get(op["name"], {}).get("cnt", 0),
+        } for op in op_rows]
+
+        return {
+            "period_days": days,
+            "team": {
+                "first_response_avg": float(team_first) if team_first else None,
+                "next_response_avg":  float(team_next)  if team_next  else None,
+                "close_time_avg":     float(team_close) if team_close else None,
+            },
+            "operators": operators,
+        }
+
     # ── Knowledge Base ────────────────────────────────────────────────────────
 
     async def save_kb_article(self, id: str, title: str, category: str, keywords: str, content: str):
@@ -500,6 +615,114 @@ class DatabaseManager:
     async def delete_kb_article(self, article_id: str) -> bool:
         result = await self.pool.execute("DELETE FROM kb_articles WHERE id=$1", article_id)
         return result == "DELETE 1"
+
+    async def get_templates(self) -> list[dict]:
+        rows = await self.pool.fetch(
+            "SELECT * FROM message_templates ORDER BY group_name, title"
+        )
+        return [dict(r) for r in rows]
+
+    async def save_template(self, id: int | None, group_name: str, title: str, text: str) -> dict | None:
+        if id:
+            row = await self.pool.fetchrow(
+                "UPDATE message_templates SET group_name=$1, title=$2, text=$3 WHERE id=$4 RETURNING *",
+                group_name, title, text, id,
+            )
+        else:
+            row = await self.pool.fetchrow(
+                "INSERT INTO message_templates (group_name, title, text) VALUES ($1,$2,$3) RETURNING *",
+                group_name, title, text,
+            )
+        return dict(row) if row else None
+
+    async def delete_template(self, template_id: int) -> bool:
+        result = await self.pool.execute(
+            "DELETE FROM message_templates WHERE id=$1", template_id
+        )
+        return result == "DELETE 1"
+
+    async def get_user_message_count(self, dialog_id: str) -> int:
+        return await self.pool.fetchval(
+            "SELECT COUNT(*) FROM messages WHERE dialog_id=$1 AND kind='user'", dialog_id
+        ) or 0
+
+    async def set_dialog_rating(self, dialog_id: str, rating: int):
+        await self.pool.execute(
+            "UPDATE dialogs SET rating=$1 WHERE dialog_id=$2", rating, dialog_id
+        )
+
+    async def get_all_chat_ids(self) -> list:
+        rows = await self.pool.fetch(
+            "SELECT DISTINCT chat_id FROM dialogs WHERE chat_id IS NOT NULL"
+        )
+        return [r["chat_id"] for r in rows]
+
+    async def auto_assign_dialog(self, dialog_id: str, max_tickets: int) -> str | None:
+        """Find the least-loaded online operator and assign dialog_id to them.
+        Uses an advisory lock so concurrent calls don't exceed max_tickets."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock($1)", self._ASSIGN_LOCK)
+                row = await conn.fetchrow("""
+                    SELECT o.name
+                    FROM operators o
+                    LEFT JOIN (
+                        SELECT assigned_operator, COUNT(*) AS cnt
+                        FROM dialogs
+                        WHERE status != 'closed' AND assigned_operator IS NOT NULL
+                        GROUP BY assigned_operator
+                    ) active ON active.assigned_operator = o.name
+                    WHERE o.online = TRUE
+                      AND COALESCE(active.cnt, 0) < $1
+                    ORDER BY COALESCE(active.cnt, 0) ASC
+                    LIMIT 1
+                """, max_tickets)
+                if not row:
+                    return None
+                op_name = row["name"]
+                await conn.execute(
+                    "UPDATE dialogs SET assigned_operator=$1, updated_at=NOW() WHERE dialog_id=$2",
+                    op_name, dialog_id,
+                )
+                return op_name
+
+    async def claim_next_assignment(self, max_tickets: int) -> dict | None:
+        """Atomically find the least-loaded online operator with capacity AND the oldest
+        queued dialog, assign them. Returns {'dialog': dict, 'op_name': str} or None."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock($1)", self._ASSIGN_LOCK)
+                op_row = await conn.fetchrow("""
+                    SELECT o.name
+                    FROM operators o
+                    LEFT JOIN (
+                        SELECT assigned_operator, COUNT(*) AS cnt
+                        FROM dialogs
+                        WHERE status != 'closed' AND assigned_operator IS NOT NULL
+                        GROUP BY assigned_operator
+                    ) active ON active.assigned_operator = o.name
+                    WHERE o.online = TRUE AND COALESCE(active.cnt, 0) < $1
+                    ORDER BY COALESCE(active.cnt, 0) ASC
+                    LIMIT 1
+                """, max_tickets)
+                if not op_row:
+                    return None
+                dialog_row = await conn.fetchrow("""
+                    UPDATE dialogs SET assigned_operator = $1, updated_at = NOW()
+                    WHERE dialog_id = (
+                        SELECT dialog_id FROM dialogs
+                        WHERE assigned_operator IS NULL AND status != 'closed'
+                        ORDER BY created_at ASC LIMIT 1
+                    )
+                    RETURNING *
+                """, op_row["name"])
+                if not dialog_row:
+                    return None
+                return {"dialog": dict(dialog_row), "op_name": op_row["name"]}
+
+    async def get_operator_by_name(self, name: str) -> dict | None:
+        row = await self.pool.fetchrow("SELECT * FROM operators WHERE name=$1", name)
+        return dict(row) if row else None
 
     async def close(self):
         if self.pool:

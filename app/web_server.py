@@ -38,6 +38,17 @@ _AI_DEFAULTS = {
 
 _NOTIF_PREFS_DEFAULT = {"new_dialog": True, "operator_called": True, "server_down": True}
 
+_AUTOMATION_DEFAULTS = {
+    "operator_button_enabled": False,
+    "operator_button_after_msgs": 3,
+    "auto_handoff_enabled": False,
+    "rating_enabled": False,
+    "rating_message_text": "Оцените качество поддержки:",
+    "close_message_enabled": False,
+    "close_message_text": "Спасибо за обращение! Если появятся вопросы — просто напишите нам.",
+    "max_tickets_per_operator": 10,
+}
+
 _SCHEDULE_DEFAULTS = {
     "mon": {"enabled": True,  "from": "09:00", "to": "21:00"},
     "tue": {"enabled": True,  "from": "09:00", "to": "21:00"},
@@ -93,6 +104,7 @@ def _fmt_dialog(row: dict, tickets: list = None) -> dict:
         },
         "preview": row.get("last_message_text") or "",
         "time": _fmt_time(row.get("last_message_time")),
+        "assignedOperator": row.get("assigned_operator"),
         "tickets": tickets or [],
     }
 
@@ -148,12 +160,15 @@ class ChangePasswordBody(BaseModel):
 
 class ReplyBody(BaseModel):
     text: str = ""
-    operator_name: str = "Оператор"
+    operator_name: str | None = None
     file_url: Optional[str] = None
     file_type: Optional[str] = None
 
+class CommentBody(BaseModel):
+    text: str
+
 class HandoffBody(BaseModel):
-    operator_name: str = "Оператор"
+    operator_name: str | None = None
 
 class OperatorBody(BaseModel):
     name: str
@@ -176,6 +191,27 @@ class NotifPrefsBody(BaseModel):
 
 class ScheduleBody(BaseModel):
     schedule: dict
+
+class AutomationSettingsBody(BaseModel):
+    operator_button_enabled: bool = False
+    operator_button_after_msgs: int = 3
+    auto_handoff_enabled: bool = False
+    rating_enabled: bool = False
+    rating_message_text: str = "Оцените качество поддержки:"
+    close_message_enabled: bool = False
+    close_message_text: str = ""
+    max_tickets_per_operator: int = 10
+
+class BroadcastBody(BaseModel):
+    text: str
+
+class TemplateBody(BaseModel):
+    group_name: str = "Общие"
+    title: str
+    text: str
+
+class TransferBody(BaseModel):
+    operator_name: str
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -355,8 +391,7 @@ def build_app(
         if not dialog:
             raise HTTPException(404)
 
-        # Use authenticated operator's name if body doesn't override it
-        op_name = body.operator_name or operator["name"]
+        op_name = body.operator_name or operator["name"] or "Оператор"
         msg_row = await db.save_message(
             dialog_id, "operator",
             body.text or None,
@@ -379,6 +414,19 @@ def build_app(
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         return {"ok": True}
 
+    @app.post("/api/dialogs/{dialog_id}/comment")
+    async def add_comment(dialog_id: str, body: CommentBody, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        if not body.text.strip():
+            raise HTTPException(400, "Пустой комментарий")
+        msg_row = await db.save_message(
+            dialog_id, "comment", body.text.strip(), operator_name=operator["name"]
+        )
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+        return {"ok": True}
+
     @app.post("/api/dialogs/{dialog_id}/toggle_ai")
     async def toggle_ai(dialog_id: str, operator: dict = Depends(require_auth)):
         dialog = await db.get_dialog(dialog_id)
@@ -396,15 +444,57 @@ def build_app(
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
             raise HTTPException(404)
-        op_name = body.operator_name or operator["name"]
-        msg_row = await db.save_message(dialog_id, "system", f"Диалог передан оператору {op_name}")
+        op_name = body.operator_name or operator["name"] or "Оператор"
+        msg_row = await db.save_message(dialog_id, "system", f"Диалог взят в работу оператором {op_name}")
         await db.update_status(dialog_id, "in_progress")
         await db.update_operator_called(dialog_id, True)
+        await db.set_assigned_operator(dialog_id, op_name)
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         username = updated.get("user_username") or dialog_id
         await n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/reopen")
+    async def reopen_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        if dialog["status"] == "closed":
+            raise HTTPException(400, "Cannot reopen closed dialog")
+        old_op = dialog.get("assigned_operator")
+        msg_row = await db.save_message(dialog_id, "system", "Диалог возвращён в очередь")
+        await db.update_status(dialog_id, "new")
+        await db.set_assigned_operator(dialog_id, None)
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        if old_op:
+            asyncio.create_task(_drain_queue_bg())
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/transfer")
+    async def transfer_dialog(dialog_id: str, body: TransferBody, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        if operator["role"] != "admin" and dialog.get("assigned_operator") != operator["name"]:
+            raise HTTPException(403, "Can only transfer your own dialogs")
+        target = await db.get_operator_by_name(body.operator_name)
+        if not target:
+            raise HTTPException(404, "Target operator not found")
+        old_op = dialog.get("assigned_operator")
+        await db.set_assigned_operator(dialog_id, body.operator_name)
+        if dialog["status"] == "new":
+            await db.update_status(dialog_id, "in_progress")
+        msg_row = await db.save_message(dialog_id, "system",
+                                        f"Тикет передан оператору {body.operator_name}")
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        if old_op and old_op != body.operator_name:
+            asyncio.create_task(_drain_queue_bg())
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/close")
@@ -421,7 +511,34 @@ def build_app(
         await n8n.notify_dialog_closed(dialog_id, dialog["chat_id"], operator["name"])
         if chat_client:
             asyncio.create_task(_summarize_dialog_bg(dialog_id))
+        automation = await db.get_setting_json("automation", _AUTOMATION_DEFAULTS)
+        if automation.get("close_message_enabled") and automation.get("close_message_text"):
+            asyncio.create_task(n8n.send_to_user(dialog["chat_id"], automation["close_message_text"]))
+        if automation.get("rating_enabled"):
+            rating_text = automation.get("rating_message_text") or "Оцените качество поддержки:"
+            asyncio.create_task(n8n.send_rating_request(dialog["chat_id"], dialog_id, rating_text))
+        asyncio.create_task(_drain_queue_bg())
         return {"ok": True}
+
+    async def _drain_queue_bg():
+        """Assign all queued dialogs to available operators (globally, not per-operator)."""
+        try:
+            automation = await db.get_setting_json("automation", _AUTOMATION_DEFAULTS)
+            max_tickets = int(automation.get("max_tickets_per_operator") or 10)
+            while True:
+                result = await db.claim_next_assignment(max_tickets)
+                if not result:
+                    return
+                dialog_id = result["dialog"]["dialog_id"]
+                op_name = result["op_name"]
+                msg_row = await db.save_message(dialog_id, "system",
+                                                f"Диалог назначен оператору {op_name}")
+                updated = await db.get_dialog(dialog_id)
+                await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                                    "message": _fmt_message(msg_row)})
+                await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        except Exception as e:
+            print(f"[drain_queue] error: {e}")
 
     async def _summarize_dialog_bg(dialog_id: str):
         try:
@@ -484,6 +601,12 @@ def build_app(
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
         return await db.get_stats(days)
+
+    @app.get("/api/stats/times")
+    async def get_time_stats(days: int = 30, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        return await db.get_time_stats(days)
 
     # ── Operators ─────────────────────────────────────────────────────────────
 
@@ -611,6 +734,78 @@ def build_app(
         await delete_from_qdrant(article_id, settings.QDRANT_URL)
         return {"ok": True}
 
+    # ── Settings: Automation ─────────────────────────────────────────────────
+
+    @app.get("/api/settings/automation")
+    async def get_automation(operator: dict = Depends(require_auth)):
+        return await db.get_setting_json("automation", _AUTOMATION_DEFAULTS)
+
+    @app.put("/api/settings/automation")
+    async def save_automation(body: AutomationSettingsBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        data = body.model_dump()
+        await db.set_setting_json("automation", data)
+        # Синхронизировать auto_handoff_enabled → ai_settings для RedisConsumer
+        ai = await db.get_setting_json("ai_settings", _AI_DEFAULTS)
+        ai["handoff_enabled"] = data["auto_handoff_enabled"]
+        await db.set_setting_json("ai_settings", ai)
+        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(ai, ensure_ascii=False))
+        return {"ok": True}
+
+    # ── Broadcast ─────────────────────────────────────────────────────────────
+
+    @app.post("/api/broadcast")
+    async def broadcast_msg(body: BroadcastBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not body.text.strip():
+            raise HTTPException(400, "Текст не может быть пустым")
+        chat_ids = await db.get_all_chat_ids()
+        sent = 0
+        failed = 0
+        for cid in chat_ids:
+            try:
+                await n8n.send_to_user(cid, body.text)
+                sent += 1
+            except Exception:
+                failed += 1
+        # Rate-limiting (30 msg/sec Telegram limit) is handled by n8n — add a
+        # 50 ms Wait node between iterations in the "Send to User" workflow.
+        return {"sent": sent, "failed": failed, "total": len(chat_ids)}
+
+    # ── Templates ─────────────────────────────────────────────────────────────
+
+    @app.get("/api/templates")
+    async def get_templates(operator: dict = Depends(require_auth)):
+        return await db.get_templates()
+
+    @app.post("/api/templates")
+    async def create_template(body: TemplateBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not body.title.strip() or not body.text.strip():
+            raise HTTPException(400, "Название и текст обязательны")
+        return await db.save_template(None, body.group_name.strip() or "Общие", body.title.strip(), body.text.strip())
+
+    @app.put("/api/templates/{template_id}")
+    async def update_template(template_id: int, body: TemplateBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        row = await db.save_template(template_id, body.group_name.strip() or "Общие", body.title.strip(), body.text.strip())
+        if not row:
+            raise HTTPException(404)
+        return row
+
+    @app.delete("/api/templates/{template_id}")
+    async def delete_template_ep(template_id: int, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        ok = await db.delete_template(template_id)
+        if not ok:
+            raise HTTPException(404)
+        return {"ok": True}
+
     # ── WebSocket ─────────────────────────────────────────────────────────────
 
     @app.websocket("/ws")
@@ -621,8 +816,11 @@ def build_app(
             return
         went_online = await ws.connect(websocket, op_id)
         if went_online:
+            op = await db.get_operator(op_id)
             await db.set_operator_online(op_id, True)
             await ws.broadcast({"type": "operator_status", "op_id": op_id, "online": True})
+            if op:
+                asyncio.create_task(_drain_queue_bg())
         try:
             while True:
                 await websocket.receive_text()

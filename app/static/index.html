@@ -358,7 +358,6 @@
       const [conversations,   setConversations]   = useState([]);
       const [activeId,        setActiveId]        = useState(null);
       const [opsState,        setOpsState]        = useState([]);
-      const [stats,           setStats]           = useState(null);
       const [dataLoading,     setDataLoading]     = useState(false);
       const [notifOpen,       setNotifOpen]       = useState(false);
       const [profileOpen,     setProfileOpen]     = useState(false);
@@ -416,13 +415,11 @@
         Promise.all([
           apiGet("/api/dialogs"),
           apiGet("/api/operators").catch(() => []),
-          apiGet("/api/stats").catch(() => null),
-        ]).then(([dialogs, operators, statsData]) => {
+        ]).then(([dialogs, operators]) => {
           const withMessages = dialogs.map((d) => ({ ...d, messages: [], tickets: [] }));
           setConversations(withMessages);
           if (withMessages.length > 0) setActiveId(withMessages[0].id);
           setOpsState(operators || []);
-          setStats(statsData);
         }).catch((e) => console.error("Failed to load initial data:", e))
           .finally(() => setDataLoading(false));
       }, [authState]);
@@ -574,6 +571,14 @@
         }
       }
 
+      async function handleReopen(dialog_id) {
+        try {
+          await apiPost(`/api/dialogs/${dialog_id}/reopen`);
+        } catch (e) {
+          console.error("Reopen failed:", e);
+        }
+      }
+
       async function handleBillingAction(dialog_id, action, params) {
         try {
           await apiPost(`/api/dialogs/${dialog_id}/billing/${action}`, params || {});
@@ -641,20 +646,15 @@
                 onToggleAI={handleToggleAI}
                 onClose={handleClose}
                 onHandoff={handleHandoff}
+                onReopen={handleReopen}
                 onBillingAction={handleBillingAction}
+                currentOperator={currentOperator}
+                operators={opsState}
                 servers={[]}
               />
             )}
             {screen === "stats" && (
-              <StatisticsScreen
-                dailyConversations={stats ? stats.daily : []}
-                hourly={stats ? stats.hourly : []}
-                operators={opsState}
-                topQuestions={stats ? stats.top_questions : []}
-                todayTotal={stats ? stats.today_total : null}
-                todayClosed={stats ? stats.today_closed : null}
-                aiPct={stats ? stats.ai_pct : null}
-              />
+              <StatisticsScreen />
             )}
             {screen === "settings" && (
               <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast} currentOperator={currentOperator} />
