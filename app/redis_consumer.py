@@ -192,9 +192,12 @@ class RedisConsumer:
         automation = await self.db.get_setting_json("automation", {})
         max_tickets = int(automation.get("max_tickets_per_operator") or 10)
         op_name = await self.db.auto_assign_dialog(dialog_id, max_tickets)
-        msg_text = f"ИИ передал диалог оператору {op_name}" if op_name else "ИИ передал диалог в очередь"
+        if op_name:
+            msg_text = f"ИИ передал диалог оператору {op_name}"
+            await self.db.update_status(dialog_id, "in_progress")
+        else:
+            msg_text = "ИИ передал диалог в очередь"
         sys_row = await self.db.save_message(dialog_id, "system", msg_text)
-        await self.db.update_status(dialog_id, "in_progress")
         await self.db.update_operator_called(dialog_id, True)
         updated = await self.db.get_dialog(dialog_id)
         await self.ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(sys_row)})
