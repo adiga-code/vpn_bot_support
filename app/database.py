@@ -656,6 +656,47 @@ class DatabaseManager:
         )
         return [r["chat_id"] for r in rows]
 
+    async def auto_assign_dialog(self, dialog_id: str, max_tickets: int) -> str | None:
+        row = await self.pool.fetchrow("""
+            SELECT o.name
+            FROM operators o
+            LEFT JOIN (
+                SELECT assigned_operator, COUNT(*) AS cnt
+                FROM dialogs
+                WHERE status != 'closed' AND assigned_operator IS NOT NULL
+                GROUP BY assigned_operator
+            ) active ON active.assigned_operator = o.name
+            WHERE o.online = TRUE
+              AND COALESCE(active.cnt, 0) < $1
+            ORDER BY COALESCE(active.cnt, 0) ASC
+            LIMIT 1
+        """, max_tickets)
+        if not row:
+            return None
+        op_name = row["name"]
+        await self.pool.execute(
+            "UPDATE dialogs SET assigned_operator=$1, updated_at=NOW() WHERE dialog_id=$2",
+            op_name, dialog_id,
+        )
+        return op_name
+
+    async def get_active_dialog_count(self, operator_name: str) -> int:
+        return await self.pool.fetchval(
+            "SELECT COUNT(*) FROM dialogs WHERE assigned_operator=$1 AND status != 'closed'",
+            operator_name,
+        ) or 0
+
+    async def get_oldest_unassigned_dialog(self) -> dict | None:
+        row = await self.pool.fetchrow(
+            "SELECT * FROM dialogs WHERE assigned_operator IS NULL AND status != 'closed' "
+            "ORDER BY created_at ASC LIMIT 1"
+        )
+        return dict(row) if row else None
+
+    async def get_operator_by_name(self, name: str) -> dict | None:
+        row = await self.pool.fetchrow("SELECT * FROM operators WHERE name=$1", name)
+        return dict(row) if row else None
+
     async def close(self):
         if self.pool:
             await self.pool.close()

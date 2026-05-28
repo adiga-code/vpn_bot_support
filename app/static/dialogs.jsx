@@ -42,12 +42,14 @@ function ConvCard({ conv, active, onClick }) {
               </span>
             )}
           </div>
-          {conv.assignedOperator && (
+          {conv.assignedOperator ? (
             <div className="flex items-center gap-1 mt-1 text-[10px] text-[#6b7280]">
               <Icon name="user" className="w-2.5 h-2.5 shrink-0" />
               <span className="truncate">{conv.assignedOperator}</span>
             </div>
-          )}
+          ) : conv.status !== "closed" ? (
+            <div className="mt-1 text-[10px] text-[#6b7280]/60">В очереди</div>
+          ) : null}
         </div>
       </div>
     </button>
@@ -251,15 +253,49 @@ function TemplatePickerModal({ onSelect, onClose }) {
   );
 }
 
+function TransferModal({ activeDialog, operators, currentOperator, onTransfer, onClose }) {
+  const candidates = (operators || []).filter(op => op.name !== activeDialog?.assignedOperator);
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
+          <div className="font-medium text-sm text-[#f1f1f5]">Передать тикет</div>
+          <button onClick={onClose} className="text-[#6b7280] hover:text-[#f1f1f5]"><Icon name="x" className="w-4 h-4" /></button>
+        </div>
+        <div className="divide-y divide-[#2a2a3a]/60 max-h-[360px] overflow-y-auto scrollbar-thin">
+          {candidates.length === 0 && (
+            <div className="px-5 py-8 text-center text-sm text-[#6b7280]">Нет доступных операторов</div>
+          )}
+          {candidates.map(op => (
+            <button key={op.id} onClick={() => onTransfer(op.name)}
+              className="w-full px-5 py-3 flex items-center gap-3 hover:bg-[#1a1a24] transition">
+              <Avatar initials={op.initials} color={op.color} size={32} />
+              <div className="flex-1 text-left min-w-0">
+                <div className="text-sm text-[#f1f1f5]">{op.name}</div>
+                <div className="text-xs text-[#6b7280]">{op.role === "admin" ? "Администратор" : "Агент"}</div>
+              </div>
+              <span className={"flex items-center gap-1 text-xs " + (op.online ? "text-[#22c55e]" : "text-zinc-500")}>
+                <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
+                {op.online ? "Онлайн" : "Офлайн"}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DialogsScreen({
   conversations, setConversations,
   activeId, setActiveId,
   showToast,
   onReply, onToggleAI, onClose, onHandoff, onReopen, onBillingAction,
-  currentOperator,
+  currentOperator, operators,
   servers,
 }) {
   const [searchQ, setSearchQ] = useStateD("");
+  const [view,   setView]   = useStateD("my");  // "my" | "all"
   const [filter, setFilter] = useStateD("all");
   const [draft, setDraft] = useStateD("");
   const [mode, setMode] = useStateD("message"); // "message" | "comment"
@@ -268,6 +304,7 @@ function DialogsScreen({
   const [pendingFile, setPendingFile] = useStateD(null);
   const [confirmClose, setConfirmClose] = useStateD(false);
   const [showTemplates, setShowTemplates] = useStateD(false);
+  const [showTransfer, setShowTransfer] = useStateD(false);
   const scrollRef = useRefD(null);
   const fileInputRef = useRefD(null);
 
@@ -286,7 +323,9 @@ function DialogsScreen({
   }, [active?.id, active?.messages?.length]);
 
   const filtered = useMemoD(() => {
-    let list = conversations;
+    let list = view === "my"
+      ? conversations.filter((c) => c.assignedOperator === currentOperator?.name)
+      : conversations;
     if (filter === "open") list = list.filter((c) => c.status === "new");
     if (filter === "wip") list = list.filter((c) => c.status === "in_progress");
     if (filter === "closed") list = list.filter((c) => c.status === "closed");
@@ -297,14 +336,30 @@ function DialogsScreen({
       );
     }
     return list;
-  }, [conversations, filter, searchQ]);
+  }, [conversations, view, filter, searchQ, currentOperator]);
+
+  const baseList = useMemoD(() =>
+    view === "my"
+      ? conversations.filter((c) => c.assignedOperator === currentOperator?.name)
+      : conversations,
+    [conversations, view, currentOperator]
+  );
 
   const counts = useMemoD(() => ({
-    all: conversations.length,
-    open: conversations.filter((c) => c.status === "new").length,
-    wip: conversations.filter((c) => c.status === "in_progress").length,
-    closed: conversations.filter((c) => c.status === "closed").length,
-  }), [conversations]);
+    all: baseList.length,
+    open: baseList.filter((c) => c.status === "new").length,
+    wip: baseList.filter((c) => c.status === "in_progress").length,
+    closed: baseList.filter((c) => c.status === "closed").length,
+  }), [baseList]);
+
+  async function handleTransfer(operatorName) {
+    setShowTransfer(false);
+    if (!active) return;
+    try {
+      await window.apiFetch("POST", `/api/dialogs/${active.id}/transfer`, { operator_name: operatorName });
+      showToast(`Тикет передан: ${operatorName}`);
+    } catch { showToast("Ошибка передачи"); }
+  }
 
   async function handleFileSelect(e) {
     const file = e.target.files?.[0];
@@ -386,6 +441,16 @@ function DialogsScreen({
         {/* Left: conversation list */}
         <aside className="w-[260px] shrink-0 bg-[#13131a] border-r border-[#2a2a3a] flex flex-col min-h-0">
           <div className="p-3 border-b border-[#2a2a3a] space-y-2.5">
+            {/* Мои / Все */}
+            <div className="flex bg-[#0d0d12] rounded-lg p-0.5 gap-0.5">
+              {[["my", "Мои"], ["all", "Все"]].map(([v, label]) => (
+                <button key={v} onClick={() => setView(v)}
+                  className={"flex-1 py-1.5 rounded-md text-xs font-medium transition " +
+                    (view === v ? "bg-[#4F8EF7] text-white" : "text-[#6b7280] hover:text-[#f1f1f5]")}>
+                  {label}
+                </button>
+              ))}
+            </div>
             <div className="relative">
               <Icon name="search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#6b7280]" />
               <input
@@ -465,6 +530,15 @@ function DialogsScreen({
                         Вернуть в очередь
                       </button>
                     </>
+                  )}
+                  {active.status !== "closed" && (
+                    <button
+                      onClick={() => setShowTransfer(true)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
+                    >
+                      <Icon name="arrowRight" className="w-3.5 h-3.5" />
+                      Передать
+                    </button>
                   )}
                   <button
                     onClick={() => setConfirmClose(true)}
@@ -642,6 +716,15 @@ function DialogsScreen({
         </div>
       )}
       {showTemplates && <TemplatePickerModal onSelect={pickTemplate} onClose={() => setShowTemplates(false)} />}
+      {showTransfer && (
+        <TransferModal
+          activeDialog={active}
+          operators={operators}
+          currentOperator={currentOperator}
+          onTransfer={handleTransfer}
+          onClose={() => setShowTransfer(false)}
+        />
+      )}
     </>
   );
 }

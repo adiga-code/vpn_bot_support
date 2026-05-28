@@ -737,6 +737,25 @@ function AutomationSection({ showToast }) {
         )}
       </div>
 
+      {/* Distribution settings */}
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl">
+        <div className="px-5 py-4">
+          <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">Распределение</div>
+          <div className="flex items-center gap-4">
+            <div>
+              <div className="text-sm text-[#f1f1f5]">Макс. тикетов на оператора</div>
+              <div className="text-xs text-[#6b7280] mt-0.5">Сверх лимита — тикеты идут в очередь</div>
+            </div>
+            <input
+              type="number" min="1" max="100"
+              value={s.max_tickets_per_operator ?? 10}
+              onChange={e => set("max_tickets_per_operator", Math.max(1, parseInt(e.target.value) || 1))}
+              className="w-20 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-1.5 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 text-center ml-auto"
+            />
+          </div>
+        </div>
+      </div>
+
       <div className="flex justify-end">
         <button onClick={save} className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold">
           Сохранить

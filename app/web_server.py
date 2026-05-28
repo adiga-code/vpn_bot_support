@@ -46,6 +46,7 @@ _AUTOMATION_DEFAULTS = {
     "rating_message_text": "Оцените качество поддержки:",
     "close_message_enabled": False,
     "close_message_text": "Спасибо за обращение! Если появятся вопросы — просто напишите нам.",
+    "max_tickets_per_operator": 10,
 }
 
 _SCHEDULE_DEFAULTS = {
@@ -199,6 +200,7 @@ class AutomationSettingsBody(BaseModel):
     rating_message_text: str = "Оцените качество поддержки:"
     close_message_enabled: bool = False
     close_message_text: str = ""
+    max_tickets_per_operator: int = 10
 
 class BroadcastBody(BaseModel):
     text: str
@@ -207,6 +209,9 @@ class TemplateBody(BaseModel):
     group_name: str = "Общие"
     title: str
     text: str
+
+class TransferBody(BaseModel):
+    operator_name: str
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -467,6 +472,26 @@ def build_app(
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         return {"ok": True}
 
+    @app.post("/api/dialogs/{dialog_id}/transfer")
+    async def transfer_dialog(dialog_id: str, body: TransferBody, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        if operator["role"] != "admin" and dialog.get("assigned_operator") != operator["name"]:
+            raise HTTPException(403, "Can only transfer your own dialogs")
+        target = await db.get_operator_by_name(body.operator_name)
+        if not target:
+            raise HTTPException(404, "Target operator not found")
+        await db.set_assigned_operator(dialog_id, body.operator_name)
+        if dialog["status"] == "new":
+            await db.update_status(dialog_id, "in_progress")
+        msg_row = await db.save_message(dialog_id, "system",
+                                        f"Тикет передан оператору {body.operator_name}")
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        return {"ok": True}
+
     @app.post("/api/dialogs/{dialog_id}/close")
     async def close_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
         dialog = await db.get_dialog(dialog_id)
@@ -487,7 +512,28 @@ def build_app(
         if automation.get("rating_enabled"):
             rating_text = automation.get("rating_message_text") or "Оцените качество поддержки:"
             asyncio.create_task(n8n.send_rating_request(dialog["chat_id"], dialog_id, rating_text))
+        asyncio.create_task(_drain_queue_bg(operator["name"]))
         return {"ok": True}
+
+    async def _drain_queue_bg(freed_op_name: str):
+        try:
+            automation = await db.get_setting_json("automation", _AUTOMATION_DEFAULTS)
+            max_tickets = int(automation.get("max_tickets_per_operator") or 10)
+            count = await db.get_active_dialog_count(freed_op_name)
+            if count >= max_tickets:
+                return
+            dialog = await db.get_oldest_unassigned_dialog()
+            if not dialog:
+                return
+            await db.set_assigned_operator(dialog["dialog_id"], freed_op_name)
+            msg_row = await db.save_message(dialog["dialog_id"], "system",
+                                            f"Диалог назначен оператору {freed_op_name}")
+            updated = await db.get_dialog(dialog["dialog_id"])
+            await ws.broadcast({"type": "new_message", "dialog_id": dialog["dialog_id"],
+                                "message": _fmt_message(msg_row)})
+            await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        except Exception as e:
+            print(f"[drain_queue] error: {e}")
 
     async def _summarize_dialog_bg(dialog_id: str):
         try:
@@ -765,8 +811,11 @@ def build_app(
             return
         went_online = await ws.connect(websocket, op_id)
         if went_online:
+            op = await db.get_operator(op_id)
             await db.set_operator_online(op_id, True)
             await ws.broadcast({"type": "operator_status", "op_id": op_id, "online": True})
+            if op:
+                asyncio.create_task(_drain_queue_bg(op["name"]))
         try:
             while True:
                 await websocket.receive_text()

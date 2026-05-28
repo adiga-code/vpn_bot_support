@@ -90,6 +90,11 @@ class RedisConsumer:
         if operator_called:
             await self.db.update_operator_called(dialog_id, True)
 
+        if is_new:
+            automation = await self.db.get_setting_json("automation", {})
+            max_tickets = int(automation.get("max_tickets_per_operator") or 10)
+            await self.db.auto_assign_dialog(dialog_id, max_tickets)
+
         updated = await self.db.get_dialog(dialog_id)
         username = updated.get("user_username") or dialog_id
 
