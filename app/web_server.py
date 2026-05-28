@@ -160,7 +160,7 @@ class ChangePasswordBody(BaseModel):
 
 class ReplyBody(BaseModel):
     text: str = ""
-    operator_name: str = "Оператор"
+    operator_name: str | None = None
     file_url: Optional[str] = None
     file_type: Optional[str] = None
 
@@ -168,7 +168,7 @@ class CommentBody(BaseModel):
     text: str
 
 class HandoffBody(BaseModel):
-    operator_name: str = "Оператор"
+    operator_name: str | None = None
 
 class OperatorBody(BaseModel):
     name: str
@@ -464,12 +464,15 @@ def build_app(
             raise HTTPException(404)
         if dialog["status"] == "closed":
             raise HTTPException(400, "Cannot reopen closed dialog")
+        old_op = dialog.get("assigned_operator")
         msg_row = await db.save_message(dialog_id, "system", "Диалог возвращён в очередь")
         await db.update_status(dialog_id, "new")
         await db.set_assigned_operator(dialog_id, None)
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        if old_op:
+            asyncio.create_task(_drain_queue_bg(old_op))
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/transfer")
@@ -482,6 +485,7 @@ def build_app(
         target = await db.get_operator_by_name(body.operator_name)
         if not target:
             raise HTTPException(404, "Target operator not found")
+        old_op = dialog.get("assigned_operator")
         await db.set_assigned_operator(dialog_id, body.operator_name)
         if dialog["status"] == "new":
             await db.update_status(dialog_id, "in_progress")
@@ -490,6 +494,8 @@ def build_app(
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        if old_op and old_op != body.operator_name:
+            asyncio.create_task(_drain_queue_bg(old_op))
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/close")
@@ -519,19 +525,20 @@ def build_app(
         try:
             automation = await db.get_setting_json("automation", _AUTOMATION_DEFAULTS)
             max_tickets = int(automation.get("max_tickets_per_operator") or 10)
-            count = await db.get_active_dialog_count(freed_op_name)
-            if count >= max_tickets:
-                return
-            dialog = await db.get_oldest_unassigned_dialog()
-            if not dialog:
-                return
-            await db.set_assigned_operator(dialog["dialog_id"], freed_op_name)
-            msg_row = await db.save_message(dialog["dialog_id"], "system",
-                                            f"Диалог назначен оператору {freed_op_name}")
-            updated = await db.get_dialog(dialog["dialog_id"])
-            await ws.broadcast({"type": "new_message", "dialog_id": dialog["dialog_id"],
-                                "message": _fmt_message(msg_row)})
-            await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+            while True:
+                count = await db.get_active_dialog_count(freed_op_name)
+                if count >= max_tickets:
+                    return
+                dialog = await db.get_oldest_unassigned_dialog()
+                if not dialog:
+                    return
+                await db.set_assigned_operator(dialog["dialog_id"], freed_op_name)
+                msg_row = await db.save_message(dialog["dialog_id"], "system",
+                                                f"Диалог назначен оператору {freed_op_name}")
+                updated = await db.get_dialog(dialog["dialog_id"])
+                await ws.broadcast({"type": "new_message", "dialog_id": dialog["dialog_id"],
+                                    "message": _fmt_message(msg_row)})
+                await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         except Exception as e:
             print(f"[drain_queue] error: {e}")
 

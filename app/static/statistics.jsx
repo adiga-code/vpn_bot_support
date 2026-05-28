@@ -222,10 +222,12 @@ function StatisticsScreen() {
   useEffectS(() => {
     setStats(null);
     setTimes(null);
+    let stale = false;
     Promise.all([
       window.apiFetch("GET", `/api/stats?days=${days}`),
       window.apiFetch("GET", `/api/stats/times?days=${days}`),
-    ]).then(([s, t]) => { setStats(s); setTimes(t); }).catch(() => {});
+    ]).then(([s, t]) => { if (!stale) { setStats(s); setTimes(t); } }).catch(() => {});
+    return () => { stale = true; };
   }, [days]);
 
   const ranges = [

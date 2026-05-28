@@ -189,7 +189,11 @@ class RedisConsumer:
 
     async def _auto_handoff(self, dialog_id: str, dialog: dict):
         print(f"[auto-handoff] dialog={dialog_id}")
-        sys_row = await self.db.save_message(dialog_id, "system", "ИИ передал диалог оператору")
+        automation = await self.db.get_setting_json("automation", {})
+        max_tickets = int(automation.get("max_tickets_per_operator") or 10)
+        op_name = await self.db.auto_assign_dialog(dialog_id, max_tickets)
+        msg_text = f"ИИ передал диалог оператору {op_name}" if op_name else "ИИ передал диалог в очередь"
+        sys_row = await self.db.save_message(dialog_id, "system", msg_text)
         await self.db.update_status(dialog_id, "in_progress")
         await self.db.update_operator_called(dialog_id, True)
         updated = await self.db.get_dialog(dialog_id)

@@ -358,7 +358,6 @@
       const [conversations,   setConversations]   = useState([]);
       const [activeId,        setActiveId]        = useState(null);
       const [opsState,        setOpsState]        = useState([]);
-      const [stats,           setStats]           = useState(null);
       const [dataLoading,     setDataLoading]     = useState(false);
       const [notifOpen,       setNotifOpen]       = useState(false);
       const [profileOpen,     setProfileOpen]     = useState(false);
@@ -416,13 +415,11 @@
         Promise.all([
           apiGet("/api/dialogs"),
           apiGet("/api/operators").catch(() => []),
-          apiGet("/api/stats").catch(() => null),
-        ]).then(([dialogs, operators, statsData]) => {
+        ]).then(([dialogs, operators]) => {
           const withMessages = dialogs.map((d) => ({ ...d, messages: [], tickets: [] }));
           setConversations(withMessages);
           if (withMessages.length > 0) setActiveId(withMessages[0].id);
           setOpsState(operators || []);
-          setStats(statsData);
         }).catch((e) => console.error("Failed to load initial data:", e))
           .finally(() => setDataLoading(false));
       }, [authState]);
