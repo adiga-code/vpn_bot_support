@@ -3,20 +3,37 @@
   "nodes": [
     {
       "parameters": {
+        "channels": "vpn_bot:signal",
+        "options": {}
+      },
+      "id": "00000000-0001-4000-8000-000000000001",
+      "name": "Сигнал от бота",
+      "type": "n8n-nodes-base.redisTrigger",
+      "typeVersion": 1,
+      "position": [0, 200],
+      "credentials": {
+        "redis": {
+          "id": "hit3nIMoTAWeW4Gi",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
         "rule": {
           "interval": [
             {
-              "field": "seconds",
-              "secondsInterval": 1
+              "field": "minutes",
+              "minutesInterval": 3
             }
           ]
         }
       },
-      "id": "00000000-0001-4000-8000-000000000001",
-      "name": "Каждую секунду",
+      "id": "00000000-0001-4000-8000-000000000021",
+      "name": "Fallback каждые 3 мин",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [0, 300]
+      "position": [0, 400]
     },
     {
       "parameters": {
@@ -158,7 +175,7 @@
                 "conditions": [
                   {
                     "id": "sw-r4",
-                    "leftValue": "={{ $json.type }}",
+                    "leftValue": "="{{ $json.type }}",
                     "rightValue": "billing_action",
                     "operator": {
                       "type": "string",
@@ -357,7 +374,12 @@
     }
   ],
   "connections": {
-    "Каждую секунду": {
+    "Сигнал от бота": {
+      "main": [
+        [{"node": "Redis lPop", "type": "main", "index": 0}]
+      ]
+    },
+    "Fallback каждые 3 мин": {
       "main": [
         [{"node": "Redis lPop", "type": "main", "index": 0}]
       ]
