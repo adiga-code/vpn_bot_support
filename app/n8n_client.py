@@ -41,6 +41,7 @@ class N8NClient:
     async def _push(self, payload: dict) -> bool:
         try:
             await self.redis.rpush("vpn_bot:outgoing", json.dumps(payload, ensure_ascii=False))
+            await self.redis.publish("vpn_bot:signal", "1")
             return True
         except Exception as e:
             print(f"[n8n] push error: {e}")
