@@ -139,8 +139,10 @@ function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
                 </td>
                 <td className="px-3 py-3">
                   <span className="inline-flex items-center gap-1.5 text-xs">
-                    <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
-                    <span className={op.online ? "text-[#22c55e]" : "text-[#6b7280]"}>{op.online ? "Онлайн" : "Офлайн"}</span>
+                    <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? (op.paused ? "bg-[#eab308]" : "bg-[#22c55e]") : "bg-zinc-600")}></span>
+                    <span className={op.online ? (op.paused ? "text-[#eab308]" : "text-[#22c55e]") : "text-[#6b7280]"}>
+                      {op.online ? (op.paused ? "На паузе" : "Онлайн") : "Офлайн"}
+                    </span>
                   </span>
                 </td>
                 <td className="px-5 py-3">
@@ -924,8 +926,14 @@ function TemplateModal({ template, groups, onSave, onClose }) {
 
 function TemplatesSection({ showToast }) {
   const [templates, setTemplates] = useStateT(null);
-  const [modal, setModal] = useStateT(null); // null | { template?: obj }
+  const [modal, setModal] = useStateT(null);
   const [deleting, setDeleting] = useStateT(null);
+  const [selectedGroup, setSelectedGroup] = useStateT(null);
+  const [renamingGroup, setRenamingGroup] = useStateT(null);
+  const [renameValue, setRenameValue] = useStateT("");
+  const [inlineAdding, setInlineAdding] = useStateT(null);
+  const [inlineForm, setInlineForm] = useStateT({ title: "", text: "" });
+  const [inlineSaving, setInlineSaving] = useStateT(false);
 
   useEffectT(() => {
     window.apiFetch("GET", "/api/templates").then(setTemplates).catch(() => setTemplates([]));
@@ -943,6 +951,12 @@ function TemplatesSection({ showToast }) {
       return acc;
     }, {});
   }, [templates]);
+
+  const visibleGroups = useMemoT(() => {
+    if (!grouped) return [];
+    if (selectedGroup === null) return Object.keys(grouped);
+    return selectedGroup in grouped ? [selectedGroup] : [];
+  }, [grouped, selectedGroup]);
 
   async function saveTemplate(data) {
     try {
@@ -967,6 +981,44 @@ function TemplatesSection({ showToast }) {
     setDeleting(null);
   }
 
+  async function handleRenameGroup(oldName, newName) {
+    const trimmed = (newName || "").trim();
+    if (!trimmed || trimmed === oldName) { setRenamingGroup(null); return; }
+    try {
+      await window.apiFetch("PATCH", "/api/templates/group", { old_name: oldName, new_name: trimmed });
+      setTemplates(prev => prev.map(t => t.group_name === oldName ? { ...t, group_name: trimmed } : t));
+      if (selectedGroup === oldName) setSelectedGroup(trimmed);
+      showToast("Группа переименована");
+    } catch { showToast("Ошибка переименования"); }
+    setRenamingGroup(null);
+  }
+
+  async function handleDeleteGroup(name) {
+    const items = grouped[name] || [];
+    if (!items.length) return;
+    try {
+      await Promise.all(items.map(t => window.apiFetch("DELETE", `/api/templates/${t.id}`)));
+      setTemplates(prev => prev.filter(t => t.group_name !== name));
+      if (selectedGroup === name) setSelectedGroup(null);
+      showToast(`Группа «${name}» удалена`);
+    } catch { showToast("Ошибка удаления группы"); }
+  }
+
+  async function saveInline(group) {
+    if (!inlineForm.title.trim() || !inlineForm.text.trim()) return;
+    setInlineSaving(true);
+    try {
+      const saved = await window.apiFetch("POST", "/api/templates", {
+        group_name: group, title: inlineForm.title.trim(), text: inlineForm.text.trim(),
+      });
+      setTemplates(prev => [...prev, saved].sort((a, b) => a.group_name.localeCompare(b.group_name) || a.title.localeCompare(b.title)));
+      setInlineForm({ title: "", text: "" });
+      setInlineAdding(null);
+      showToast("Шаблон добавлен");
+    } catch { showToast("Ошибка сохранения"); }
+    setInlineSaving(false);
+  }
+
   if (templates === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
@@ -983,6 +1035,46 @@ function TemplatesSection({ showToast }) {
         </button>
       </div>
 
+      {groups.length > 0 && (
+        <div className="flex flex-wrap gap-2 items-center">
+          <button onClick={() => setSelectedGroup(null)}
+            className={"px-3 py-1.5 rounded-lg text-xs font-medium transition border " +
+              (selectedGroup === null ? "bg-[#4F8EF7]/15 border-[#4F8EF7]/40 text-[#7BA8F9]" : "border-[#2a2a3a] text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}>
+            Все <span className="opacity-60 ml-1">{templates.length}</span>
+          </button>
+          {groups.map(g => (
+            <div key={g} className="group/chip relative flex items-center">
+              {renamingGroup === g ? (
+                <form onSubmit={e => { e.preventDefault(); handleRenameGroup(g, renameValue); }}>
+                  <input autoFocus value={renameValue}
+                    onChange={e => setRenameValue(e.target.value)}
+                    onBlur={() => handleRenameGroup(g, renameValue)}
+                    className="px-2.5 py-1.5 rounded-lg text-xs bg-[#0d0d12] border border-[#4F8EF7]/50 text-[#f1f1f5] focus:outline-none w-36" />
+                </form>
+              ) : (
+                <>
+                  <button onClick={() => setSelectedGroup(g === selectedGroup ? null : g)}
+                    className={"px-3 py-1.5 rounded-lg text-xs font-medium transition border " +
+                      (selectedGroup === g ? "bg-[#4F8EF7]/15 border-[#4F8EF7]/40 text-[#7BA8F9]" : "border-[#2a2a3a] text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}>
+                    {g} <span className="opacity-60 ml-1">{grouped[g]?.length || 0}</span>
+                  </button>
+                  <button onClick={() => { setRenamingGroup(g); setRenameValue(g); }}
+                    className="opacity-0 group-hover/chip:opacity-100 ml-0.5 p-1 text-[#6b7280] hover:text-[#f1f1f5] transition"
+                    title="Переименовать группу">
+                    <Icon name="edit" className="w-3 h-3" />
+                  </button>
+                  <button onClick={() => handleDeleteGroup(g)}
+                    className="opacity-0 group-hover/chip:opacity-100 p-1 text-[#6b7280] hover:text-[#ef4444] transition"
+                    title="Удалить группу">
+                    <Icon name="trash" className="w-3 h-3" />
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {templates.length === 0 && (
         <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-10 text-center">
           <div className="w-12 h-12 rounded-xl bg-[#4F8EF7]/10 text-[#7BA8F9] flex items-center justify-center mx-auto mb-3">
@@ -993,14 +1085,14 @@ function TemplatesSection({ showToast }) {
         </div>
       )}
 
-      {Object.entries(grouped).map(([group, items]) => (
+      {visibleGroups.map(group => (
         <div key={group} className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
           <div className="px-5 py-2.5 bg-[#1a1a24]/60 border-b border-[#2a2a3a]/60">
             <span className="text-xs font-semibold text-[#6b7280] uppercase tracking-wider">{group}</span>
-            <span className="ml-2 text-xs text-[#4a4a5a]">{items.length}</span>
+            <span className="ml-2 text-xs text-[#4a4a5a]">{grouped[group]?.length || 0}</span>
           </div>
           <div className="divide-y divide-[#2a2a3a]/40">
-            {items.map(t => (
+            {(grouped[group] || []).map(t => (
               <div key={t.id} className="px-5 py-3 flex items-start justify-between gap-3 hover:bg-[#1a1a24]/40 transition">
                 <div className="min-w-0 flex-1">
                   <div className="text-sm text-[#f1f1f5] font-medium">{t.title}</div>
@@ -1018,6 +1110,38 @@ function TemplatesSection({ showToast }) {
                 </div>
               </div>
             ))}
+            {inlineAdding === group ? (
+              <div className="px-5 py-3 bg-[#0d0d12]/60 space-y-2">
+                <div className="flex gap-2">
+                  <input autoFocus value={inlineForm.title}
+                    onChange={e => setInlineForm(f => ({...f, title: e.target.value}))}
+                    placeholder="Название шаблона"
+                    onKeyDown={e => { if (e.key === 'Escape') { setInlineAdding(null); setInlineForm({title:"",text:""}); } }}
+                    className="flex-1 bg-[#13131a] border border-[#2a2a3a] rounded-lg px-2.5 py-1.5 text-xs text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 placeholder:text-[#6b7280]" />
+                  <button onClick={() => saveInline(group)}
+                    disabled={!inlineForm.title.trim() || !inlineForm.text.trim() || inlineSaving}
+                    className="px-3 py-1.5 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold disabled:opacity-40 shrink-0">
+                    {inlineSaving ? "..." : "Сохранить"}
+                  </button>
+                  <button onClick={() => { setInlineAdding(null); setInlineForm({title:"",text:""}); }}
+                    className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5]">
+                    <Icon name="x" className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <textarea value={inlineForm.text}
+                  onChange={e => setInlineForm(f => ({...f, text: e.target.value}))}
+                  placeholder="Текст шаблона... (Ctrl+Enter для сохранения)"
+                  rows={2}
+                  onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveInline(group); } }}
+                  className="w-full bg-[#13131a] border border-[#2a2a3a] rounded-lg px-2.5 py-1.5 text-xs text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 resize-none placeholder:text-[#6b7280]" />
+              </div>
+            ) : (
+              <button onClick={() => { setInlineAdding(group); setInlineForm({title:"",text:""}); }}
+                className="w-full px-5 py-2 flex items-center gap-1.5 text-xs text-[#6b7280] hover:text-[#7BA8F9] hover:bg-[#1a1a24] transition">
+                <Icon name="plus" className="w-3 h-3" strokeWidth={2.5} />
+                Добавить в группу
+              </button>
+            )}
           </div>
         </div>
       ))}
