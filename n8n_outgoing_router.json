@@ -175,7 +175,7 @@
                 "conditions": [
                   {
                     "id": "sw-r4",
-                    "leftValue": "="{{ $json.type }}",
+                    "leftValue": "={{ $json.type }}",
                     "rightValue": "billing_action",
                     "operator": {
                       "type": "string",
@@ -371,6 +371,100 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
       "position": [1540, 540]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-dialog-closed",
+              "leftValue": "={{ $json.event }}",
+              "rightValue": "dialog_closed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "00000000-0012-4000-8000-000000000012",
+      "name": "Закрытие диалога?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1100, 660]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE n8n_dialogs SET status='closed' WHERE user_id={{ $json.chat_id }}",
+        "options": {}
+      },
+      "id": "00000000-0013-4000-8000-000000000013",
+      "name": "Закрыть диалог в n8n_dialogs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1320, 660],
+      "credentials": {
+        "postgres": {
+          "id": "5tWDSrTUFp4DiJlP",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-ai-toggled",
+              "leftValue": "={{ $json.event }}",
+              "rightValue": "ai_toggled",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "00000000-0014-4000-8000-000000000014",
+      "name": "ИИ переключён?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1100, 790]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE n8n_dialogs SET ai_status={{ $json.ai_enabled }} WHERE user_id={{ $json.chat_id }} AND status='active'",
+        "options": {}
+      },
+      "id": "00000000-0015-4000-8000-000000000015",
+      "name": "Обновить ai_status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1320, 790],
+      "credentials": {
+        "postgres": {
+          "id": "5tWDSrTUFp4DiJlP",
+          "name": "Postgres account"
+        }
+      }
     }
   ],
   "connections": {
@@ -404,7 +498,11 @@
       "main": [
         [{"node": "Подготовить файл", "type": "main", "index": 0}],
         [{"node": "С клавиатурой?", "type": "main", "index": 0}],
-        [{"node": "Форматировать уведомление", "type": "main", "index": 0}],
+        [
+          {"node": "Форматировать уведомление", "type": "main", "index": 0},
+          {"node": "Закрытие диалога?", "type": "main", "index": 0},
+          {"node": "ИИ переключён?", "type": "main", "index": 0}
+        ],
         [{"node": "Billing API", "type": "main", "index": 0}]
       ]
     },
@@ -432,6 +530,18 @@
     "Получить tg_id операторов": {
       "main": [
         [{"node": "Отправить оператору", "type": "main", "index": 0}]
+      ]
+    },
+    "Закрытие диалога?": {
+      "main": [
+        [{"node": "Закрыть диалог в n8n_dialogs", "type": "main", "index": 0}],
+        []
+      ]
+    },
+    "ИИ переключён?": {
+      "main": [
+        [{"node": "Обновить ai_status", "type": "main", "index": 0}],
+        []
       ]
     },
     "Billing API": {
