@@ -31,6 +31,7 @@
   <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@lottiefiles/lottie-player@2/dist/lottie-player.js" crossorigin="anonymous"></script>
 </head>
 <body>
   <div id="root"></div>
@@ -213,7 +214,7 @@
 
     // ── TopBar ────────────────────────────────────────────────────────────────
 
-    function TopBar({ screen, setScreen, activeName, notifCount, onNotifClick, notifOpen, onProfileClick, profileOpen, onCloseMenus, currentOperator, onLogout }) {
+    function TopBar({ screen, setScreen, activeName, notifCount, onNotifClick, notifOpen, onProfileClick, profileOpen, onCloseMenus, currentOperator, onLogout, onTogglePause }) {
       const screens = [
         { id: "dialogs",  label: "Диалоги",    icon: "chat"     },
         { id: "stats",    label: "Статистика", icon: "chart"    },
@@ -286,13 +287,13 @@
             >
               <div className="relative">
                 <Avatar initials={opInitials} color={opColor} size={28} />
-                <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#22c55e] ring-2 ring-[#13131a]"></span>
+                <span className={"absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#13131a] " + (currentOperator?.paused ? "bg-[#eab308]" : "bg-[#22c55e]")}></span>
               </div>
               <div className="text-left">
                 <div className="text-xs font-medium text-[#f1f1f5] leading-tight">{opName}</div>
-                <div className="flex items-center gap-1 text-[10px] text-[#22c55e]">
-                  <span className="w-1 h-1 rounded-full bg-[#22c55e]"></span>
-                  Онлайн
+                <div className={"flex items-center gap-1 text-[10px] " + (currentOperator?.paused ? "text-[#eab308]" : "text-[#22c55e]")}>
+                  <span className={"w-1 h-1 rounded-full " + (currentOperator?.paused ? "bg-[#eab308]" : "bg-[#22c55e]")}></span>
+                  {currentOperator?.paused ? "На паузе" : "Онлайн"}
                 </div>
               </div>
               <Icon name="chevronDown" className="w-3.5 h-3.5 text-[#6b7280]" />
@@ -332,6 +333,15 @@
                   <span className={"text-[10px] px-1.5 py-0.5 rounded font-medium " + (currentOperator?.role === "admin" ? "bg-[#4F8EF7]/20 text-[#7BA8F9]" : "bg-[#2a2a3a] text-[#6b7280]")}>
                     {currentOperator?.role === "admin" ? "Админ" : "Агент"}
                   </span>
+                </button>
+                <button
+                  onClick={() => { onCloseMenus(); onTogglePause && onTogglePause(); }}
+                  className={"w-full text-left px-4 py-2 text-sm flex items-center justify-between hover:bg-[#1a1a24] " + (currentOperator?.paused ? "text-[#eab308]" : "text-[#f1f1f5]")}
+                >
+                  <span>{currentOperator?.paused ? "Снять паузу" : "Поставить на паузу"}</span>
+                  {currentOperator?.paused && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#eab308]/20 text-[#eab308] font-medium">На паузе</span>
+                  )}
                 </button>
                 <button
                   onClick={() => { onCloseMenus(); onLogout(); }}
@@ -465,7 +475,10 @@
             });
           } else if (data.type === "operator_status") {
             setOpsState((prev) =>
-              prev.map((o) => o.id === data.op_id ? { ...o, online: data.online } : o)
+              prev.map((o) => o.id === data.op_id ? { ...o, online: data.online, paused: data.paused ?? o.paused } : o)
+            );
+            setCurrentOperator((prev) =>
+              prev && prev.id === data.op_id ? { ...prev, paused: data.paused ?? prev.paused } : prev
             );
           }
         };
@@ -579,6 +592,17 @@
         }
       }
 
+      async function handleTogglePause() {
+        const newPaused = !(currentOperator?.paused ?? false);
+        try {
+          await apiFetch("PATCH", "/api/operators/me/pause", { paused: newPaused });
+          setCurrentOperator(prev => prev ? { ...prev, paused: newPaused } : prev);
+          showToast(newPaused ? "Пауза включена — новые тикеты не поступают" : "Пауза снята — принимаете тикеты");
+        } catch {
+          showToast("Ошибка переключения паузы");
+        }
+      }
+
       async function handleBillingAction(dialog_id, action, params) {
         try {
           await apiPost(`/api/dialogs/${dialog_id}/billing/${action}`, params || {});
@@ -633,6 +657,7 @@
             onCloseMenus={() => { setNotifOpen(false); setProfileOpen(false); }}
             currentOperator={currentOperator}
             onLogout={handleLogout}
+            onTogglePause={handleTogglePause}
           />
           <main className="flex-1 min-h-0">
             {screen === "dialogs" && (

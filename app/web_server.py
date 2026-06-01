@@ -139,6 +139,7 @@ def _fmt_operator(op: dict) -> dict:
         "initials": op.get("initials") or make_initials(op["name"]),
         "color": op.get("color") or "#4F8EF7",
         "online": op.get("online", False),
+        "paused": op.get("paused", False),
         "notifPrefs": notif_prefs,
     }
 
@@ -212,6 +213,13 @@ class TemplateBody(BaseModel):
 
 class TransferBody(BaseModel):
     operator_name: str
+
+class PauseBody(BaseModel):
+    paused: bool
+
+class RenameGroupBody(BaseModel):
+    old_name: str
+    new_name: str
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -623,6 +631,19 @@ def build_app(
         await db.update_operator_notif_prefs(operator["id"], body.model_dump())
         return {"ok": True}
 
+    @app.patch("/api/operators/me/pause")
+    async def set_my_pause(body: PauseBody, operator: dict = Depends(require_auth)):
+        await db.set_operator_paused(operator["id"], body.paused)
+        await ws.broadcast({
+            "type": "operator_status",
+            "op_id": operator["id"],
+            "online": operator.get("online", False),
+            "paused": body.paused,
+        })
+        if not body.paused:
+            asyncio.create_task(_drain_queue_bg())
+        return {"ok": True, "paused": body.paused}
+
     @app.post("/api/operators")
     async def create_operator(body: OperatorBody, operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
@@ -806,6 +827,15 @@ def build_app(
             raise HTTPException(404)
         return {"ok": True}
 
+    @app.patch("/api/templates/group")
+    async def rename_template_group(body: RenameGroupBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not body.new_name.strip():
+            raise HTTPException(400, "Название группы не может быть пустым")
+        await db.rename_template_group(body.old_name.strip(), body.new_name.strip())
+        return {"ok": True}
+
     # ── WebSocket ─────────────────────────────────────────────────────────────
 
     @app.websocket("/ws")
@@ -818,7 +848,7 @@ def build_app(
         if went_online:
             op = await db.get_operator(op_id)
             await db.set_operator_online(op_id, True)
-            await ws.broadcast({"type": "operator_status", "op_id": op_id, "online": True})
+            await ws.broadcast({"type": "operator_status", "op_id": op_id, "online": True, "paused": op.get("paused", False) if op else False})
             if op:
                 asyncio.create_task(_drain_queue_bg())
         try:
@@ -828,6 +858,6 @@ def build_app(
             departed_id, went_offline = ws.disconnect(websocket)
             if went_offline and departed_id:
                 await db.set_operator_online(departed_id, False)
-                await ws.broadcast({"type": "operator_status", "op_id": departed_id, "online": False})
+                await ws.broadcast({"type": "operator_status", "op_id": departed_id, "online": False, "paused": False})
 
     return app

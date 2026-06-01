@@ -60,7 +60,7 @@ function FileContent({ msg, side, onImageClick }) {
   const ft = msg.fileType;
   const url = msg.fileUrl;
   const tl = side === "left" ? "rounded-tl-md" : "rounded-tr-md";
-  if (ft === "photo" || ft === "sticker") {
+  if (ft === "photo") {
     if (url) {
       return (
         <button onClick={() => onImageClick(url)} className={"block overflow-hidden rounded-2xl " + tl + " hover:ring-2 hover:ring-[#4F8EF7]/40 transition"}>
@@ -71,6 +71,28 @@ function FileContent({ msg, side, onImageClick }) {
     return (
       <div className={"bg-[#1a1a24] rounded-2xl " + tl + " px-3.5 py-3 flex items-center gap-2 text-[#6b7280] text-sm"}>
         <Icon name="image" className="w-4 h-4" /> Фото
+      </div>
+    );
+  }
+  if (ft === "sticker") {
+    if (url) {
+      const isTgs = url.toLowerCase().endsWith(".tgs");
+      if (isTgs) {
+        return (
+          <div className={"overflow-hidden rounded-2xl " + tl}>
+            <lottie-player src={url} autoplay loop style={{width:"160px",height:"160px"}} />
+          </div>
+        );
+      }
+      return (
+        <button onClick={() => onImageClick(url)} className={"block overflow-hidden rounded-2xl " + tl + " hover:ring-2 hover:ring-[#4F8EF7]/40 transition"}>
+          <img src={url} alt="" className="max-w-[160px] max-h-[160px] object-contain" onError={(e) => { e.target.style.display="none"; }} />
+        </button>
+      );
+    }
+    return (
+      <div className={"bg-[#1a1a24] rounded-2xl " + tl + " px-3.5 py-3 flex items-center gap-2 text-[#6b7280] text-sm"}>
+        <Icon name="image" className="w-4 h-4" /> Стикер
       </div>
     );
   }

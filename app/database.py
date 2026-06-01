@@ -217,6 +217,7 @@ class DatabaseManager:
             ("operators", "tg",            "TEXT"),
             ("operators", "tg_id",         "BIGINT"),
             ("operators", "online",        "BOOLEAN DEFAULT FALSE"),
+            ("operators", "paused",        "BOOLEAN DEFAULT FALSE"),
             ("operators", "initials",      "TEXT"),
             ("operators", "color",         "TEXT DEFAULT '#4F8EF7'"),
             ("operators", "notif_prefs",   "TEXT"),
@@ -408,6 +409,9 @@ class DatabaseManager:
 
     async def set_operator_online(self, op_id: int, online: bool):
         await self.pool.execute("UPDATE operators SET online=$1 WHERE id=$2", online, op_id)
+
+    async def set_operator_paused(self, op_id: int, paused: bool):
+        await self.pool.execute("UPDATE operators SET paused=$1 WHERE id=$2", paused, op_id)
 
     async def update_operator_notif_prefs(self, op_id: int, prefs: dict):
         await self.pool.execute(
@@ -641,6 +645,12 @@ class DatabaseManager:
         )
         return result == "DELETE 1"
 
+    async def rename_template_group(self, old_name: str, new_name: str):
+        await self.pool.execute(
+            "UPDATE message_templates SET group_name=$1 WHERE group_name=$2",
+            new_name, old_name,
+        )
+
     async def get_user_message_count(self, dialog_id: str) -> int:
         return await self.pool.fetchval(
             "SELECT COUNT(*) FROM messages WHERE dialog_id=$1 AND kind='user'", dialog_id
@@ -673,6 +683,7 @@ class DatabaseManager:
                         GROUP BY assigned_operator
                     ) active ON active.assigned_operator = o.name
                     WHERE o.online = TRUE
+                      AND COALESCE(o.paused, FALSE) = FALSE
                       AND COALESCE(active.cnt, 0) < $1
                     ORDER BY COALESCE(active.cnt, 0) ASC
                     LIMIT 1
@@ -701,7 +712,9 @@ class DatabaseManager:
                         WHERE status != 'closed' AND assigned_operator IS NOT NULL
                         GROUP BY assigned_operator
                     ) active ON active.assigned_operator = o.name
-                    WHERE o.online = TRUE AND COALESCE(active.cnt, 0) < $1
+                    WHERE o.online = TRUE
+                      AND COALESCE(o.paused, FALSE) = FALSE
+                      AND COALESCE(active.cnt, 0) < $1
                     ORDER BY COALESCE(active.cnt, 0) ASC
                     LIMIT 1
                 """, max_tickets)
