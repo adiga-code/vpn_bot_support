@@ -131,11 +131,14 @@ async def upsert_to_qdrant(chunks: list[dict], qdrant_url: str):
             id=abs(hash(c["id"])) % (2**63),
             vector=c["embedding"],
             payload={
-                "article_id":  c["id"],
-                "title":       c["title"],
-                "category":    c["category"],
-                "keywords":    c["keywords"],
                 "pageContent": c["content"],
+                "content":     c["content"],
+                "metadata": {
+                    "article_id": c["id"],
+                    "title":      c["title"],
+                    "category":   c["category"],
+                    "keywords":   c["keywords"],
+                },
             },
         )
         for c in chunks
