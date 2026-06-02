@@ -235,6 +235,10 @@ class DatabaseManager:
         ai_enabled: bool = True, user_info: dict = None,
     ) -> dict:
         ui = user_info or {}
+        existing = await self.pool.fetchrow(
+            "SELECT 1 FROM dialogs WHERE dialog_id = $1", dialog_id
+        )
+        is_new = existing is None
         row = await self.pool.fetchrow(
             """
             INSERT INTO dialogs (
@@ -256,7 +260,7 @@ class DatabaseManager:
                 last_payment_date   = COALESCE(EXCLUDED.last_payment_date,  dialogs.last_payment_date),
                 unread_count        = dialogs.unread_count + 1,
                 updated_at          = NOW()
-            RETURNING *, (xmax = 0) AS is_new_dialog
+            RETURNING *
             """,
             dialog_id, chat_id, ai_enabled,
             ui.get("user_name"), ui.get("user_username"),
@@ -266,7 +270,7 @@ class DatabaseManager:
             float(ui.get("user_traffic_total") or 100),
             ui.get("user_last_payment_amount"), ui.get("user_last_payment_date"),
         )
-        return dict(row)
+        return {**dict(row), "is_new_dialog": is_new}
 
     async def get_all_dialogs(self) -> list[dict]:
         rows = await self.pool.fetch("SELECT * FROM dialogs ORDER BY updated_at DESC")
@@ -512,7 +516,7 @@ class DatabaseManager:
         return [{"q": r["q"], "count": r["count"]} for r in rows]
 
     async def get_time_stats(self, days: int = 30) -> dict:
-        interval = f"{days} days"
+        interval = timedelta(days=days)
 
         team_first = await self.pool.fetchval("""
             SELECT AVG(EXTRACT(EPOCH FROM (m.created_at - d.created_at)))
@@ -619,6 +623,9 @@ class DatabaseManager:
     async def delete_kb_article(self, article_id: str) -> bool:
         result = await self.pool.execute("DELETE FROM kb_articles WHERE id=$1", article_id)
         return result == "DELETE 1"
+
+    async def reset_kb(self):
+        await self.pool.execute("TRUNCATE TABLE kb_articles")
 
     async def get_templates(self) -> list[dict]:
         rows = await self.pool.fetch(

@@ -745,6 +745,23 @@ def build_app(
             )
         return {"chunks_created": len(chunks), "ids": [c["id"] for c in chunks]}
 
+    @app.delete("/api/kb")
+    async def reset_kb_all(operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        await db.reset_kb()
+        from qdrant_client import AsyncQdrantClient
+        from app.kb import ensure_collection
+        client = AsyncQdrantClient(url=settings.QDRANT_URL)
+        try:
+            await client.delete_collection("kb")
+        except Exception:
+            pass
+        finally:
+            await client.close()
+        await ensure_collection(settings.QDRANT_URL)
+        return {"ok": True}
+
     @app.delete("/api/kb/{article_id}")
     async def delete_kb_article(article_id: str, operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":

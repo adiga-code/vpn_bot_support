@@ -510,6 +510,7 @@ function KBSection() {
   const [uploadErr,  setUploadErr]  = useStateT(null);
   const [deleting,   setDeleting]   = useStateT(null);
   const [expanded,   setExpanded]   = useStateT(null);
+  const [resetting,  setResetting]  = useStateT(false);
   const fileRef = React.createRef();
 
   useEffectT(() => {
@@ -555,6 +556,18 @@ function KBSection() {
     }
   }
 
+  async function handleReset() {
+    if (!window.confirm("Сбросить всю базу знаний? Все статьи и векторы будут удалены без возможности восстановления.")) return;
+    setResetting(true);
+    try {
+      await window.apiFetch("DELETE", "/api/kb");
+      setArticles([]);
+    } catch {
+    } finally {
+      setResetting(false);
+    }
+  }
+
   if (articles === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
@@ -566,6 +579,13 @@ function KBSection() {
         </div>
         <div className="flex items-center gap-2">
           {uploading && <span className="text-xs text-[#6b7280] animate-pulse">Обработка ИИ...</span>}
+          {articles && articles.length > 0 && (
+            <button onClick={handleReset} disabled={resetting}
+              className="px-3 py-2 rounded-lg bg-[#ef4444]/10 hover:bg-[#ef4444]/20 text-[#ef4444] text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 border border-[#ef4444]/20">
+              <Icon name="trash-2" className="w-3.5 h-3.5" strokeWidth={2.5} />
+              {resetting ? "Сброс..." : "Сбросить всё"}
+            </button>
+          )}
           <button onClick={() => fileRef.current?.click()} disabled={uploading}
             className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50">
             <Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />
