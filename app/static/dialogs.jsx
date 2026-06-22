@@ -563,6 +563,18 @@ function DialogsScreen({
                     </button>
                   )}
                   <button
+                    onClick={() => {
+                      const url = `${window.location.origin}${window.location.pathname}?dialog=${active.id}`;
+                      navigator.clipboard.writeText(url)
+                        .then(() => showToast("Ссылка скопирована"))
+                        .catch(() => showToast("Не удалось скопировать ссылку"));
+                    }}
+                    className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded-lg transition"
+                    title="Скопировать ссылку на диалог"
+                  >
+                    <Icon name="link" className="w-4 h-4" />
+                  </button>
+                  <button
                     onClick={() => setConfirmClose(true)}
                     disabled={active.status === "closed"}
                     className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition disabled:opacity-40 disabled:cursor-not-allowed"
