@@ -96,6 +96,7 @@ function Icon({ name, className = "w-4 h-4", strokeWidth = 1.75 }) {
     zap:       <><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /></>,
     megaphone: <><path d="M3 11v2" /><path d="M11.5 5.5L19 3v18l-7.5-2.5" /><path d="M11.5 5.5v13" /><path d="M3 11a2 2 0 0 0 0 4v-4z" /></>,
     template:  <><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" /><rect x="9" y="3" width="6" height="4" rx="1" /><path d="M9 12h6M9 16h4" /></>,
+    link:      <><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></>,
   };
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={className}>

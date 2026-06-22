@@ -376,6 +376,7 @@
       const loadedRef        = useRef(new Set());
       const ticketsLoadedRef = useRef(new Set());
       const wsRef            = useRef(null);
+      const pendingDialogRef = useRef(null);
 
       function showToast(msg) {
         setToast(msg);
@@ -400,6 +401,12 @@
             try {
               const op = await apiFetch("GET", "/api/auth/me");
               setCurrentOperator(op);
+              const urlParams = new URLSearchParams(window.location.search);
+              const sharedId = urlParams.get("dialog");
+              if (sharedId) {
+                pendingDialogRef.current = sharedId;
+                window.history.replaceState({}, '', window.location.pathname);
+              }
               setAuthState("app");
               return;
             } catch {
@@ -425,10 +432,33 @@
         Promise.all([
           apiGet("/api/dialogs"),
           apiGet("/api/operators").catch(() => []),
-        ]).then(([dialogs, operators]) => {
+        ]).then(async ([dialogs, operators]) => {
           const withMessages = dialogs.map((d) => ({ ...d, messages: [], tickets: [] }));
           setConversations(withMessages);
-          if (withMessages.length > 0) setActiveId(withMessages[0].id);
+          const pendingId = pendingDialogRef.current;
+          if (pendingId) {
+            pendingDialogRef.current = null;
+            const found = withMessages.find((d) => d.id === pendingId);
+            if (found) {
+              setActiveId(found.id);
+            } else {
+              try {
+                const dialog = await apiGet(`/api/dialogs/${pendingId}`);
+                if (dialog) {
+                  const enriched = { ...dialog, messages: [], tickets: [] };
+                  setConversations((prev) => {
+                    const exists = prev.some((c) => c.id === enriched.id);
+                    return exists ? prev : [enriched, ...prev];
+                  });
+                  setActiveId(enriched.id);
+                } else if (withMessages.length > 0) setActiveId(withMessages[0].id);
+              } catch {
+                if (withMessages.length > 0) setActiveId(withMessages[0].id);
+              }
+            }
+          } else if (withMessages.length > 0) {
+            setActiveId(withMessages[0].id);
+          }
           setOpsState(operators || []);
         }).catch((e) => console.error("Failed to load initial data:", e))
           .finally(() => setDataLoading(false));
