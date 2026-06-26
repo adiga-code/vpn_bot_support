@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -105,6 +105,7 @@ def _fmt_dialog(row: dict, tickets: list = None) -> dict:
         "preview": row.get("last_message_text") or "",
         "time": _fmt_time(row.get("last_message_time")),
         "assignedOperator": row.get("assigned_operator"),
+        "updatedAt": row["updated_at"].isoformat() if row.get("updated_at") else "",
         "tickets": tickets or [],
     }
 
@@ -442,6 +443,7 @@ def build_app(
             raise HTTPException(404)
         new_value = not dialog["ai_enabled"]
         await db.update_ai_enabled(dialog_id, new_value)
+        await db.sync_n8n_dialog_ai_status(dialog["chat_id"], new_value)
         await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], new_value)
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
@@ -457,11 +459,37 @@ def build_app(
         await db.update_status(dialog_id, "in_progress")
         await db.update_operator_called(dialog_id, True)
         await db.set_assigned_operator(dialog_id, op_name)
+        await db.update_ai_enabled(dialog_id, False)
+        await db.sync_n8n_dialog_ai_status(dialog["chat_id"], False)
+        await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], False)
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         username = updated.get("user_username") or dialog_id
         await n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/reopen-closed")
+    async def reopen_closed_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        if dialog["status"] != "closed":
+            raise HTTPException(400, "Dialog is not closed")
+        active = await db.get_active_dialog_by_chat_id(dialog["chat_id"], exclude_dialog_id=dialog_id)
+        if active:
+            return JSONResponse(status_code=409, content={"active_dialog_id": active["dialog_id"]})
+        msg_row = await db.save_message(dialog_id, "system", "Диалог переоткрыт оператором")
+        await db.pool.execute(
+            """UPDATE dialogs SET status='new', closed_at=NULL, assigned_operator=NULL,
+               operator_called=FALSE, updated_at=NOW() WHERE dialog_id=$1""",
+            dialog_id,
+        )
+        updated = await db.get_dialog(dialog_id)
+        await db.sync_n8n_dialog_status(dialog["chat_id"], "active")
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        asyncio.create_task(_drain_queue_bg())
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/reopen")
@@ -516,6 +544,7 @@ def build_app(
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        await db.sync_n8n_dialog_status(dialog["chat_id"], "closed")
         await n8n.notify_dialog_closed(dialog_id, dialog["chat_id"], operator["name"])
         if chat_client:
             asyncio.create_task(_summarize_dialog_bg(dialog_id))
@@ -538,7 +567,11 @@ def build_app(
                 if not result:
                     return
                 dialog_id = result["dialog"]["dialog_id"]
+                chat_id = result["dialog"]["chat_id"]
                 op_name = result["op_name"]
+                await db.update_ai_enabled(dialog_id, False)
+                await db.sync_n8n_dialog_ai_status(chat_id, False)
+                await n8n.notify_ai_toggled(dialog_id, chat_id, False)
                 msg_row = await db.save_message(dialog_id, "system",
                                                 f"Диалог назначен оператору {op_name}")
                 updated = await db.get_dialog(dialog_id)
@@ -870,7 +903,9 @@ def build_app(
                 asyncio.create_task(_drain_queue_bg())
         try:
             while True:
-                await websocket.receive_text()
+                text = await websocket.receive_text()
+                if text == "ping":
+                    await websocket.send_text("pong")
         except WebSocketDisconnect:
             departed_id, went_offline = ws.disconnect(websocket)
             if went_offline and departed_id:

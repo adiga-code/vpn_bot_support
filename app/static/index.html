@@ -76,7 +76,11 @@
         if (_authExpiredCb) _authExpiredCb();
         throw Object.assign(new Error("Unauthorized"), { status: 401 });
       }
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      if (!res.ok) {
+        let errBody = null;
+        try { errBody = await res.json(); } catch {}
+        throw Object.assign(new Error(`${res.status} ${res.statusText}`), { status: res.status, ...(errBody || {}) });
+      }
       const text = await res.text();
       return text ? JSON.parse(text) : null;
     }
@@ -469,52 +473,91 @@
       useEffect(() => {
         if (authState !== "app") return;
 
-        const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-        const ws = new WebSocket(`${protocol}//${location.host}/ws?token=${_token}`);
-        wsRef.current = ws;
+        let destroyed = false;
+        let reconnectTimer = null;
+        let pingInterval = null;
 
-        ws.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-          if (data.type === "new_message") {
-            setConversations((prev) =>
-              prev.map((c) =>
-                c.id === data.dialog_id
-                  ? { ...c, messages: [...c.messages, data.message] }
-                  : c
-              )
-            );
-          } else if (data.type === "dialog_updated") {
-            setConversations((prev) =>
-              prev.map((c) =>
-                c.id === data.dialog.id
-                  ? { ...data.dialog, messages: c.messages, tickets: c.tickets }
-                  : c
-              )
-            );
-          } else if (data.type === "new_dialog") {
-            setConversations((prev) => {
-              const exists = prev.some((c) => c.id === data.dialog.id);
-              if (exists) {
-                return prev.map((c) =>
+        function connect() {
+          if (destroyed) return;
+          const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+          const ws = new WebSocket(`${protocol}//${location.host}/ws?token=${_token}`);
+          wsRef.current = ws;
+          let pongPending = false;
+
+          ws.onopen = () => {
+            pongPending = false;
+            pingInterval = setInterval(() => {
+              if (pongPending) {
+                ws.close();
+                return;
+              }
+              if (ws.readyState === WebSocket.OPEN) {
+                pongPending = true;
+                ws.send("ping");
+              }
+            }, 30000);
+          };
+
+          ws.onmessage = (event) => {
+            if (event.data === "pong") { pongPending = false; return; }
+            const data = JSON.parse(event.data);
+            if (data.type === "new_message") {
+              setConversations((prev) =>
+                prev.map((c) =>
+                  c.id === data.dialog_id
+                    ? { ...c, messages: [...c.messages, data.message] }
+                    : c
+                )
+              );
+            } else if (data.type === "dialog_updated") {
+              setConversations((prev) =>
+                prev.map((c) =>
                   c.id === data.dialog.id
                     ? { ...data.dialog, messages: c.messages, tickets: c.tickets }
                     : c
-                );
-              }
-              return [{ ...data.dialog, messages: [], tickets: [] }, ...prev];
-            });
-          } else if (data.type === "operator_status") {
-            setOpsState((prev) =>
-              prev.map((o) => o.id === data.op_id ? { ...o, online: data.online, paused: data.paused ?? o.paused } : o)
-            );
-            setCurrentOperator((prev) =>
-              prev && prev.id === data.op_id ? { ...prev, paused: data.paused ?? prev.paused } : prev
-            );
-          }
-        };
+                )
+              );
+            } else if (data.type === "new_dialog") {
+              setConversations((prev) => {
+                const exists = prev.some((c) => c.id === data.dialog.id);
+                if (exists) {
+                  return prev.map((c) =>
+                    c.id === data.dialog.id
+                      ? { ...data.dialog, messages: c.messages, tickets: c.tickets }
+                      : c
+                  );
+                }
+                return [{ ...data.dialog, messages: [], tickets: [] }, ...prev];
+              });
+            } else if (data.type === "operator_status") {
+              setOpsState((prev) =>
+                prev.map((o) => o.id === data.op_id ? { ...o, online: data.online, paused: data.paused ?? o.paused } : o)
+              );
+              setCurrentOperator((prev) =>
+                prev && prev.id === data.op_id ? { ...prev, paused: data.paused ?? prev.paused } : prev
+              );
+            }
+          };
 
-        ws.onerror = (e) => console.warn("WebSocket error", e);
-        return () => ws.close();
+          ws.onerror = () => ws.close();
+
+          ws.onclose = () => {
+            clearInterval(pingInterval);
+            pingInterval = null;
+            if (!destroyed) {
+              reconnectTimer = setTimeout(connect, 3000);
+            }
+          };
+        }
+
+        connect();
+
+        return () => {
+          destroyed = true;
+          clearTimeout(reconnectTimer);
+          clearInterval(pingInterval);
+          if (wsRef.current) wsRef.current.close();
+        };
       }, [authState]);
 
       // ── Lazy-load messages + history ──────────────────────────────────────

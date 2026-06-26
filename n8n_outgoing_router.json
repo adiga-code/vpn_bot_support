@@ -451,7 +451,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "=UPDATE n8n_dialogs SET ai_status={{ $json.ai_enabled }} WHERE user_id={{ $json.chat_id }} AND status='active'",
+        "query": "=UPDATE n8n_dialogs SET ai_status={{ $json.ai_enabled }} WHERE user_id={{ $json.chat_id }}",
         "options": {}
       },
       "id": "00000000-0015-4000-8000-000000000015",

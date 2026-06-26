@@ -236,9 +236,10 @@ class DatabaseManager:
     ) -> dict:
         ui = user_info or {}
         existing = await self.pool.fetchrow(
-            "SELECT 1 FROM dialogs WHERE dialog_id = $1", dialog_id
+            "SELECT status FROM dialogs WHERE dialog_id = $1", dialog_id
         )
         is_new = existing is None
+        was_closed = existing is not None and existing["status"] == "closed"
         row = await self.pool.fetchrow(
             """
             INSERT INTO dialogs (
@@ -248,7 +249,11 @@ class DatabaseManager:
                 last_payment_amount, last_payment_date, unread_count
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, 1)
             ON CONFLICT (dialog_id) DO UPDATE SET
-                ai_enabled          = EXCLUDED.ai_enabled,
+                ai_enabled          = CASE WHEN dialogs.status='closed' THEN $3 ELSE dialogs.ai_enabled END,
+                status              = CASE WHEN dialogs.status='closed' THEN 'new' ELSE dialogs.status END,
+                closed_at           = CASE WHEN dialogs.status='closed' THEN NULL ELSE dialogs.closed_at END,
+                assigned_operator   = CASE WHEN dialogs.status='closed' THEN NULL ELSE dialogs.assigned_operator END,
+                operator_called     = CASE WHEN dialogs.status='closed' THEN FALSE ELSE dialogs.operator_called END,
                 user_name           = COALESCE(EXCLUDED.user_name,          dialogs.user_name),
                 user_username       = COALESCE(EXCLUDED.user_username,      dialogs.user_username),
                 user_plan           = COALESCE(EXCLUDED.user_plan,          dialogs.user_plan),
@@ -270,7 +275,7 @@ class DatabaseManager:
             float(ui.get("user_traffic_total") or 100),
             ui.get("user_last_payment_amount"), ui.get("user_last_payment_date"),
         )
-        return {**dict(row), "is_new_dialog": is_new}
+        return {**dict(row), "is_new_dialog": is_new or was_closed}
 
     async def get_all_dialogs(self) -> list[dict]:
         rows = await self.pool.fetch("SELECT * FROM dialogs ORDER BY updated_at DESC")
@@ -278,6 +283,13 @@ class DatabaseManager:
 
     async def get_dialog(self, dialog_id: str) -> Optional[dict]:
         row = await self.pool.fetchrow("SELECT * FROM dialogs WHERE dialog_id = $1", dialog_id)
+        return dict(row) if row else None
+
+    async def get_active_dialog_by_chat_id(self, chat_id: str, exclude_dialog_id: str = "") -> Optional[dict]:
+        row = await self.pool.fetchrow(
+            "SELECT * FROM dialogs WHERE chat_id=$1 AND status != 'closed' AND dialog_id != $2 LIMIT 1",
+            chat_id, exclude_dialog_id,
+        )
         return dict(row) if row else None
 
     async def get_dialog_history(self, chat_id: str, exclude_dialog_id: str = "") -> list[dict]:
@@ -312,6 +324,24 @@ class DatabaseManager:
             "UPDATE dialogs SET ai_enabled=$1, updated_at=NOW() WHERE dialog_id=$2",
             ai_enabled, dialog_id,
         )
+
+    async def sync_n8n_dialog_status(self, chat_id: str, status: str):
+        try:
+            await self.pool.execute(
+                "UPDATE n8n_dialogs SET status=$1 WHERE user_id=$2::BIGINT",
+                status, chat_id,
+            )
+        except Exception as e:
+            print(f"[sync_n8n] status update error: {e}")
+
+    async def sync_n8n_dialog_ai_status(self, chat_id: str, ai_enabled: bool):
+        try:
+            await self.pool.execute(
+                "UPDATE n8n_dialogs SET ai_status=$1 WHERE user_id=$2::BIGINT",
+                ai_enabled, chat_id,
+            )
+        except Exception as e:
+            print(f"[sync_n8n] ai_status update error: {e}")
 
     async def set_assigned_operator(self, dialog_id: str, operator_name):
         await self.pool.execute(

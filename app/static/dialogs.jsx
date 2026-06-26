@@ -15,15 +15,23 @@ function ConvCard({ conv, active, onClick }) {
         "w-full text-left p-3 rounded-lg transition relative group " +
         (active
           ? "bg-[#1a1a24] ring-1 ring-[#4F8EF7]/40"
+          : conv.status === "in_progress" && conv.unread > 0
+          ? "bg-[#1a1a18] ring-1 ring-[#eab308]/30 hover:bg-[#1a1a24]/60"
           : "hover:bg-[#1a1a24]/60")
       }
     >
       {active && <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-[#4F8EF7] rounded-r"></div>}
+      {!active && conv.status === "in_progress" && conv.unread > 0 && (
+        <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-[#eab308] rounded-r"></div>
+      )}
       <div className="flex items-start gap-2.5">
         <div className="relative">
           <Avatar initials={conv.initials} color={conv.avatarColor} size={36} />
           {conv.unread > 0 && (
-            <div className="absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-[#ef4444] text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-[#13131a]">
+            <div className={
+              "absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 rounded-full text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-[#13131a] " +
+              (conv.status === "in_progress" ? "bg-[#eab308] animate-pulse" : "bg-[#ef4444]")
+            }>
               {conv.unread}
             </div>
           )}
@@ -357,7 +365,11 @@ function DialogsScreen({
         (c) => c.name.toLowerCase().includes(q) || c.username.toLowerCase().includes(q) || c.preview.toLowerCase().includes(q)
       );
     }
-    return list;
+    return [...list].sort((a, b) => {
+      const ta = a.updatedAt || "";
+      const tb = b.updatedAt || "";
+      return tb.localeCompare(ta);
+    });
   }, [conversations, view, filter, searchQ, currentOperator]);
 
   const baseList = useMemoD(() =>
@@ -437,6 +449,24 @@ function DialogsScreen({
     showToast("Диалог закрыт");
     if (onClose) onClose(active.id);
   }
+
+  async function reopenClosed() {
+    if (!active) return;
+    try {
+      await window.apiFetch("POST", `/api/dialogs/${active.id}/reopen-closed`);
+      showToast("Диалог переоткрыт");
+    } catch (e) {
+      if (e?.status === 409 && e?.active_dialog_id) {
+        setActiveId(e.active_dialog_id);
+      } else {
+        showToast("Ошибка при переоткрытии");
+      }
+    }
+  }
+
+  const activeDialogForSameUser = active?.status === "closed"
+    ? conversations.find((c) => c.chatId === active.chatId && c.id !== active.id && c.status !== "closed")
+    : null;
 
   async function toggleAI() {
     if (!active) return;
@@ -583,6 +613,35 @@ function DialogsScreen({
                   </button>
                 </div>
               </div>
+
+              {/* Closed dialog banner */}
+              {active.status === "closed" && (
+                <div className="px-4 py-2.5 bg-[#1a1a18] border-b border-[#2a2a3a] flex items-center gap-3">
+                  {activeDialogForSameUser ? (
+                    <>
+                      <Icon name="bellRing" className="w-4 h-4 text-[#eab308] shrink-0" />
+                      <span className="text-xs text-[#d1a800] flex-1">Пользователь написал в новый чат</span>
+                      <button
+                        onClick={() => setActiveId(activeDialogForSameUser.id)}
+                        className="text-xs px-2.5 py-1 rounded-lg bg-[#eab308]/15 text-[#eab308] hover:bg-[#eab308]/25 transition font-medium shrink-0"
+                      >
+                        Перейти
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <Icon name="x" className="w-4 h-4 text-[#6b7280] shrink-0" />
+                      <span className="text-xs text-[#6b7280] flex-1">Диалог закрыт</span>
+                      <button
+                        onClick={reopenClosed}
+                        className="text-xs px-2.5 py-1 rounded-lg bg-[#4F8EF7]/15 text-[#7BA8F9] hover:bg-[#4F8EF7]/25 transition font-medium shrink-0"
+                      >
+                        Открыть снова
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
 
               {/* Messages */}
               <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-5 space-y-3 scrollbar-thin">
