@@ -486,7 +486,6 @@ def build_app(
             dialog_id,
         )
         updated = await db.get_dialog(dialog_id)
-        await db.sync_n8n_dialog_status(dialog["chat_id"], "active")
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         asyncio.create_task(_drain_queue_bg())
