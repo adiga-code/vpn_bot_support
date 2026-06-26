@@ -325,6 +325,24 @@ class DatabaseManager:
             ai_enabled, dialog_id,
         )
 
+    async def sync_n8n_dialog_status(self, chat_id: str, status: str):
+        try:
+            await self.pool.execute(
+                "UPDATE n8n_dialogs SET status=$1 WHERE user_id=$2::BIGINT",
+                status, chat_id,
+            )
+        except Exception as e:
+            print(f"[sync_n8n] status update error: {e}")
+
+    async def sync_n8n_dialog_ai_status(self, chat_id: str, ai_enabled: bool):
+        try:
+            await self.pool.execute(
+                "UPDATE n8n_dialogs SET ai_status=$1 WHERE user_id=$2::BIGINT",
+                ai_enabled, chat_id,
+            )
+        except Exception as e:
+            print(f"[sync_n8n] ai_status update error: {e}")
+
     async def set_assigned_operator(self, dialog_id: str, operator_name):
         await self.pool.execute(
             "UPDATE dialogs SET assigned_operator=$1, updated_at=NOW() WHERE dialog_id=$2",

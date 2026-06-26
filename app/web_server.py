@@ -443,6 +443,7 @@ def build_app(
             raise HTTPException(404)
         new_value = not dialog["ai_enabled"]
         await db.update_ai_enabled(dialog_id, new_value)
+        await db.sync_n8n_dialog_ai_status(dialog["chat_id"], new_value)
         await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], new_value)
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
@@ -459,6 +460,7 @@ def build_app(
         await db.update_operator_called(dialog_id, True)
         await db.set_assigned_operator(dialog_id, op_name)
         await db.update_ai_enabled(dialog_id, False)
+        await db.sync_n8n_dialog_ai_status(dialog["chat_id"], False)
         await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], False)
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
@@ -484,6 +486,7 @@ def build_app(
             dialog_id,
         )
         updated = await db.get_dialog(dialog_id)
+        await db.sync_n8n_dialog_status(dialog["chat_id"], "active")
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         asyncio.create_task(_drain_queue_bg())
@@ -541,6 +544,7 @@ def build_app(
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        await db.sync_n8n_dialog_status(dialog["chat_id"], "closed")
         await n8n.notify_dialog_closed(dialog_id, dialog["chat_id"], operator["name"])
         if chat_client:
             asyncio.create_task(_summarize_dialog_bg(dialog_id))
@@ -563,7 +567,11 @@ def build_app(
                 if not result:
                     return
                 dialog_id = result["dialog"]["dialog_id"]
+                chat_id = result["dialog"]["chat_id"]
                 op_name = result["op_name"]
+                await db.update_ai_enabled(dialog_id, False)
+                await db.sync_n8n_dialog_ai_status(chat_id, False)
+                await n8n.notify_ai_toggled(dialog_id, chat_id, False)
                 msg_row = await db.save_message(dialog_id, "system",
                                                 f"Диалог назначен оператору {op_name}")
                 updated = await db.get_dialog(dialog_id)
