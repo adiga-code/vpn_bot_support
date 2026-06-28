@@ -468,7 +468,10 @@ def build_app(
         return {"ok": True}
 
     @app.get("/api/dialogs/{dialog_id}/has_photo")
-    async def has_photo(dialog_id: str, _: dict = Depends(require_auth)):
+    async def has_photo(dialog_id: str, request: Request):
+        key = request.headers.get("X-API-Key", "")
+        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
+            raise HTTPException(401, "Invalid API key")
         row = await db.pool.fetchrow(
             "SELECT user_photo_url FROM dialogs WHERE dialog_id=$1", dialog_id
         )
