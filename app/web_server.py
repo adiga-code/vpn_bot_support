@@ -487,6 +487,7 @@ def build_app(
                operator_called=FALSE, updated_at=NOW() WHERE dialog_id=$1""",
             dialog_id,
         )
+        await db.sync_n8n_dialog_status(dialog["chat_id"], "active")
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})

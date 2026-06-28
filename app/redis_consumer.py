@@ -91,6 +91,7 @@ class RedisConsumer:
             await self.db.update_operator_called(dialog_id, True)
 
         if is_new:
+            await self.db.sync_n8n_dialog_status(chat_id, "active")
             automation = await self.db.get_setting_json("automation", {})
             max_tickets = int(automation.get("max_tickets_per_operator") or 10)
             await self.db.auto_assign_dialog(dialog_id, max_tickets)
@@ -184,6 +185,9 @@ class RedisConsumer:
                 try:
                     await self.db.set_dialog_rating(dialog_id, int(score))
                     print(f"[callback] rating={score} for dialog={dialog_id}")
+                    updated = await self.db.get_dialog(dialog_id)
+                    if updated:
+                        await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
                 except ValueError:
                     pass
 
