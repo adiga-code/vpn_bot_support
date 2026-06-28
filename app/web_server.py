@@ -228,6 +228,9 @@ class RenameGroupBody(BaseModel):
 class NotesBody(BaseModel):
     text: str
 
+class PhotoBody(BaseModel):
+    url: str
+
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
@@ -476,6 +479,19 @@ def build_app(
             "SELECT user_photo_url FROM dialogs WHERE dialog_id=$1", dialog_id
         )
         return {"has_photo": bool(row and row["user_photo_url"])}
+
+    @app.post("/api/dialogs/{dialog_id}/set_photo")
+    async def set_photo(dialog_id: str, request: Request, body: PhotoBody):
+        key = request.headers.get("X-API-Key", "")
+        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
+            raise HTTPException(401, "Invalid API key")
+        await db.pool.execute(
+            "UPDATE dialogs SET user_photo_url=$1 WHERE dialog_id=$2", body.url, dialog_id
+        )
+        updated = await db.get_dialog(dialog_id)
+        if updated:
+            await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/toggle_ai")
     async def toggle_ai(dialog_id: str, operator: dict = Depends(require_auth)):
