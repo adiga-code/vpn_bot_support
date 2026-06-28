@@ -58,6 +58,7 @@ function ConvCard({ conv, active, onClick }) {
             <div className="text-sm font-medium text-[#f1f1f5] truncate">{conv.name}</div>
             <div className="text-[10px] text-[#6b7280] shrink-0">{conv.time}</div>
           </div>
+          <div className="text-[10px] text-[#6b7280]/70 truncate -mt-0.5 mb-0.5">{conv.username}</div>
           <div className="text-xs text-[#6b7280] truncate mb-1.5">{conv.preview}</div>
           <div className="flex items-center gap-1.5">
             <StatusBadge status={conv.status} />
@@ -845,6 +846,52 @@ function DialogsScreen({
   );
 }
 
+function NotesEditor({ convId, initialValue, showToast }) {
+  const [value, setValue] = React.useState(initialValue);
+  const [saving, setSaving] = React.useState(false);
+  const savedRef = React.useRef(initialValue);
+
+  React.useEffect(() => {
+    setValue(initialValue);
+    savedRef.current = initialValue;
+  }, [convId]);
+
+  const save = async () => {
+    if (value === savedRef.current) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/dialogs/${convId}/notes`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + localStorage.getItem("token") },
+        body: JSON.stringify({ text: value }),
+      });
+      if (!res.ok) throw new Error();
+      savedRef.current = value;
+      showToast && showToast("Заметка сохранена");
+    } catch {
+      showToast && showToast("Ошибка сохранения", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="relative">
+      <textarea
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        onBlur={save}
+        rows={4}
+        placeholder="Заметки об этом пользователе..."
+        className="w-full bg-[#1a1a24] border border-[#2a2a3a]/60 rounded-xl px-3 py-2.5 text-xs text-[#f1f1f5] placeholder-[#6b7280]/60 resize-none focus:outline-none focus:border-[#eab308]/40 transition scrollbar-thin"
+      />
+      {saving && (
+        <div className="absolute bottom-2 right-2 text-[10px] text-[#eab308]/70">Сохранение…</div>
+      )}
+    </div>
+  );
+}
+
 function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClick }) {
   const [historyOpen, setHistoryOpen] = useStateD(true);
   const trafficPct = Math.min(100, (conv.traffic.used / conv.traffic.total) * 100);
@@ -911,6 +958,12 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClic
           </div>
         </section>
       )}
+
+      {/* Notes */}
+      <section>
+        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Заметки</div>
+        <NotesEditor convId={conv.id} initialValue={conv.notes || ""} showToast={showToast} />
+      </section>
 
       {/* History */}
       <section>

@@ -107,6 +107,7 @@ def _fmt_dialog(row: dict, tickets: list = None) -> dict:
         "assignedOperator": row.get("assigned_operator"),
         "updatedAt": row["updated_at"].isoformat() if row.get("updated_at") else "",
         "rating": row.get("rating"),
+        "notes": row.get("user_notes") or "",
         "tickets": tickets or [],
     }
 
@@ -222,6 +223,9 @@ class PauseBody(BaseModel):
 class RenameGroupBody(BaseModel):
     old_name: str
     new_name: str
+
+class NotesBody(BaseModel):
+    text: str
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -436,6 +440,30 @@ def build_app(
             dialog_id, "comment", body.text.strip(), operator_name=operator["name"]
         )
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+        return {"ok": True}
+
+    @app.put("/api/dialogs/{dialog_id}/notes")
+    async def update_notes(dialog_id: str, body: NotesBody, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        await db.pool.execute(
+            "UPDATE dialogs SET user_notes=$1 WHERE dialog_id=$2", body.text, dialog_id
+        )
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/dismiss_called")
+    async def dismiss_called(dialog_id: str, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        await db.pool.execute(
+            "UPDATE dialogs SET operator_called=FALSE WHERE dialog_id=$1", dialog_id
+        )
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/toggle_ai")

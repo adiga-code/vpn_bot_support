@@ -218,7 +218,7 @@
 
     // ── TopBar ────────────────────────────────────────────────────────────────
 
-    function TopBar({ screen, setScreen, activeName, notifCount, onNotifClick, notifOpen, onProfileClick, profileOpen, onCloseMenus, currentOperator, onLogout, onTogglePause }) {
+    function TopBar({ screen, setScreen, activeName, notifCount, onNotifClick, notifOpen, onProfileClick, profileOpen, onCloseMenus, currentOperator, onLogout, onTogglePause, notifItems, onNotifItemClick, onDismissAll }) {
       const screens = [
         { id: "dialogs",  label: "Диалоги",    icon: "chat"     },
         { id: "stats",    label: "Статистика", icon: "chart"    },
@@ -310,12 +310,24 @@
               <div className="absolute top-[52px] right-[80px] w-[340px] bg-[#13131a] border border-[#2a2a3a] rounded-xl shadow-2xl z-50 overflow-hidden">
                 <div className="px-4 py-3 border-b border-[#2a2a3a] flex items-center justify-between">
                   <div className="font-medium text-sm text-[#f1f1f5]">Уведомления</div>
-                  <button onClick={onCloseMenus} className="text-[10px] text-[#7BA8F9] hover:underline">Прочитать все</button>
+                  {(notifItems || []).length > 0 && (
+                    <button onClick={onDismissAll} className="text-[10px] text-[#7BA8F9] hover:underline">Прочитать все</button>
+                  )}
                 </div>
                 <div className="divide-y divide-[#2a2a3a]/60 max-h-[400px] overflow-y-auto scrollbar-thin">
-                  <div className="px-4 py-8 text-center text-[#6b7280] text-sm">
-                    Нет новых уведомлений
-                  </div>
+                  {(notifItems || []).length === 0 ? (
+                    <div className="px-4 py-8 text-center text-[#6b7280] text-sm">
+                      Нет новых уведомлений
+                    </div>
+                  ) : (notifItems || []).map(c => (
+                    <div key={c.id} onClick={() => onNotifItemClick && onNotifItemClick(c.id)} className="px-4 py-3 hover:bg-[#1a1a24] cursor-pointer flex items-start gap-3 transition">
+                      <span className="mt-0.5 text-[#ef4444] shrink-0"><Icon name="bellRing" className="w-4 h-4" /></span>
+                      <div className="min-w-0">
+                        <div className="text-sm text-[#f1f1f5] truncate">{c.name}</div>
+                        <div className="text-[11px] text-[#6b7280] truncate">{c.username} · вызвал оператора</div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             </>
@@ -705,8 +717,27 @@
         return <LoginScreen onLogin={handleLogin} />;
       }
 
-      const active     = conversations.find((c) => c.id === activeId);
-      const notifCount = conversations.filter((c) => c.operatorCalled && c.status !== "closed").length;
+      const active      = conversations.find((c) => c.id === activeId);
+      const notifItems  = conversations.filter((c) => c.operatorCalled && c.status !== "closed");
+      const notifCount  = notifItems.length;
+
+      const handleNotifItemClick = (id) => {
+        setActiveId(id);
+        setScreen("dialogs");
+        setNotifOpen(false);
+        setProfileOpen(false);
+      };
+
+      const handleDismissAll = async () => {
+        for (const c of notifItems) {
+          await fetch(`/api/dialogs/${c.id}/dismiss_called`, {
+            method: "POST",
+            headers: { "Authorization": "Bearer " + localStorage.getItem("token") },
+          });
+        }
+        setNotifOpen(false);
+        setProfileOpen(false);
+      };
 
       if (dataLoading) {
         return (
@@ -731,6 +762,9 @@
             currentOperator={currentOperator}
             onLogout={handleLogout}
             onTogglePause={handleTogglePause}
+            notifItems={notifItems}
+            onNotifItemClick={handleNotifItemClick}
+            onDismissAll={handleDismissAll}
           />
           <main className="flex-1 min-h-0">
             {screen === "dialogs" && (

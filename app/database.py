@@ -108,6 +108,9 @@ class DatabaseManager:
         await conn.execute(
             "ALTER TABLE messages ADD COLUMN IF NOT EXISTS category TEXT"
         )
+        await conn.execute(
+            "ALTER TABLE dialogs ADD COLUMN IF NOT EXISTS user_notes TEXT"
+        )
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS operators (
                 id         SERIAL PRIMARY KEY,
