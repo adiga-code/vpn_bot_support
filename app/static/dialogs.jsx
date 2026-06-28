@@ -43,7 +43,7 @@ function ConvCard({ conv, active, onClick }) {
       )}
       <div className="flex items-start gap-2.5">
         <div className="relative">
-          <Avatar initials={conv.initials} color={conv.avatarColor} size={36} />
+          <Avatar initials={conv.initials} color={conv.avatarColor} size={36} photoUrl={conv.photoUrl} />
           {conv.unread > 0 && (
             <div className={
               "absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 rounded-full text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-[#13131a] " +
@@ -571,7 +571,7 @@ function DialogsScreen({
               {/* Top bar */}
               <div className="h-[60px] px-5 border-b border-[#2a2a3a] flex items-center justify-between bg-[#13131a]/40">
                 <div className="flex items-center gap-3 min-w-0">
-                  <Avatar initials={active.initials} color={active.avatarColor} size={36} />
+                  <Avatar initials={active.initials} color={active.avatarColor} size={36} photoUrl={active.photoUrl} />
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <div className="font-medium text-[#f1f1f5] truncate">{active.name}</div>
@@ -860,9 +860,10 @@ function NotesEditor({ convId, initialValue, showToast }) {
     if (value === savedRef.current) return;
     setSaving(true);
     try {
+      const token = localStorage.getItem("hd_token") || "";
       const res = await fetch(`/api/dialogs/${convId}/notes`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + localStorage.getItem("token") },
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
         body: JSON.stringify({ text: value }),
       });
       if (!res.ok) throw new Error();
@@ -904,7 +905,7 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClic
         <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">Пользователь</div>
         <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60">
           <div className="flex items-center gap-3 mb-3">
-            <Avatar initials={conv.initials} color={conv.avatarColor} size={44} />
+            <Avatar initials={conv.initials} color={conv.avatarColor} size={44} photoUrl={conv.photoUrl} />
             <div className="min-w-0">
               <div className="font-medium text-[#f1f1f5] text-sm truncate">{conv.name}</div>
               <div className="text-xs text-[#6b7280]">{conv.username}</div>
