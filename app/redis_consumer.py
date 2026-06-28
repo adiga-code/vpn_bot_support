@@ -171,12 +171,18 @@ class RedisConsumer:
             if not dialog or dialog.get("operator_called"):
                 return
             await self.db.update_operator_called(dialog_id, True)
-            await self.db.update_status(dialog_id, "in_progress")
+            automation = await self.db.get_setting_json("automation", {})
+            max_tickets = int(automation.get("max_tickets_per_operator") or 10)
+            op_name = await self.db.auto_assign_dialog(dialog_id, max_tickets)
+            if op_name:
+                await self.db.update_status(dialog_id, "in_progress")
+                print(f"[callback] operator called → assigned to {op_name} for dialog={dialog_id}")
+            else:
+                print(f"[callback] operator called → no operator available, queued dialog={dialog_id}")
             updated = await self.db.get_dialog(dialog_id)
             await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
             username = updated.get("user_username") or dialog_id
             await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
-            print(f"[callback] operator called for dialog={dialog_id}")
 
         elif callback_data.startswith("rate:"):
             parts = callback_data.split(":")
