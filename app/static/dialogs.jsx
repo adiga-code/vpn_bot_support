@@ -27,12 +27,17 @@ function ConvCard({ conv, active, onClick }) {
         "w-full text-left p-3 rounded-lg transition relative group " +
         (active
           ? "bg-[#1a1a24] ring-1 ring-[#4F8EF7]/40"
+          : conv.operatorCalled && conv.status === "new" && !conv.assignedOperator
+          ? "bg-[#1a0a0a] ring-1 ring-[#ef4444]/50 hover:bg-[#1a1a24]/60"
           : conv.status === "in_progress" && conv.unread > 0
           ? "bg-[#1a1a18] ring-1 ring-[#eab308]/30 hover:bg-[#1a1a24]/60"
           : "hover:bg-[#1a1a24]/60")
       }
     >
       {active && <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-[#4F8EF7] rounded-r"></div>}
+      {!active && conv.operatorCalled && conv.status === "new" && !conv.assignedOperator && (
+        <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-[#ef4444] rounded-r animate-pulse"></div>
+      )}
       {!active && conv.status === "in_progress" && conv.unread > 0 && (
         <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-[#eab308] rounded-r"></div>
       )}
