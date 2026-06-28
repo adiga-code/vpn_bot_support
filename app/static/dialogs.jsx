@@ -57,7 +57,13 @@ function ConvCard({ conv, active, onClick }) {
           <div className="flex items-center gap-1.5">
             <StatusBadge status={conv.status} />
             {conv.operatorCalled && (
-              <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-[#ef4444]/15 text-[#ef4444]" title="Вызван оператор">
+              <span
+                title="Вызван оператор"
+                className={"inline-flex items-center justify-center w-4 h-4 rounded-full text-[#ef4444] " +
+                  (conv.status === "new" && !conv.assignedOperator
+                    ? "bg-[#ef4444]/25 animate-pulse"
+                    : "bg-[#ef4444]/15")}
+              >
                 <Icon name="bellRing" className="w-2.5 h-2.5" strokeWidth={2.5} />
               </span>
             )}
