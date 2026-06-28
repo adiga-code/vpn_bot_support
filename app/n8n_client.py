@@ -155,10 +155,10 @@ class N8NClient:
 
     async def send_rating_request(self, chat_id: str, dialog_id: str, text: str = "Оцените качество поддержки:") -> bool:
         stars = ["⭐", "⭐⭐", "⭐⭐⭐", "⭐⭐⭐⭐", "⭐⭐⭐⭐⭐"]
-        keyboard = [[
-            {"text": s, "callback_data": f"rate:{dialog_id}:{i + 1}"}
-            for i, s in enumerate(stars)
-        ]]
+        keyboard = [
+            [{"text": s, "callback_data": f"rate:{dialog_id}:{i + 1}"} for i, s in enumerate(stars[:3])],
+            [{"text": s, "callback_data": f"rate:{dialog_id}:{i + 4}"} for i, s in enumerate(stars[3:])],
+        ]
         return await self.send_to_user(chat_id, text, keyboard)
 
     # ── Billing ───────────────────────────────────────────────────────────────

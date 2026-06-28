@@ -2,6 +2,18 @@
 
 const { useState: useStateD, useEffect: useEffectD, useRef: useRefD, useMemo: useMemoD } = React;
 
+function StarRating({ rating, size = "sm" }) {
+  if (!rating) return null;
+  const sz = size === "lg" ? "text-base" : "text-[11px]";
+  return (
+    <span className={"inline-flex gap-0.5 " + sz}>
+      {[1,2,3,4,5].map(i => (
+        <span key={i} className={i <= rating ? "text-[#eab308]" : "text-[#3a3a4a]"}>★</span>
+      ))}
+    </span>
+  );
+}
+
 function ConvCard({ conv, active, onClick }) {
   const statusDot = {
     new: "bg-[#4F8EF7]",
@@ -878,6 +890,17 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClic
         </div>
       </section>
 
+      {/* Rating */}
+      {conv.rating && (
+        <section>
+          <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Оценка поддержки</div>
+          <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60 flex items-center justify-between">
+            <StarRating rating={conv.rating} size="lg" />
+            <span className="text-[11px] text-[#6b7280]">{conv.rating} / 5</span>
+          </div>
+        </section>
+      )}
+
       {/* History */}
       <section>
         <button
@@ -906,7 +929,10 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClic
                   </span>
                 </div>
                 <div className="text-xs text-[#f1f1f5] mb-0.5 truncate">{t.title}</div>
-                <div className="text-[10px] text-[#6b7280]">{t.date}</div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-[#6b7280]">{t.date}</span>
+                  {t.rating && <StarRating rating={t.rating} />}
+                </div>
               </div>
             ))}
           </div>
