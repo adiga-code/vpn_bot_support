@@ -106,6 +106,7 @@ def _fmt_dialog(row: dict, tickets: list = None) -> dict:
         "time": _fmt_time(row.get("last_message_time")),
         "assignedOperator": row.get("assigned_operator"),
         "updatedAt": row["updated_at"].isoformat() if row.get("updated_at") else "",
+        "rating": row.get("rating"),
         "tickets": tickets or [],
     }
 
@@ -367,6 +368,7 @@ def build_app(
                 "title": t.get("summary") or t["last_message_text"] or "Диалог",
                 "date": _fmt_time(t["updated_at"]),
                 "solved": True,
+                "rating": t.get("rating"),
             }
             for t in tickets
         ])

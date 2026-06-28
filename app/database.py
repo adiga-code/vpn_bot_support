@@ -294,7 +294,7 @@ class DatabaseManager:
 
     async def get_dialog_history(self, chat_id: str, exclude_dialog_id: str = "") -> list[dict]:
         rows = await self.pool.fetch(
-            """SELECT dialog_id, last_message_text, summary, status, updated_at
+            """SELECT dialog_id, last_message_text, summary, status, updated_at, rating
                FROM dialogs WHERE chat_id=$1 AND status='closed' AND dialog_id!=$2
                ORDER BY updated_at DESC LIMIT 10""",
             chat_id, exclude_dialog_id,
