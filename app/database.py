@@ -328,7 +328,7 @@ class DatabaseManager:
     async def sync_n8n_dialog_status(self, chat_id: str, status: str):
         try:
             await self.pool.execute(
-                "UPDATE n8n_dialogs SET status=$1 WHERE user_id=$2",
+                "UPDATE n8n_dialogs SET status=$1 WHERE id=(SELECT MAX(id) FROM n8n_dialogs WHERE user_id=$2)",
                 status, int(chat_id),
             )
         except Exception as e:
