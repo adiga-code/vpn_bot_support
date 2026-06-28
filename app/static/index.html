@@ -382,7 +382,8 @@
       const [screen, setScreenRaw] = useState(() => localStorage.getItem("screen") || "dialogs");
       const setScreen = (s) => { localStorage.setItem("screen", s); setScreenRaw(s); };
       const [conversations,   setConversations]   = useState([]);
-      const [activeId,        setActiveId]        = useState(null);
+      const [activeId,        setActiveIdRaw]     = useState(null);
+      const setActiveId = (id) => { id ? localStorage.setItem("hd_active", id) : localStorage.removeItem("hd_active"); setActiveIdRaw(id); };
       const [opsState,        setOpsState]        = useState([]);
       const [dataLoading,     setDataLoading]     = useState(false);
       const [notifOpen,       setNotifOpen]       = useState(false);
@@ -452,28 +453,30 @@
           const withMessages = dialogs.map((d) => ({ ...d, messages: [], tickets: [] }));
           setConversations(withMessages);
           const pendingId = pendingDialogRef.current;
-          if (pendingId) {
-            pendingDialogRef.current = null;
-            const found = withMessages.find((d) => d.id === pendingId);
+          const savedId   = localStorage.getItem("hd_active");
+          const targetId  = pendingId || savedId;
+          if (pendingId) pendingDialogRef.current = null;
+          if (targetId) {
+            const found = withMessages.find((d) => d.id === targetId);
             if (found) {
-              setActiveId(found.id);
+              setActiveIdRaw(found.id);
             } else {
               try {
-                const dialog = await apiGet(`/api/dialogs/${pendingId}`);
+                const dialog = await apiGet(`/api/dialogs/${targetId}`);
                 if (dialog) {
                   const enriched = { ...dialog, messages: [], tickets: [] };
                   setConversations((prev) => {
                     const exists = prev.some((c) => c.id === enriched.id);
                     return exists ? prev : [enriched, ...prev];
                   });
-                  setActiveId(enriched.id);
-                } else if (withMessages.length > 0) setActiveId(withMessages[0].id);
+                  setActiveIdRaw(enriched.id);
+                } else if (withMessages.length > 0) setActiveIdRaw(withMessages[0].id);
               } catch {
-                if (withMessages.length > 0) setActiveId(withMessages[0].id);
+                if (withMessages.length > 0) setActiveIdRaw(withMessages[0].id);
               }
             }
           } else if (withMessages.length > 0) {
-            setActiveId(withMessages[0].id);
+            setActiveIdRaw(withMessages[0].id);
           }
           setOpsState(operators || []);
         }).catch((e) => console.error("Failed to load initial data:", e))
@@ -730,10 +733,7 @@
 
       const handleDismissAll = async () => {
         for (const c of notifItems) {
-          await fetch(`/api/dialogs/${c.id}/dismiss_called`, {
-            method: "POST",
-            headers: { "Authorization": "Bearer " + localStorage.getItem("token") },
-          });
+          await apiFetch("POST", `/api/dialogs/${c.id}/dismiss_called`);
         }
         setNotifOpen(false);
         setProfileOpen(false);

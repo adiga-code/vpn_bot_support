@@ -108,6 +108,7 @@ def _fmt_dialog(row: dict, tickets: list = None) -> dict:
         "updatedAt": row["updated_at"].isoformat() if row.get("updated_at") else "",
         "rating": row.get("rating"),
         "notes": row.get("user_notes") or "",
+        "photoUrl": row.get("user_photo_url") or None,
         "tickets": tickets or [],
     }
 
@@ -465,6 +466,16 @@ def build_app(
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         return {"ok": True}
+
+    @app.get("/api/dialogs/{dialog_id}/has_photo")
+    async def has_photo(dialog_id: str, request: Request):
+        key = request.headers.get("X-API-Key", "")
+        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
+            raise HTTPException(401, "Invalid API key")
+        row = await db.pool.fetchrow(
+            "SELECT user_photo_url FROM dialogs WHERE dialog_id=$1", dialog_id
+        )
+        return {"has_photo": bool(row and row["user_photo_url"])}
 
     @app.post("/api/dialogs/{dialog_id}/toggle_ai")
     async def toggle_ai(dialog_id: str, operator: dict = Depends(require_auth)):

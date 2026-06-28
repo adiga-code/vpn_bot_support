@@ -111,6 +111,9 @@ class DatabaseManager:
         await conn.execute(
             "ALTER TABLE dialogs ADD COLUMN IF NOT EXISTS user_notes TEXT"
         )
+        await conn.execute(
+            "ALTER TABLE dialogs ADD COLUMN IF NOT EXISTS user_photo_url TEXT"
+        )
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS operators (
                 id         SERIAL PRIMARY KEY,
@@ -249,8 +252,8 @@ class DatabaseManager:
                 dialog_id, chat_id, ai_enabled,
                 user_name, user_username, user_plan, user_sub_status,
                 user_next_payment, user_traffic_used, user_traffic_total,
-                last_payment_amount, last_payment_date, unread_count
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, 1)
+                last_payment_amount, last_payment_date, user_photo_url, unread_count
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, 1)
             ON CONFLICT (dialog_id) DO UPDATE SET
                 ai_enabled          = CASE WHEN dialogs.status='closed' THEN $3 ELSE dialogs.ai_enabled END,
                 status              = CASE WHEN dialogs.status='closed' THEN 'new' ELSE dialogs.status END,
@@ -266,6 +269,7 @@ class DatabaseManager:
                 user_traffic_total  = COALESCE(EXCLUDED.user_traffic_total, dialogs.user_traffic_total),
                 last_payment_amount = COALESCE(EXCLUDED.last_payment_amount,dialogs.last_payment_amount),
                 last_payment_date   = COALESCE(EXCLUDED.last_payment_date,  dialogs.last_payment_date),
+                user_photo_url      = COALESCE(EXCLUDED.user_photo_url,     dialogs.user_photo_url),
                 unread_count        = dialogs.unread_count + 1,
                 updated_at          = NOW()
             RETURNING *
@@ -277,6 +281,7 @@ class DatabaseManager:
             float(ui.get("user_traffic_used") or 0),
             float(ui.get("user_traffic_total") or 100),
             ui.get("user_last_payment_amount"), ui.get("user_last_payment_date"),
+            ui.get("user_photo_url"),
         )
         return {**dict(row), "is_new_dialog": is_new or was_closed}
 

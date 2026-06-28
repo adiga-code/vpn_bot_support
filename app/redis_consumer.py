@@ -69,6 +69,7 @@ class RedisConsumer:
             "user_name", "user_username", "user_plan", "user_sub_status",
             "user_next_payment", "user_traffic_used", "user_traffic_total",
             "user_last_payment_amount", "user_last_payment_date",
+            "user_photo_url",
         )}
 
         dialog_row = await self.db.upsert_dialog(dialog_id, chat_id, ai_enabled, user_info)
