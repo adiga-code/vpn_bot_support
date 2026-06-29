@@ -16,6 +16,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
     { id: "ai",            label: "ИИ-настройки", icon: "sparkles",  adminOnly: true  },
     { id: "kb",            label: "База знаний",  icon: "book",      adminOnly: true  },
     { id: "automation",    label: "Автоматизация",icon: "zap",       adminOnly: true  },
+    { id: "sounds",        label: "Звуки",        icon: "bellRing",  adminOnly: true  },
     { id: "broadcast",     label: "Рассылка",     icon: "megaphone", adminOnly: true  },
     { id: "templates",     label: "Шаблоны",      icon: "template",  adminOnly: true  },
   ];
@@ -71,6 +72,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
         {section === "ai"            && <AISection showToast={showToast} />}
         {section === "kb"            && <KBSection />}
         {section === "automation"    && <AutomationSection showToast={showToast} />}
+        {section === "sounds"        && <SoundsSection showToast={showToast} />}
         {section === "broadcast"     && <BroadcastSection showToast={showToast} />}
         {section === "templates"     && <TemplatesSection showToast={showToast} />}
       </div>
@@ -254,6 +256,7 @@ function ProfileSection({ showToast }) {
   async function saveNotifPrefs() {
     try {
       await window.apiFetch("PUT", "/api/operators/me/notifications", notifPrefs);
+      if (window._setSoundEnabled) window._setSoundEnabled(!!notifPrefs.sound_enabled);
       showToast("Настройки уведомлений сохранены");
     } catch { showToast("Ошибка сохранения"); }
   }
@@ -306,6 +309,13 @@ function ProfileSection({ showToast }) {
               <Switch on={!!notifPrefs[key]} onChange={() => setNotifPrefs((p) => ({ ...p, [key]: !p[key] }))} />
             </div>
           ))}
+          <div className="px-5 py-3 flex items-center justify-between">
+            <div>
+              <div className="text-sm text-[#f1f1f5]">Звуки уведомлений</div>
+              <div className="text-xs text-[#6b7280]">Воспроизводить звук при новых событиях в браузере</div>
+            </div>
+            <Switch on={!!notifPrefs.sound_enabled} onChange={() => setNotifPrefs((p) => ({ ...p, sound_enabled: !p.sound_enabled }))} />
+          </div>
         </div>
       )}
 
@@ -782,6 +792,66 @@ function AutomationSection({ showToast }) {
         <button onClick={save} className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold">
           Сохранить
         </button>
+      </div>
+    </div>
+  );
+}
+
+function SoundsSection({ showToast }) {
+  const [sounds, setSounds] = useStateT({});
+
+  useEffectT(() => {
+    window.apiFetch("GET", "/api/settings/sounds").then(setSounds).catch(() => {});
+  }, []);
+
+  async function handleUpload(event, file) {
+    if (!file) return;
+    try {
+      const res = await window.apiFetch("UPLOAD", `/api/settings/sounds/upload?event=${event}`, file);
+      setSounds((prev) => {
+        const next = { ...prev, [`${event}_url`]: res.url };
+        if (window._setSoundsConfig) window._setSoundsConfig(next);
+        return next;
+      });
+      showToast("Звук загружен");
+    } catch {
+      showToast("Ошибка загрузки");
+    }
+  }
+
+  const cards = [
+    { event: "operator_called", label: "Оператор вызван", desc: "Играет когда диалог передаётся на поддержку" },
+    { event: "new_message",     label: "Новое сообщение",  desc: "Играет при входящем сообщении в активный диалог" },
+  ];
+
+  return (
+    <div className="max-w-[600px] mx-auto p-6 space-y-5">
+      <div>
+        <h1 className="text-xl font-semibold text-[#f1f1f5]">Звуки уведомлений</h1>
+        <div className="text-xs text-[#6b7280] mt-0.5">Загрузите аудиофайлы для браузерных уведомлений</div>
+      </div>
+      <div className="space-y-4">
+        {cards.map(({ event, label, desc }) => {
+          const url = sounds[`${event}_url`];
+          return (
+            <div key={event} className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5 space-y-3">
+              <div>
+                <div className="text-sm font-medium text-[#f1f1f5]">{label}</div>
+                <div className="text-xs text-[#6b7280] mt-0.5">{desc}</div>
+              </div>
+              {url ? (
+                <audio controls src={url} className="w-full h-9 rounded-lg" style={{ accentColor: "#4F8EF7" }} />
+              ) : (
+                <div className="text-xs text-[#6b7280] bg-[#0d0d12] rounded-lg px-3 py-2 border border-dashed border-[#2a2a3a]">Звук не загружен</div>
+              )}
+              <label className="inline-flex items-center gap-2 cursor-pointer px-3 py-1.5 rounded-lg bg-[#1a1a24] border border-[#2a2a3a] hover:border-[#4F8EF7]/50 text-xs text-[#7BA8F9] transition">
+                <Icon name="plus" className="w-3.5 h-3.5" />
+                {url ? "Заменить файл" : "Загрузить файл"}
+                <input type="file" accept="audio/*" className="hidden" onChange={(e) => handleUpload(event, e.target.files[0])} />
+              </label>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
