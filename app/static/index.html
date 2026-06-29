@@ -389,16 +389,33 @@
       const [notifOpen,       setNotifOpen]       = useState(false);
       const [profileOpen,     setProfileOpen]     = useState(false);
       const [toast,           setToast]           = useState(null);
+      const [soundsConfig,    setSoundsConfig]    = useState({});
+      const [soundEnabled,    setSoundEnabled]    = useState(true);
 
       const loadedRef        = useRef(new Set());
       const ticketsLoadedRef = useRef(new Set());
       const wsRef            = useRef(null);
       const pendingDialogRef = useRef(null);
+      const soundsConfigRef  = useRef({});
+      const soundEnabledRef  = useRef(true);
 
       function showToast(msg) {
         setToast(msg);
         setTimeout(() => setToast(null), 2500);
       }
+
+      function playSound(url) {
+        if (!url) return;
+        try { new Audio(url).play(); } catch {}
+      }
+
+      useEffect(() => { soundsConfigRef.current = soundsConfig; }, [soundsConfig]);
+      useEffect(() => { soundEnabledRef.current = soundEnabled; }, [soundEnabled]);
+      useEffect(() => {
+        window._setSoundEnabled = setSoundEnabled;
+        window._setSoundsConfig = setSoundsConfig;
+        return () => { window._setSoundEnabled = null; window._setSoundsConfig = null; };
+      }, []);
 
       // ── Auth expired callback ─────────────────────────────────────────────
 
@@ -449,7 +466,15 @@
         Promise.all([
           apiGet("/api/dialogs"),
           apiGet("/api/operators").catch(() => []),
-        ]).then(async ([dialogs, operators]) => {
+          apiGet("/api/settings/sounds").catch(() => ({})),
+          apiGet("/api/operators/me/notifications").catch(() => ({})),
+        ]).then(async ([dialogs, operators, sounds, notifPrefs]) => {
+          const sc = sounds || {};
+          const se = notifPrefs?.sound_enabled !== false;
+          setSoundsConfig(sc);
+          setSoundEnabled(se);
+          soundsConfigRef.current = sc;
+          soundEnabledRef.current = se;
           const withMessages = dialogs.map((d) => ({ ...d, messages: [], tickets: [] }));
           setConversations(withMessages);
           const pendingId = pendingDialogRef.current;
@@ -518,19 +543,20 @@
             const data = JSON.parse(event.data);
             if (data.type === "new_message") {
               setConversations((prev) =>
-                prev.map((c) =>
-                  c.id === data.dialog_id
-                    ? { ...c, messages: [...c.messages, data.message] }
-                    : c
-                )
+                prev.map((c) => {
+                  if (c.id !== data.dialog_id) return c;
+                  if (c.operatorCalled && soundEnabledRef.current) playSound(soundsConfigRef.current.new_message_url);
+                  return { ...c, messages: [...c.messages, data.message] };
+                })
               );
             } else if (data.type === "dialog_updated") {
               setConversations((prev) =>
-                prev.map((c) =>
-                  c.id === data.dialog.id
-                    ? { ...data.dialog, messages: c.messages, tickets: c.tickets }
-                    : c
-                )
+                prev.map((c) => {
+                  if (c.id !== data.dialog.id) return c;
+                  if (!c.operatorCalled && data.dialog.operatorCalled && soundEnabledRef.current)
+                    playSound(soundsConfigRef.current.operator_called_url);
+                  return { ...data.dialog, messages: c.messages, tickets: c.tickets };
+                })
               );
             } else if (data.type === "new_dialog") {
               setConversations((prev) => {

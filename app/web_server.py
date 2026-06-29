@@ -36,7 +36,7 @@ _AI_DEFAULTS = {
     "classification_enabled": False,
 }
 
-_NOTIF_PREFS_DEFAULT = {"new_dialog": True, "operator_called": True, "server_down": True}
+_NOTIF_PREFS_DEFAULT = {"new_dialog": True, "operator_called": True, "server_down": True, "sound_enabled": True}
 
 _AUTOMATION_DEFAULTS = {
     "operator_button_enabled": False,
@@ -193,6 +193,7 @@ class NotifPrefsBody(BaseModel):
     new_dialog:      bool = True
     operator_called: bool = True
     server_down:     bool = True
+    sound_enabled:   bool = True
 
 class ScheduleBody(BaseModel):
     schedule: dict
@@ -861,6 +862,31 @@ def build_app(
             raise HTTPException(404)
         await delete_from_qdrant(article_id, settings.QDRANT_URL)
         return {"ok": True}
+
+    # ── Settings: Sounds ─────────────────────────────────────────────────────
+
+    @app.get("/api/settings/sounds")
+    async def get_sounds(operator: dict = Depends(require_auth)):
+        return await db.get_setting_json("sounds", {})
+
+    @app.post("/api/settings/sounds/upload")
+    async def upload_sound(
+        event: str,
+        file: UploadFile = File(...),
+        operator: dict = Depends(require_auth),
+    ):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if event not in ("operator_called", "new_message"):
+            raise HTTPException(400, "event must be operator_called or new_message")
+        ext = Path(file.filename).suffix if file.filename else ".mp3"
+        filename = f"sound_{event}_{uuid.uuid4().hex}{ext}"
+        content = await file.read()
+        url = await storage.save(content, filename)
+        sounds = await db.get_setting_json("sounds", {})
+        sounds[f"{event}_url"] = url
+        await db.set_setting_json("sounds", sounds)
+        return {"url": url}
 
     # ── Settings: Automation ─────────────────────────────────────────────────
 
