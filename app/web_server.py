@@ -133,7 +133,7 @@ def _fmt_message(row: dict) -> dict:
 
 def _fmt_operator(op: dict) -> dict:
     raw_prefs = op.get("notif_prefs")
-    notif_prefs = json.loads(raw_prefs) if raw_prefs else _NOTIF_PREFS_DEFAULT
+    notif_prefs = {**_NOTIF_PREFS_DEFAULT, **(json.loads(raw_prefs) if raw_prefs else {})}
     return {
         "id": op["id"],
         "name": op["name"],
