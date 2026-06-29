@@ -62,7 +62,13 @@ class RedisConsumer:
         # n8n sometimes puts the uploaded URL into file_id instead of file_url
         if not file_url and file_id and str(file_id).startswith("http"):
             file_url, file_id = file_id, None
-        ai_enabled = data.get("ai_enabled", True)
+        raw_ai = data.get("ai_enabled", True)
+        if isinstance(raw_ai, bool):
+            ai_enabled = raw_ai
+        elif isinstance(raw_ai, str):
+            ai_enabled = raw_ai.lower() not in ("false", "0", "inactive", "disabled", "no", "off")
+        else:
+            ai_enabled = bool(raw_ai)
         operator_called = bool(data.get("operator_called", False))
 
         user_info = {k: data.get(k) for k in (
