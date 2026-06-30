@@ -1,6 +1,7 @@
 import asyncio
 import json
 
+import aio_pika
 import uvicorn
 import redis.asyncio as aioredis
 
@@ -10,7 +11,7 @@ from app.billing import make_billing_provider
 from app.config import Settings
 from app.database import DatabaseManager
 from app.n8n_client import N8NClient
-from app.redis_consumer import RedisConsumer
+from app.rabbitmq_consumer import RabbitMQConsumer
 from app.servers import make_server_monitor
 from app.web_server import build_app
 from app.ws_manager import WebSocketManager
@@ -55,8 +56,10 @@ async def main():
     print("=" * 50)
 
     redis = aioredis.from_url(settings.REDIS_URL)
+    rmq = await aio_pika.connect_robust(settings.RABBITMQ_URL)
+
     ws_manager = WebSocketManager()
-    n8n_client = N8NClient(settings, redis, db)
+    n8n_client = N8NClient(settings, rmq, redis, db)
     billing = make_billing_provider(settings.BILLING_API_URL, settings.BILLING_API_TOKEN)
 
     # ── Server-down notification callback ─────────────────────────────────────
@@ -73,7 +76,7 @@ async def main():
     )
 
     chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
-    consumer = RedisConsumer(redis, db, ws_manager, n8n_client, chat_client)
+    consumer = RabbitMQConsumer(rmq, db, ws_manager, n8n_client, chat_client)
     app = build_app(settings, db, ws_manager, n8n_client, billing, server_monitor)
 
     # ── HTTP server ───────────────────────────────────────────────────────────
@@ -94,6 +97,7 @@ async def main():
             server_monitor.run_forever(),
         )
     finally:
+        await rmq.close()
         await redis.aclose()
         await db.close()
 

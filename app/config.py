@@ -4,8 +4,11 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # ── Redis ─────────────────────────────────────────────────────────────────
+    # ── Redis (история/KV для n8n) ────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379"
+
+    # ── RabbitMQ (очереди сообщений) ──────────────────────────────────────────
+    RABBITMQ_URL: str = "amqp://guest:guest@localhost/"
 
     # ── PostgreSQL ────────────────────────────────────────────────────────────
     POSTGRES_HOST: str = "postgres"

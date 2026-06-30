@@ -2,6 +2,8 @@ import json
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+import aio_pika
+import aio_pika.abc
 import redis.asyncio as aioredis
 
 from app.config import Settings
@@ -20,10 +22,13 @@ _SCHEDULE_DEFAULTS = {
     "sun": {"enabled": False, "from": "10:00", "to": "18:00"},
 }
 
+QUEUE_OUTGOING = "vpn_bot.outgoing"
+QUEUE_PENDING  = "vpn_bot.pending_notifications"
+
 
 class N8NClient:
-    """All outbound events go to a single durable queue: vpn_bot:outgoing.
-    n8n reads with blpop and routes by the `type` field.
+    """All outbound events go to RabbitMQ queue vpn_bot.outgoing.
+    n8n reads with a RabbitMQ Trigger node and routes by the `type` field.
 
     Message types:
       manager_message  — operator reply to user (text/file)
@@ -32,16 +37,37 @@ class N8NClient:
       billing_action   — billing command for user
     """
 
-    def __init__(self, settings: Settings, redis: aioredis.Redis, db: "DatabaseManager | None" = None):
-        self.redis = redis
+    def __init__(
+        self,
+        settings: Settings,
+        rmq: aio_pika.abc.AbstractRobustConnection,
+        redis: aioredis.Redis,
+        db: "DatabaseManager | None" = None,
+    ):
+        self._rmq = rmq
+        self.redis = redis  # kept for KV ops: vpn_bot:ai_settings, vpn_bot:schedule
         self.db = db
+        self._channel: aio_pika.abc.AbstractChannel | None = None
+
+    async def _get_channel(self) -> aio_pika.abc.AbstractChannel:
+        if self._channel is None or self._channel.is_closed:
+            self._channel = await self._rmq.channel()
+            await self._channel.declare_queue(QUEUE_OUTGOING, durable=True)
+            await self._channel.declare_queue(QUEUE_PENDING,  durable=True)
+        return self._channel
 
     # ── Core push ─────────────────────────────────────────────────────────────
 
     async def _push(self, payload: dict) -> bool:
         try:
-            await self.redis.rpush("vpn_bot:outgoing", json.dumps(payload, ensure_ascii=False))
-            await self.redis.publish("vpn_bot:signal", "1")
+            ch = await self._get_channel()
+            await ch.default_exchange.publish(
+                aio_pika.Message(
+                    body=json.dumps(payload, ensure_ascii=False).encode(),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                ),
+                routing_key=QUEUE_OUTGOING,
+            )
             return True
         except Exception as e:
             print(f"[n8n] push error: {e}")
@@ -66,17 +92,24 @@ class N8NClient:
             return True
 
     async def _flush_pending(self) -> None:
-        while True:
-            item = await self.redis.lpop("vpn_bot:pending_notifications")
-            if not item:
-                break
-            try:
-                data = json.loads(item)
-                event_type = data.pop("type")
-                await self.notify_event(event_type, data)
-                print(f"[schedule] flushed: {event_type}")
-            except Exception as e:
-                print(f"[schedule] flush error: {e}")
+        try:
+            ch = await self._get_channel()
+            queue = await ch.declare_queue(QUEUE_PENDING, durable=True)
+            while True:
+                msg = await queue.get(no_ack=False, fail=False)
+                if msg is None:
+                    break
+                try:
+                    data = json.loads(msg.body)
+                    event_type = data.pop("type")
+                    await msg.ack()
+                    await self.notify_event(event_type, data)
+                    print(f"[schedule] flushed: {event_type}")
+                except Exception as e:
+                    await msg.nack(requeue=True)
+                    print(f"[schedule] flush error: {e}")
+        except Exception as e:
+            print(f"[schedule] _flush_pending error: {e}")
 
     # ── Operator notifications ─────────────────────────────────────────────────
 
@@ -88,9 +121,14 @@ class N8NClient:
         """Schedule-aware: queues off-hours, flushes at start of working day."""
         try:
             if not await self._is_within_schedule():
-                await self.redis.rpush("vpn_bot:pending_notifications", json.dumps({
-                    "type": event_type, **payload,
-                }))
+                ch = await self._get_channel()
+                await ch.default_exchange.publish(
+                    aio_pika.Message(
+                        body=json.dumps({"type": event_type, **payload}, ensure_ascii=False).encode(),
+                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    ),
+                    routing_key=QUEUE_PENDING,
+                )
                 print(f"[schedule] queued {event_type} (outside working hours)")
                 return
             await self._flush_pending()
