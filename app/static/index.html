@@ -793,7 +793,7 @@
             onDismissAll={handleDismissAll}
           />
           <main className="flex-1 min-h-0">
-            {screen === "dialogs" && (
+            <div className={"h-full " + (screen !== "dialogs" ? "hidden" : "")}>
               <DialogsScreen
                 conversations={conversations}
                 setConversations={setConversations}
@@ -810,13 +810,13 @@
                 operators={opsState}
                 servers={[]}
               />
-            )}
-            {screen === "stats" && (
+            </div>
+            <div className={"h-full " + (screen !== "stats" ? "hidden" : "")}>
               <StatisticsScreen />
-            )}
-            {screen === "settings" && (
+            </div>
+            <div className={"h-full " + (screen !== "settings" ? "hidden" : "")}>
               <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast} currentOperator={currentOperator} />
-            )}
+            </div>
           </main>
           <Toast msg={toast} />
         </div>
