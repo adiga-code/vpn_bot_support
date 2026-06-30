@@ -10,6 +10,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      rabbitmq:
+        condition: service_healthy
       qdrant:
         condition: service_started
     env_file:
@@ -17,6 +19,7 @@ services:
     environment:
       - TZ=Europe/Moscow
       - REDIS_URL=redis://redis:6379
+      - RABBITMQ_URL=amqp://vpnbot:vpnbot@rabbitmq/
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - QDRANT_URL=http://qdrant:6333
@@ -41,6 +44,33 @@ services:
     networks:
       - default
       - shared
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: vpn-bot-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: vpnbot
+      RABBITMQ_DEFAULT_PASS: vpnbot
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - default
+      - shared
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     logging:
       driver: "json-file"
       options:
@@ -156,6 +186,7 @@ services:
 
 volumes:
   redis_data:
+  rabbitmq_data:
   postgres_data:
   pgadmin_data:
   qdrant_data:
