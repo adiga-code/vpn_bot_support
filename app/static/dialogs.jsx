@@ -380,9 +380,13 @@ function DialogsScreen({
     let list = view === "my"
       ? conversations.filter((c) => c.assignedOperator === currentOperator?.name)
       : conversations;
-    if (filter === "open") list = list.filter((c) => c.status === "new");
-    if (filter === "wip") list = list.filter((c) => c.status === "in_progress");
-    if (filter === "closed") list = list.filter((c) => c.status === "closed");
+    if (filter === "closed") {
+      list = list.filter((c) => c.status === "closed");
+    } else {
+      list = list.filter((c) => c.status !== "closed");
+      if (filter === "open") list = list.filter((c) => c.status === "new");
+      if (filter === "wip") list = list.filter((c) => c.status === "in_progress");
+    }
     if (searchQ.trim()) {
       const q = searchQ.toLowerCase();
       list = list.filter(
@@ -404,7 +408,7 @@ function DialogsScreen({
   );
 
   const counts = useMemoD(() => ({
-    all: baseList.length,
+    all: baseList.filter((c) => c.status !== "closed").length,
     open: baseList.filter((c) => c.status === "new").length,
     wip: baseList.filter((c) => c.status === "in_progress").length,
     closed: baseList.filter((c) => c.status === "closed").length,

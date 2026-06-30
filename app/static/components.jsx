@@ -4,26 +4,24 @@ const { useState, useEffect, useRef, useMemo } = React;
 
 // Generic avatar circle with initials or real photo
 function Avatar({ initials, color, size = 36, ring = false, photoUrl = null }) {
-  if (photoUrl) {
+  const [imgError, setImgError] = useState(false);
+  const ringCls = ring ? "ring-2 ring-[#13131a]" : "";
+
+  if (photoUrl && !imgError) {
     return (
       <img
         src={photoUrl}
         alt={initials}
-        className={"rounded-full shrink-0 object-cover " + (ring ? "ring-2 ring-[#13131a]" : "")}
+        className={"rounded-full shrink-0 object-cover " + ringCls}
         style={{ width: size, height: size }}
-        onError={(e) => { e.currentTarget.style.display = "none"; }}
+        onError={() => setImgError(true)}
       />
     );
   }
   return (
     <div
-      className={"flex items-center justify-center rounded-full text-white font-medium shrink-0 " + (ring ? "ring-2 ring-[#13131a]" : "")}
-      style={{
-        width: size,
-        height: size,
-        background: color,
-        fontSize: size * 0.38,
-      }}
+      className={"flex items-center justify-center rounded-full text-white font-medium shrink-0 " + ringCls}
+      style={{ width: size, height: size, background: color, fontSize: size * 0.38 }}
     >
       {initials}
     </div>
