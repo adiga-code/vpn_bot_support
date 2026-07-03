@@ -114,12 +114,13 @@ function Icon({ name, className = "w-4 h-4", strokeWidth = 1.75 }) {
   );
 }
 
-function Toast({ msg }) {
+function Toast({ msg, type = "ok" }) {
   if (!msg) return null;
+  const dot = type === "warn" ? "bg-[#f59e0b]" : "bg-[#22c55e]";
   return (
     <div className="fixed bottom-6 right-6 z-50 animate-[slideUp_.2s_ease-out]">
       <div className="bg-[#1a1a24] border border-[#2a2a3a] rounded-lg px-4 py-3 shadow-2xl flex items-center gap-2.5 text-sm text-[#f1f1f5]">
-        <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e]"></span>
+        <span className={"w-1.5 h-1.5 rounded-full " + dot}></span>
         {msg}
       </div>
     </div>

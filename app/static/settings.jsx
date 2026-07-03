@@ -735,15 +735,27 @@ function AutomationSection({ showToast }) {
           control={<Switch on={s.rating_enabled} onChange={() => toggle("rating_enabled")} />}
         />
         {s.rating_enabled && (
-          <div className="px-5 py-4">
-            <label className="block text-xs text-[#6b7280] mb-2">Текст запроса оценки</label>
-            <textarea
-              value={s.rating_message_text}
-              onChange={e => set("rating_message_text", e.target.value)}
-              rows={2}
-              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
-              placeholder="Оцените качество поддержки:"
-            />
+          <div className="px-5 py-4 space-y-4">
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-2">Текст запроса оценки</label>
+              <textarea
+                value={s.rating_message_text}
+                onChange={e => set("rating_message_text", e.target.value)}
+                rows={2}
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
+                placeholder="Оцените качество поддержки:"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-2">Текст после получения оценки</label>
+              <textarea
+                value={s.rating_thanks_text ?? "Спасибо за оценку! 🙏"}
+                onChange={e => set("rating_thanks_text", e.target.value)}
+                rows={2}
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
+                placeholder="Спасибо за оценку! 🙏"
+              />
+            </div>
           </div>
         )}
       </div>
