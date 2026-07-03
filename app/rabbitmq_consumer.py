@@ -210,6 +210,11 @@ class RabbitMQConsumer:
                     updated = await self.db.get_dialog(dialog_id)
                     if updated:
                         await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+                        chat_id = updated.get("chat_id") or data.get("chat_id")
+                        if chat_id:
+                            automation = await self.db.get_setting_json("automation", {})
+                            thanks = automation.get("rating_thanks_text") or "Спасибо за оценку! 🙏"
+                            await self.n8n.send_to_user(str(chat_id), thanks)
                 except ValueError:
                     pass
 

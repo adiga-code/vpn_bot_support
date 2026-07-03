@@ -390,7 +390,10 @@ function DialogsScreen({
     if (searchQ.trim()) {
       const q = searchQ.toLowerCase();
       list = list.filter(
-        (c) => c.name.toLowerCase().includes(q) || c.username.toLowerCase().includes(q) || c.preview.toLowerCase().includes(q)
+        (c) => c.name.toLowerCase().includes(q)
+          || c.username.toLowerCase().includes(q)
+          || c.preview.toLowerCase().includes(q)
+          || String(c.chatId || "").includes(q)
       );
     }
     return [...list].sort((a, b) => {

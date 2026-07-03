@@ -388,7 +388,7 @@
       const [dataLoading,     setDataLoading]     = useState(false);
       const [notifOpen,       setNotifOpen]       = useState(false);
       const [profileOpen,     setProfileOpen]     = useState(false);
-      const [toast,           setToast]           = useState(null);
+      const [toast,           setToast]           = useState(null); // {msg, type}
       const [soundsConfig,    setSoundsConfig]    = useState({});
       const [soundEnabled,    setSoundEnabled]    = useState(true);
 
@@ -399,8 +399,8 @@
       const soundsConfigRef  = useRef({});
       const soundEnabledRef  = useRef(true);
 
-      function showToast(msg) {
-        setToast(msg);
+      function showToast(msg, type = "ok") {
+        setToast({ msg, type });
         setTimeout(() => setToast(null), 2500);
       }
 
@@ -545,7 +545,7 @@
               setConversations((prev) =>
                 prev.map((c) => {
                   if (c.id !== data.dialog_id) return c;
-                  if (data.message.kind === 'user' && soundEnabledRef.current) playSound(soundsConfigRef.current.new_message_url);
+                  if (data.message.kind === 'user' && soundEnabledRef.current && c.assignedOperator === currentOperator?.name) playSound(soundsConfigRef.current.new_message_url);
                   return { ...c, messages: [...c.messages, data.message] };
                 })
               );
@@ -659,11 +659,14 @@
 
       async function handleReply(dialog_id, text, fileArgs) {
         try {
-          await apiPost(`/api/dialogs/${dialog_id}/reply`, {
+          const res = await apiPost(`/api/dialogs/${dialog_id}/reply`, {
             text,
             operator_name: currentOperator?.name || "Оператор",
             ...(fileArgs || {}),
           });
+          if (res && res.delivered === false) {
+            showToast("⚠️ Сообщение сохранено, но не доставлено в Telegram", "warn");
+          }
         } catch (e) {
           console.error("Reply failed:", e);
           showToast("Ошибка отправки сообщения");
@@ -818,7 +821,7 @@
               <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast} currentOperator={currentOperator} />
             </div>
           </main>
-          <Toast msg={toast} />
+          <Toast msg={toast?.msg ?? toast} type={toast?.type} />
         </div>
       );
     }

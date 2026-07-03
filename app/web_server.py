@@ -44,6 +44,7 @@ _AUTOMATION_DEFAULTS = {
     "auto_handoff_enabled": False,
     "rating_enabled": False,
     "rating_message_text": "Оцените качество поддержки:",
+    "rating_thanks_text": "Спасибо за оценку! 🙏",
     "close_message_enabled": False,
     "close_message_text": "Спасибо за обращение! Если появятся вопросы — просто напишите нам.",
     "max_tickets_per_operator": 10,
@@ -204,6 +205,7 @@ class AutomationSettingsBody(BaseModel):
     auto_handoff_enabled: bool = False
     rating_enabled: bool = False
     rating_message_text: str = "Оцените качество поддержки:"
+    rating_thanks_text: str = "Спасибо за оценку! 🙏"
     close_message_enabled: bool = False
     close_message_text: str = ""
     max_tickets_per_operator: int = 10
@@ -424,15 +426,16 @@ def build_app(
         if dialog["status"] == "new":
             await db.update_status(dialog_id, "in_progress")
 
-        await n8n.send_manager_message(
+        delivered = await n8n.send_manager_message(
             dialog_id, dialog["chat_id"], body.text,
             file_url=body.file_url, file_type=body.file_type,
         )
+        await db.clear_unread(dialog_id)
 
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        return {"ok": True}
+        return {"ok": True, "delivered": delivered}
 
     @app.post("/api/dialogs/{dialog_id}/comment")
     async def add_comment(dialog_id: str, body: CommentBody, operator: dict = Depends(require_auth)):
@@ -561,6 +564,10 @@ def build_app(
         msg_row = await db.save_message(dialog_id, "system", "Диалог возвращён в очередь")
         await db.update_status(dialog_id, "new")
         await db.set_assigned_operator(dialog_id, None)
+        await db.update_operator_called(dialog_id, False)
+        await db.update_ai_enabled(dialog_id, True)
+        await db.sync_n8n_dialog_ai_status(dialog["chat_id"], True)
+        await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], True)
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
@@ -627,9 +634,6 @@ def build_app(
                 dialog_id = result["dialog"]["dialog_id"]
                 chat_id = result["dialog"]["chat_id"]
                 op_name = result["op_name"]
-                await db.update_ai_enabled(dialog_id, False)
-                await db.sync_n8n_dialog_ai_status(chat_id, False)
-                await n8n.notify_ai_toggled(dialog_id, chat_id, False)
                 msg_row = await db.save_message(dialog_id, "system",
                                                 f"Диалог назначен оператору {op_name}")
                 updated = await db.get_dialog(dialog_id)
@@ -915,15 +919,22 @@ def build_app(
             raise HTTPException(403, "Admin only")
         if not body.text.strip():
             raise HTTPException(400, "Текст не может быть пустым")
+        lock_key = "vpn_bot:broadcast_lock"
+        if await n8n.redis.get(lock_key):
+            raise HTTPException(429, "Рассылка уже выполняется")
+        await n8n.redis.set(lock_key, "1", ex=30)
         chat_ids = await db.get_all_chat_ids()
         sent = 0
         failed = 0
-        for cid in chat_ids:
-            try:
-                await n8n.send_to_user(cid, body.text)
-                sent += 1
-            except Exception:
-                failed += 1
+        try:
+            for cid in chat_ids:
+                ok = await n8n.send_to_user(cid, body.text)
+                if ok:
+                    sent += 1
+                else:
+                    failed += 1
+        finally:
+            await n8n.redis.delete(lock_key)
         # Rate-limiting (30 msg/sec Telegram limit) is handled by n8n — add a
         # 50 ms Wait node between iterations in the "Send to User" workflow.
         return {"sent": sent, "failed": failed, "total": len(chat_ids)}
