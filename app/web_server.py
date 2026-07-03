@@ -634,6 +634,9 @@ def build_app(
                 dialog_id = result["dialog"]["dialog_id"]
                 chat_id = result["dialog"]["chat_id"]
                 op_name = result["op_name"]
+                await db.update_ai_enabled(dialog_id, False)
+                await db.sync_n8n_dialog_ai_status(chat_id, False)
+                await n8n.notify_ai_toggled(dialog_id, chat_id, False)
                 msg_row = await db.save_message(dialog_id, "system",
                                                 f"Диалог назначен оператору {op_name}")
                 updated = await db.get_dialog(dialog_id)
