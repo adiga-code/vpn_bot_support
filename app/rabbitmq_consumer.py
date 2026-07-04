@@ -43,7 +43,13 @@ class RabbitMQConsumer:
             async for message in q_iter:
                 async with message.process(ignore_processed=True):
                     try:
-                        data = json.loads(message.body)
+                        raw = message.body
+                        try:
+                            data = json.loads(raw)
+                        except json.JSONDecodeError as je:
+                            preview = raw[:200].decode("utf-8", errors="replace")
+                            print(f"Consumer JSON error: {je} | body preview: {preview!r}")
+                            continue
                         msg_type = data.get("type")
                         print(f"Received {msg_type} dialog={data.get('dialog_id')}")
 
