@@ -63,6 +63,7 @@ services:
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
       - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./advanced.config:/etc/rabbitmq/advanced.config:ro
     networks:
       - default
       - shared
