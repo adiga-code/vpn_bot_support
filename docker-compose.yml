@@ -62,6 +62,7 @@ services:
       RABBITMQ_DEFAULT_PASS: vpnbot
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
     networks:
       - default
       - shared

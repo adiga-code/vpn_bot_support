@@ -129,6 +129,8 @@ def _fmt_message(row: dict) -> dict:
         "fileUrl": file_url,
         "operator": row.get("operator_name"),
         "time": _fmt_time(row.get("created_at")),
+        "deliveryStatus": row.get("delivery_status"),
+        "deliveryError": row.get("delivery_error"),
     }
 
 
@@ -429,7 +431,10 @@ def build_app(
         delivered = await n8n.send_manager_message(
             dialog_id, dialog["chat_id"], body.text,
             file_url=body.file_url, file_type=body.file_type,
+            message_id=msg_row["id"],
         )
+        if not delivered:
+            await db.update_message_delivery(msg_row["id"], "failed", "Очередь недоступна")
         await db.clear_unread(dialog_id)
 
         updated = await db.get_dialog(dialog_id)

@@ -146,6 +146,7 @@ class N8NClient:
         file_id: str = None,
         file_type: str = None,
         file_url: str = None,
+        message_id: int = None,
     ) -> bool:
         payload = {
             "type": "manager_message",
@@ -159,6 +160,8 @@ class N8NClient:
             payload["file_type"] = file_type
         if file_url:
             payload["file_url"] = file_url
+        if message_id is not None:
+            payload["message_id"] = message_id
         return await self._push(payload)
 
     async def notify_dialog_closed(self, dialog_id: str, chat_id: str, operator_name: str) -> None:

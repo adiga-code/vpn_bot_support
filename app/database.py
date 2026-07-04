@@ -213,12 +213,14 @@ class DatabaseManager:
             ("dialogs", "closed_at",            "TIMESTAMPTZ"),
             ("dialogs", "assigned_operator",    "TEXT"),
             # messages
-            ("messages", "kind",          "TEXT"),
-            ("messages", "text",          "TEXT"),
-            ("messages", "file_id",       "TEXT"),
-            ("messages", "file_type",     "TEXT"),
-            ("messages", "file_url",      "TEXT"),
-            ("messages", "operator_name", "TEXT"),
+            ("messages", "kind",            "TEXT"),
+            ("messages", "text",            "TEXT"),
+            ("messages", "file_id",         "TEXT"),
+            ("messages", "file_type",       "TEXT"),
+            ("messages", "file_url",        "TEXT"),
+            ("messages", "operator_name",   "TEXT"),
+            ("messages", "delivery_status", "TEXT DEFAULT 'pending'"),
+            ("messages", "delivery_error",  "TEXT"),
             # operators
             ("operators", "tg",            "TEXT"),
             ("operators", "tg_id",         "BIGINT"),
@@ -381,6 +383,12 @@ class DatabaseManager:
             dialog_id, kind, text, file_id, file_type, file_url, operator_name,
         )
         return dict(row)
+
+    async def update_message_delivery(self, message_id: int, status: str, error: str = None):
+        await self.pool.execute(
+            "UPDATE messages SET delivery_status=$1, delivery_error=$2 WHERE id=$3",
+            status, error, message_id,
+        )
 
     async def get_messages(self, dialog_id: str) -> list[dict]:
         rows = await self.pool.fetch(
