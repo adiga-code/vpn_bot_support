@@ -570,6 +570,18 @@
                 }
                 return [{ ...data.dialog, messages: [], tickets: [] }, ...prev];
               });
+            } else if (data.type === "message_status") {
+              setConversations((prev) => prev.map((c) => {
+                if (c.id !== data.dialog_id) return c;
+                return {
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === data.message_id
+                      ? { ...m, deliveryStatus: data.status, deliveryError: data.error }
+                      : m
+                  ),
+                };
+              }));
             } else if (data.type === "operator_status") {
               setOpsState((prev) =>
                 prev.map((o) => o.id === data.op_id ? { ...o, online: data.online, paused: data.paused ?? o.paused } : o)

@@ -53,6 +53,8 @@ class RabbitMQConsumer:
                             await self._handle_ai_response(data)
                         elif msg_type == "callback":
                             await self._handle_callback(data)
+                        elif msg_type == "delivery_confirmation":
+                            await self._handle_delivery_confirmation(data)
                         else:
                             print(f"Unknown type: {msg_type}")
                     except asyncio.CancelledError:
@@ -217,6 +219,22 @@ class RabbitMQConsumer:
                             await self.n8n.send_to_user(str(chat_id), thanks)
                 except ValueError:
                     pass
+
+    async def _handle_delivery_confirmation(self, data: dict):
+        message_id = data.get("message_id")
+        dialog_id  = data.get("dialog_id")
+        status     = data.get("status")
+        error      = data.get("error")
+        if not message_id or not status:
+            return
+        await self.db.update_message_delivery(int(message_id), status, error)
+        await self.ws.broadcast({
+            "type":       "message_status",
+            "dialog_id":  dialog_id,
+            "message_id": int(message_id),
+            "status":     status,
+            "error":      error,
+        })
 
     async def _auto_handoff(self, dialog_id: str, dialog: dict):
         print(f"[auto-handoff] dialog={dialog_id}")

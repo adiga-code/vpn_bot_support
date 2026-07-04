@@ -2,6 +2,16 @@
 
 const { useState: useStateD, useEffect: useEffectD, useRef: useRefD, useMemo: useMemoD } = React;
 
+function DeliveryStatus({ status }) {
+  if (!status || status === "failed") return null;
+  const delivered = status === "delivered";
+  return (
+    <span className={"ml-1 font-bold " + (delivered ? "text-[#4F8EF7]" : "text-[#6b7280]")}>
+      {delivered ? "✓✓" : "✓"}
+    </span>
+  );
+}
+
 function StarRating({ rating, size = "sm" }) {
   if (!rating) return null;
   const sz = size === "lg" ? "text-base" : "text-[11px]";
@@ -199,19 +209,27 @@ function MessageBubble({ msg, onImageClick }) {
   }
   if (msg.kind === "operator") {
     const hasFile = msg.fileType && msg.fileType !== "text";
+    const failed = msg.deliveryStatus === "failed";
+    const bubbleBorder = failed
+      ? "bg-[#A855F7]/15 border border-[#ef4444]/60 text-[#f1f1f5]"
+      : "bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5]";
     return (
       <div className="flex justify-end">
         <div className="max-w-[70%]">
           {hasFile
             ? <>
                 <FileContent msg={msg} side="right" onImageClick={onImageClick} />
-                {msg.text ? <div className="bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5] px-3.5 py-2 rounded-2xl rounded-tr-md text-sm leading-relaxed mt-1">{msg.text}</div> : null}
+                {msg.text ? <div className={bubbleBorder + " px-3.5 py-2 rounded-2xl rounded-tr-md text-sm leading-relaxed mt-1"}>{msg.text}</div> : null}
               </>
-            : <div className="bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5] px-3.5 py-2.5 rounded-2xl rounded-tr-md text-sm leading-relaxed">{msg.text}</div>
+            : <div className={bubbleBorder + " px-3.5 py-2.5 rounded-2xl rounded-tr-md text-sm leading-relaxed"}>{msg.text}</div>
           }
           <div className="text-[10px] text-[#6b7280] mt-1 mr-2 text-right">
             {msg.operator} · {msg.time}
+            <DeliveryStatus status={msg.deliveryStatus} />
           </div>
+          {failed && msg.deliveryError && (
+            <div className="text-[10px] text-[#ef4444] mt-0.5 mr-2 text-right">✗ {msg.deliveryError}</div>
+          )}
         </div>
       </div>
     );
