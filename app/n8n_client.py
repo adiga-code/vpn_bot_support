@@ -1,7 +1,9 @@
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+import aiohttp
 import aio_pika
 import aio_pika.abc
 import redis.asyncio as aioredis
@@ -44,6 +46,7 @@ class N8NClient:
         redis: aioredis.Redis,
         db: "DatabaseManager | None" = None,
     ):
+        self.settings = settings
         self._rmq = rmq
         self.redis = redis  # kept for KV ops: vpn_bot:ai_settings, vpn_bot:schedule
         self.db = db
@@ -59,6 +62,41 @@ class N8NClient:
     # ── Core push ─────────────────────────────────────────────────────────────
 
     async def _push(self, payload: dict) -> bool:
+        """Deliver an outgoing event to n8n.
+
+        Primary channel is the n8n Webhook (N8N_WEBHOOK_URL) — a plain HTTP
+        trigger, immune to the flaky RabbitMQ Trigger node. When the webhook
+        is not configured or fails after retries, falls back to RabbitMQ.
+        """
+        if self.settings.N8N_WEBHOOK_URL:
+            if await self._push_webhook(payload):
+                return True
+            print("[n8n] webhook delivery failed — falling back to RabbitMQ")
+        return await self._push_rmq(payload)
+
+    async def _push_webhook(self, payload: dict) -> bool:
+        headers = {}
+        if self.settings.N8N_API_KEY:
+            headers["X-API-Key"] = self.settings.N8N_API_KEY
+        for attempt in range(3):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        self.settings.N8N_WEBHOOK_URL,
+                        json=payload,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status < 300:
+                            return True
+                        print(f"[n8n] webhook HTTP {resp.status} (attempt {attempt + 1}/3)")
+            except Exception as e:
+                print(f"[n8n] webhook error: {e} (attempt {attempt + 1}/3)")
+            if attempt < 2:
+                await asyncio.sleep(2 ** attempt)
+        return False
+
+    async def _push_rmq(self, payload: dict) -> bool:
         try:
             ch = await self._get_channel()
             await ch.default_exchange.publish(
