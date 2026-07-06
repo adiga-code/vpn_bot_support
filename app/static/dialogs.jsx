@@ -2,6 +2,38 @@
 
 const { useState: useStateD, useEffect: useEffectD, useRef: useRefD, useMemo: useMemoD } = React;
 
+function fmtClock(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  return d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtDayLabel(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const now = new Date();
+  const day      = new Date(d.getFullYear(),   d.getMonth(),   d.getDate());
+  const today    = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffDays = Math.round((today - day) / 86400000);
+  if (diffDays === 0) return "Сегодня";
+  if (diffDays === 1) return "Вчера";
+  const opts = { day: "numeric", month: "long" };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString("ru-RU", opts);
+}
+
+function msgTime(msg) {
+  return msg.createdAt ? fmtClock(msg.createdAt) : msg.time;
+}
+
+function DaySeparator({ label }) {
+  return (
+    <div className="flex justify-center my-2">
+      <span className="text-[10px] text-[#6b7280] bg-[#1a1a24] border border-[#2a2a3a] rounded-full px-3 py-1">{label}</span>
+    </div>
+  );
+}
+
 function DeliveryStatus({ status }) {
   if (!status || status === "failed") return null;
   const delivered = status === "delivered";
@@ -169,7 +201,7 @@ function MessageBubble({ msg, onImageClick }) {
     return (
       <div className="flex justify-center my-2">
         <div className="text-[11px] text-[#6b7280] bg-[#1a1a24]/60 px-3 py-1 rounded-full">
-          {msg.text} · {msg.time}
+          {msg.text} · {msgTime(msg)}
         </div>
       </div>
     );
@@ -186,7 +218,7 @@ function MessageBubble({ msg, onImageClick }) {
               </>
             : <div className="bg-[#1a1a24] text-[#f1f1f5] px-3.5 py-2.5 rounded-2xl rounded-tl-md text-sm leading-relaxed">{msg.text}</div>
           }
-          <div className="text-[10px] text-[#6b7280] mt-1 ml-2">{msg.time}</div>
+          <div className="text-[10px] text-[#6b7280] mt-1 ml-2">{msgTime(msg)}</div>
         </div>
       </div>
     );
@@ -202,7 +234,7 @@ function MessageBubble({ msg, onImageClick }) {
             </div>
             {msg.text}
           </div>
-          <div className="text-[10px] text-[#6b7280] mt-1 ml-2">{msg.time}</div>
+          <div className="text-[10px] text-[#6b7280] mt-1 ml-2">{msgTime(msg)}</div>
         </div>
       </div>
     );
@@ -224,7 +256,7 @@ function MessageBubble({ msg, onImageClick }) {
             : <div className={bubbleBorder + " px-3.5 py-2.5 rounded-2xl rounded-tr-md text-sm leading-relaxed"}>{msg.text}</div>
           }
           <div className="text-[10px] text-[#6b7280] mt-1 mr-2 text-right">
-            {msg.operator} · {msg.time}
+            {msg.operator} · {msgTime(msg)}
             <DeliveryStatus status={msg.deliveryStatus} />
           </div>
           {failed && msg.deliveryError && (
@@ -244,7 +276,7 @@ function MessageBubble({ msg, onImageClick }) {
               <span className="text-[10px] text-[#eab308]/70 font-semibold uppercase tracking-wider">Комментарий</span>
             </div>
             <p className="text-sm text-[#f1f1f5]/90 leading-relaxed whitespace-pre-wrap">{msg.text}</p>
-            <p className="text-[10px] text-[#6b7280] mt-1.5 text-right">{msg.operator} · {msg.time}</p>
+            <p className="text-[10px] text-[#6b7280] mt-1.5 text-right">{msg.operator} · {msgTime(msg)}</p>
           </div>
         </div>
       </div>
@@ -697,9 +729,25 @@ function DialogsScreen({
                 {(active.messages || []).length === 0 && (
                   <div className="text-center text-xs text-[#6b7280] py-8">Загрузка сообщений...</div>
                 )}
-                {(active.messages || []).map((m) => (
-                  <MessageBubble key={m.id} msg={m} onImageClick={(url) => setLightboxUrl(url)} />
-                ))}
+                {(() => {
+                  let lastDay = null;
+                  return (active.messages || []).map((m) => {
+                    let sep = null;
+                    if (m.createdAt) {
+                      const label = fmtDayLabel(m.createdAt);
+                      if (label && label !== lastDay) {
+                        lastDay = label;
+                        sep = <DaySeparator label={label} />;
+                      }
+                    }
+                    return (
+                      <React.Fragment key={m.id}>
+                        {sep}
+                        <MessageBubble msg={m} onImageClick={(url) => setLightboxUrl(url)} />
+                      </React.Fragment>
+                    );
+                  });
+                })()}
               </div>
 
               {/* Composer */}

@@ -120,6 +120,9 @@ def _fmt_message(row: dict) -> dict:
     # handle legacy records where n8n put the URL into file_id
     if not file_url and file_id and str(file_id).startswith("http"):
         file_url, file_id = file_id, None
+    created = row.get("created_at")
+    if created and created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
     return {
         "id": row["id"],
         "kind": row["kind"],
@@ -129,6 +132,7 @@ def _fmt_message(row: dict) -> dict:
         "fileUrl": file_url,
         "operator": row.get("operator_name"),
         "time": _fmt_time(row.get("created_at")),
+        "createdAt": created.isoformat() if created else "",
         "deliveryStatus": row.get("delivery_status"),
         "deliveryError": row.get("delivery_error"),
     }
