@@ -30,14 +30,61 @@ function Avatar({ initials, color, size = 36, ring = false, photoUrl = null }) {
 
 function StatusBadge({ status }) {
   const map = {
-    new: { label: "Новый", cls: "bg-[#4F8EF7]/15 text-[#7BA8F9] border-[#4F8EF7]/30" },
+    ai: { label: "ИИ", cls: "bg-[#4F8EF7]/15 text-[#7BA8F9] border-[#4F8EF7]/30" },
+    queue: { label: "Очередь", cls: "bg-[#f97316]/15 text-[#f97316] border-[#f97316]/30" },
     in_progress: { label: "В работе", cls: "bg-[#eab308]/15 text-[#eab308] border-[#eab308]/30" },
+    waiting: { label: "Ожидание", cls: "bg-[#A855F7]/15 text-[#c084fc] border-[#A855F7]/30" },
     closed: { label: "Закрыт", cls: "bg-zinc-500/15 text-zinc-400 border-zinc-600/40" },
+    // legacy rows that predate the ai/queue/waiting model
+    new: { label: "Новый", cls: "bg-[#4F8EF7]/15 text-[#7BA8F9] border-[#4F8EF7]/30" },
   };
-  const cfg = map[status] || map.new;
+  const cfg = map[status] || map.queue;
   return (
     <span className={"inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium border " + cfg.cls}>
       {cfg.label}
+    </span>
+  );
+}
+
+// Waiting-reason label: why the ticket sits in «Ожидание»
+// operator_replied → blue «ждём ответ» (ball is on the client's side)
+// manual → red «клиент ждёт ответ» (operator paused it, client is owed an answer)
+function WaitingLabel({ reason }) {
+  if (!reason) return null;
+  const cfg = reason === "manual"
+    ? { label: "клиент ждёт ответ", cls: "bg-[#ef4444]/15 text-[#ef4444] border-[#ef4444]/30" }
+    : { label: "ждём ответ", cls: "bg-[#4F8EF7]/15 text-[#7BA8F9] border-[#4F8EF7]/30" };
+  return (
+    <span className={"inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium border whitespace-nowrap " + cfg.cls}>
+      {cfg.label}
+    </span>
+  );
+}
+
+// Accumulated time the ticket has spent «В работе» (SLA); ticks only while
+// slaStartedAt is set (i.e. the ticket is in_progress right now).
+function fmtSla(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const mm = String(m).padStart(2, "0");
+  const ss = String(sec).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function SlaTimer({ slaSeconds, slaStartedAt, now, className = "" }) {
+  const base = slaSeconds || 0;
+  const running = !!slaStartedAt;
+  const extra = running ? Math.max(0, ((now || Date.now()) - Date.parse(slaStartedAt)) / 1000) : 0;
+  const total = base + extra;
+  if (!running && total === 0) return null;
+  const cls = running ? "text-[#eab308]" : "text-zinc-500";
+  return (
+    <span className={"inline-flex items-center gap-1 text-[11px] font-medium tabular-nums " + cls + " " + className}
+          title="Время в работе (SLA)">
+      <Icon name="clock" className="w-3 h-3" />
+      {fmtSla(total)}
     </span>
   );
 }
@@ -127,4 +174,4 @@ function Toast({ msg, type = "ok" }) {
   );
 }
 
-Object.assign(window, { Avatar, StatusBadge, PlanBadge, SubStatus, Icon, Toast });
+Object.assign(window, { Avatar, StatusBadge, WaitingLabel, SlaTimer, fmtSla, PlanBadge, SubStatus, Icon, Toast });

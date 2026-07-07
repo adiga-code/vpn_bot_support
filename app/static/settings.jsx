@@ -783,17 +783,29 @@ function AutomationSection({ showToast }) {
 
       {/* Distribution settings */}
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl">
-        <div className="px-5 py-4">
-          <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">Распределение</div>
+        <div className="px-5 py-4 space-y-4">
+          <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold">Распределение</div>
           <div className="flex items-center gap-4">
             <div>
               <div className="text-sm text-[#f1f1f5]">Макс. тикетов на оператора</div>
-              <div className="text-xs text-[#6b7280] mt-0.5">Сверх лимита — тикеты идут в очередь</div>
+              <div className="text-xs text-[#6b7280] mt-0.5">Слот занимают только тикеты «В работе»; сверх лимита — очередь</div>
             </div>
             <input
               type="number" min="1" max="100"
               value={s.max_tickets_per_operator ?? 10}
               onChange={e => set("max_tickets_per_operator", Math.max(1, parseInt(e.target.value) || 1))}
+              className="w-20 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-1.5 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 text-center ml-auto"
+            />
+          </div>
+          <div className="flex items-center gap-4">
+            <div>
+              <div className="text-sm text-[#f1f1f5]">Грейс-период офлайна, сек</div>
+              <div className="text-xs text-[#6b7280] mt-0.5">Сколько ждать возвращения оператора, прежде чем передать его тикеты «В работе» другим</div>
+            </div>
+            <input
+              type="number" min="0" max="3600"
+              value={s.offline_grace_seconds ?? 60}
+              onChange={e => set("offline_grace_seconds", Math.max(0, parseInt(e.target.value) || 0))}
               className="w-20 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-1.5 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 text-center ml-auto"
             />
           </div>

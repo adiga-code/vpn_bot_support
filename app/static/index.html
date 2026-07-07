@@ -721,6 +721,14 @@
         }
       }
 
+      async function handleWait(dialog_id) {
+        try {
+          await apiPost(`/api/dialogs/${dialog_id}/wait`);
+        } catch (e) {
+          console.error("Wait failed:", e);
+        }
+      }
+
       async function handleTogglePause() {
         const newPaused = !(currentOperator?.paused ?? false);
         try {
@@ -820,6 +828,7 @@
                 onClose={handleClose}
                 onHandoff={handleHandoff}
                 onReopen={handleReopen}
+                onWait={handleWait}
                 onBillingAction={handleBillingAction}
                 currentOperator={currentOperator}
                 operators={opsState}

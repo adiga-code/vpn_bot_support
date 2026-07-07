@@ -12,6 +12,7 @@ from app.config import Settings
 from app.database import DatabaseManager
 from app.n8n_client import N8NClient
 from app.rabbitmq_consumer import RabbitMQConsumer
+from app.routing import RoutingEngine
 from app.servers import make_server_monitor
 from app.web_server import build_app
 from app.ws_manager import WebSocketManager
@@ -76,8 +77,9 @@ async def main():
     )
 
     chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
-    consumer = RabbitMQConsumer(rmq, db, ws_manager, n8n_client, chat_client)
-    app = build_app(settings, db, ws_manager, n8n_client, billing, server_monitor)
+    routing = RoutingEngine(db, ws_manager, n8n_client)
+    consumer = RabbitMQConsumer(rmq, db, ws_manager, n8n_client, routing, chat_client)
+    app = build_app(settings, db, ws_manager, n8n_client, routing, billing, server_monitor)
 
     # ── HTTP server ───────────────────────────────────────────────────────────
     config = uvicorn.Config(
@@ -95,6 +97,7 @@ async def main():
             server.serve(),
             consumer.consume(),
             server_monitor.run_forever(),
+            routing.sweep_forever(),
         )
     finally:
         await rmq.close()

@@ -14,8 +14,16 @@ from app.ai_client import make_chat_client
 from app.auth import create_token, decode_token, hash_password, verify_password
 from app.billing import BillingProvider
 from app.config import Settings
-from app.database import DatabaseManager, avatar_color, make_initials
+from app.database import DatabaseManager
 from app.kb import delete_from_qdrant, process_document
+from app.routing import AUTOMATION_DEFAULTS as _AUTOMATION_DEFAULTS, RoutingEngine
+from app.serializers import (
+    NOTIF_PREFS_DEFAULT as _NOTIF_PREFS_DEFAULT,
+    fmt_dialog as _fmt_dialog,
+    fmt_message as _fmt_message,
+    fmt_operator as _fmt_operator,
+    fmt_time as _fmt_time,
+)
 from app.storage import make_storage
 from app.summarizer import summarize_dialog
 from app.n8n_client import N8NClient
@@ -36,20 +44,6 @@ _AI_DEFAULTS = {
     "classification_enabled": False,
 }
 
-_NOTIF_PREFS_DEFAULT = {"new_dialog": True, "operator_called": True, "server_down": True, "sound_enabled": True}
-
-_AUTOMATION_DEFAULTS = {
-    "operator_button_enabled": False,
-    "operator_button_after_msgs": 3,
-    "auto_handoff_enabled": False,
-    "rating_enabled": False,
-    "rating_message_text": "Оцените качество поддержки:",
-    "rating_thanks_text": "Спасибо за оценку! 🙏",
-    "close_message_enabled": False,
-    "close_message_text": "Спасибо за обращение! Если появятся вопросы — просто напишите нам.",
-    "max_tickets_per_operator": 10,
-}
-
 _SCHEDULE_DEFAULTS = {
     "mon": {"enabled": True,  "from": "09:00", "to": "21:00"},
     "tue": {"enabled": True,  "from": "09:00", "to": "21:00"},
@@ -61,98 +55,8 @@ _SCHEDULE_DEFAULTS = {
 }
 
 
-# ── Formatters ────────────────────────────────────────────────────────────────
-
-def _fmt_time(dt: datetime) -> str:
-    if dt is None:
-        return ""
-    now = datetime.now(timezone.utc)
-    dt_utc = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
-    diff = now - dt_utc
-    if diff.days == 0:
-        return dt_utc.strftime("%H:%M")
-    if diff.days == 1:
-        return "Вчера"
-    return dt_utc.strftime("%d.%m")
-
-
-def _fmt_dialog(row: dict, tickets: list = None) -> dict:
-    did = row["dialog_id"]
-    name = row.get("user_name") or did
-    username = row.get("user_username") or f"@{row['chat_id']}"
-    return {
-        "id": did,
-        "chatId": row["chat_id"],
-        "name": name,
-        "username": username,
-        "tgId": row["chat_id"],
-        "initials": make_initials(name),
-        "avatarColor": avatar_color(did),
-        "status": row["status"],
-        "operatorCalled": row["operator_called"],
-        "unread": row["unread_count"],
-        "aiEnabled": row["ai_enabled"],
-        "plan": row.get("user_plan") or "Basic",
-        "subStatus": row.get("user_sub_status") or "active",
-        "nextPayment": row.get("user_next_payment") or "—",
-        "traffic": {
-            "used": float(row.get("user_traffic_used") or 0),
-            "total": float(row.get("user_traffic_total") or 100),
-        },
-        "lastPayment": {
-            "amount": row.get("last_payment_amount") or "—",
-            "date": row.get("last_payment_date") or "—",
-        },
-        "preview": row.get("last_message_text") or "",
-        "time": _fmt_time(row.get("last_message_time")),
-        "assignedOperator": row.get("assigned_operator"),
-        "updatedAt": row["updated_at"].isoformat() if row.get("updated_at") else "",
-        "rating": row.get("rating"),
-        "notes": row.get("user_notes") or "",
-        "photoUrl": row.get("user_photo_url") or None,
-        "tickets": tickets or [],
-    }
-
-
-def _fmt_message(row: dict) -> dict:
-    file_id = row.get("file_id")
-    file_url = row.get("file_url")
-    # handle legacy records where n8n put the URL into file_id
-    if not file_url and file_id and str(file_id).startswith("http"):
-        file_url, file_id = file_id, None
-    created = row.get("created_at")
-    if created and created.tzinfo is None:
-        created = created.replace(tzinfo=timezone.utc)
-    return {
-        "id": row["id"],
-        "kind": row["kind"],
-        "text": row.get("text") or "",
-        "fileId": file_id,
-        "fileType": row.get("file_type"),
-        "fileUrl": file_url,
-        "operator": row.get("operator_name"),
-        "time": _fmt_time(row.get("created_at")),
-        "createdAt": created.isoformat() if created else "",
-        "deliveryStatus": row.get("delivery_status"),
-        "deliveryError": row.get("delivery_error"),
-    }
-
-
-def _fmt_operator(op: dict) -> dict:
-    raw_prefs = op.get("notif_prefs")
-    notif_prefs = {**_NOTIF_PREFS_DEFAULT, **(json.loads(raw_prefs) if raw_prefs else {})}
-    return {
-        "id": op["id"],
-        "name": op["name"],
-        "tg": op["tg"],
-        "tgId": op.get("tg_id"),
-        "role": op["role"],
-        "initials": op.get("initials") or make_initials(op["name"]),
-        "color": op.get("color") or "#4F8EF7",
-        "online": op.get("online", False),
-        "paused": op.get("paused", False),
-        "notifPrefs": notif_prefs,
-    }
+# Formatters live in app.serializers; the _fmt_* aliases above keep the old
+# import surface (rabbitmq_consumer/redis_consumer import them from here).
 
 
 # ── Request bodies ────────────────────────────────────────────────────────────
@@ -215,6 +119,7 @@ class AutomationSettingsBody(BaseModel):
     close_message_enabled: bool = False
     close_message_text: str = ""
     max_tickets_per_operator: int = 10
+    offline_grace_seconds: int = 60
 
 class BroadcastBody(BaseModel):
     text: str
@@ -248,6 +153,7 @@ def build_app(
     db: DatabaseManager,
     ws: WebSocketManager,
     n8n: N8NClient,
+    routing: RoutingEngine,
     billing: BillingProvider,
     server_monitor: ServerMonitor,
 ) -> FastAPI:
@@ -429,8 +335,6 @@ def build_app(
         )
         preview = body.text or (f"[{body.file_type}]" if body.file_type else "—")
         await db.update_last_message(dialog_id, preview)
-        if dialog["status"] == "new":
-            await db.update_status(dialog_id, "in_progress")
 
         delivered = await n8n.send_manager_message(
             dialog_id, dialog["chat_id"], body.text,
@@ -441,9 +345,10 @@ def build_app(
             await db.update_message_delivery(msg_row["id"], "failed", "Очередь недоступна")
         await db.clear_unread(dialog_id)
 
-        updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        # Scenario 2: the answered ticket moves to waiting («ждём ответ»),
+        # SLA pauses, the slot frees up (broadcasts the updated dialog).
+        await routing.on_operator_reply(dialog, op_name)
         return {"ok": True, "delivered": delivered}
 
     @app.post("/api/dialogs/{dialog_id}/comment")
@@ -515,6 +420,9 @@ def build_app(
         await db.update_ai_enabled(dialog_id, new_value)
         await db.sync_n8n_dialog_ai_status(dialog["chat_id"], new_value)
         await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], new_value)
+        # Keep the status model coherent: AI back on while queued → «ИИ» section;
+        # AI off while unattended in «ИИ» → escalate to humans.
+        await routing.on_ai_toggled(dialog_id, new_value)
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         return {"ai_enabled": new_value}
@@ -525,18 +433,9 @@ def build_app(
         if not dialog:
             raise HTTPException(404)
         op_name = body.operator_name or operator["name"] or "Оператор"
-        msg_row = await db.save_message(dialog_id, "system", f"Диалог взят в работу оператором {op_name}")
-        await db.update_status(dialog_id, "in_progress")
-        await db.update_operator_called(dialog_id, True)
-        await db.set_assigned_operator(dialog_id, op_name)
-        await db.update_ai_enabled(dialog_id, False)
-        await db.sync_n8n_dialog_ai_status(dialog["chat_id"], False)
-        await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], False)
-        updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        username = updated.get("user_username") or dialog_id
-        await n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+        updated = await routing.take_in_work(dialog_id, op_name)
+        if not updated:
+            raise HTTPException(400, "Dialog is closed")
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/reopen-closed")
@@ -549,17 +448,8 @@ def build_app(
         active = await db.get_active_dialog_by_chat_id(dialog["chat_id"], exclude_dialog_id=dialog_id)
         if active:
             return JSONResponse(status_code=409, content={"active_dialog_id": active["dialog_id"]})
-        msg_row = await db.save_message(dialog_id, "system", "Диалог переоткрыт оператором")
-        await db.pool.execute(
-            """UPDATE dialogs SET status='new', closed_at=NULL, assigned_operator=NULL,
-               operator_called=FALSE, updated_at=NOW() WHERE dialog_id=$1""",
-            dialog_id,
-        )
-        await db.sync_n8n_dialog_status(dialog["chat_id"], "active")
-        updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        asyncio.create_task(_drain_queue_bg())
+        # → queue, unassigned; AI stays off (the ticket had been escalated)
+        await routing.reopen_closed(dialog_id, dialog["chat_id"])
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/reopen")
@@ -569,19 +459,22 @@ def build_app(
             raise HTTPException(404)
         if dialog["status"] == "closed":
             raise HTTPException(400, "Cannot reopen closed dialog")
-        old_op = dialog.get("assigned_operator")
-        msg_row = await db.save_message(dialog_id, "system", "Диалог возвращён в очередь")
-        await db.update_status(dialog_id, "new")
-        await db.set_assigned_operator(dialog_id, None)
-        await db.update_operator_called(dialog_id, False)
-        await db.update_ai_enabled(dialog_id, True)
-        await db.sync_n8n_dialog_ai_status(dialog["chat_id"], True)
-        await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], True)
-        updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        if old_op:
-            asyncio.create_task(_drain_queue_bg())
+        # → queue for another operator; the AI is NOT re-enabled — the ticket
+        # was already escalated (use the AI toggle to hand it back to the bot).
+        await routing.return_to_queue(dialog_id)
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/wait")
+    async def wait_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
+        """Manual «В ожидание»: pause an in_progress ticket (red label
+        «клиент ждёт ответ») while the operator waits for the team."""
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        try:
+            await routing.set_waiting_manual(dialog_id, operator["name"])
+        except ValueError:
+            raise HTTPException(400, "Only in_progress tickets can be paused")
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/transfer")
@@ -594,17 +487,7 @@ def build_app(
         target = await db.get_operator_by_name(body.operator_name)
         if not target:
             raise HTTPException(404, "Target operator not found")
-        old_op = dialog.get("assigned_operator")
-        await db.set_assigned_operator(dialog_id, body.operator_name)
-        if dialog["status"] == "new":
-            await db.update_status(dialog_id, "in_progress")
-        msg_row = await db.save_message(dialog_id, "system",
-                                        f"Тикет передан оператору {body.operator_name}")
-        updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        if old_op and old_op != body.operator_name:
-            asyncio.create_task(_drain_queue_bg())
+        await routing.transfer(dialog_id, body.operator_name)
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/close")
@@ -612,14 +495,8 @@ def build_app(
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
             raise HTTPException(404)
-        msg_row = await db.save_message(dialog_id, "system", "Диалог закрыт оператором")
-        await db.update_status(dialog_id, "closed")
-        await db.update_operator_called(dialog_id, False)
-        updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        await db.sync_n8n_dialog_status(dialog["chat_id"], "closed")
-        await n8n.notify_dialog_closed(dialog_id, dialog["chat_id"], operator["name"])
+        # Transition + system message + broadcasts + n8n sync + queue drain
+        await routing.close(dialog_id, dialog["chat_id"], operator["name"])
         if chat_client:
             asyncio.create_task(_summarize_dialog_bg(dialog_id))
         automation = await db.get_setting_json("automation", _AUTOMATION_DEFAULTS)
@@ -628,32 +505,7 @@ def build_app(
         if automation.get("rating_enabled"):
             rating_text = automation.get("rating_message_text") or "Оцените качество поддержки:"
             asyncio.create_task(n8n.send_rating_request(dialog["chat_id"], dialog_id, rating_text))
-        asyncio.create_task(_drain_queue_bg())
         return {"ok": True}
-
-    async def _drain_queue_bg():
-        """Assign all queued dialogs to available operators (globally, not per-operator)."""
-        try:
-            automation = await db.get_setting_json("automation", _AUTOMATION_DEFAULTS)
-            max_tickets = int(automation.get("max_tickets_per_operator") or 10)
-            while True:
-                result = await db.claim_next_assignment(max_tickets)
-                if not result:
-                    return
-                dialog_id = result["dialog"]["dialog_id"]
-                chat_id = result["dialog"]["chat_id"]
-                op_name = result["op_name"]
-                await db.update_ai_enabled(dialog_id, False)
-                await db.sync_n8n_dialog_ai_status(chat_id, False)
-                await n8n.notify_ai_toggled(dialog_id, chat_id, False)
-                msg_row = await db.save_message(dialog_id, "system",
-                                                f"Диалог назначен оператору {op_name}")
-                updated = await db.get_dialog(dialog_id)
-                await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
-                                    "message": _fmt_message(msg_row)})
-                await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        except Exception as e:
-            print(f"[drain_queue] error: {e}")
 
     async def _summarize_dialog_bg(dialog_id: str):
         try:
@@ -748,7 +600,7 @@ def build_app(
             "paused": body.paused,
         })
         if not body.paused:
-            asyncio.create_task(_drain_queue_bg())
+            asyncio.create_task(routing.drain())
         return {"ok": True, "paused": body.paused}
 
     @app.post("/api/operators")
@@ -908,7 +760,9 @@ def build_app(
 
     @app.get("/api/settings/automation")
     async def get_automation(operator: dict = Depends(require_auth)):
-        return await db.get_setting_json("automation", _AUTOMATION_DEFAULTS)
+        stored = await db.get_setting_json("automation", None) or {}
+        # merge so settings saved before new keys existed still expose defaults
+        return {**_AUTOMATION_DEFAULTS, **stored}
 
     @app.put("/api/settings/automation")
     async def save_automation(body: AutomationSettingsBody, operator: dict = Depends(require_auth)):
@@ -1004,9 +858,11 @@ def build_app(
         if went_online:
             op = await db.get_operator(op_id)
             await db.set_operator_online(op_id, True)
+            # back within the grace period — cancel the offline timer
+            await db.set_operator_offline_since(op_id, False)
             await ws.broadcast({"type": "operator_status", "op_id": op_id, "online": True, "paused": op.get("paused", False) if op else False})
             if op:
-                asyncio.create_task(_drain_queue_bg())
+                asyncio.create_task(routing.drain())
         try:
             while True:
                 text = await websocket.receive_text()
@@ -1016,6 +872,9 @@ def build_app(
             departed_id, went_offline = ws.disconnect(websocket)
             if went_offline and departed_id:
                 await db.set_operator_online(departed_id, False)
+                # start the offline grace timer; the routing sweeper releases
+                # the operator's in_progress tickets when it expires
+                await db.set_operator_offline_since(departed_id, True)
                 await ws.broadcast({"type": "operator_status", "op_id": departed_id, "online": False, "paused": False})
 
     return app
