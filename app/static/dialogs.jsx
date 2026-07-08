@@ -427,14 +427,25 @@ function DialogsScreen({
     }
   }, [active?.id, active?.messages?.length]);
 
-  // Sections per view: «Все» — the whole pipeline, «Мои» — only own tickets
+  // Sections per view: «Все» — the whole pipeline, «Мои» — only own tickets.
+  // «Все» shows 3 main tabs + an overflow menu («ещё») with ИИ and Закрытые.
   const SECTION_STATUS = { ai: "ai", queue: "queue", wip: "in_progress", waiting: "waiting", closed: "closed" };
+  const SECTION_META = {
+    wip:     { label: "В работе", icon: "📁" },
+    waiting: { label: "Ожидание", icon: "⏸️" },
+    queue:   { label: "Очередь",  icon: "⌛" },
+    ai:      { label: "ИИ",       icon: "🤖" },
+    closed:  { label: "Закрытые", icon: "✅" },
+  };
   const MY_SECTIONS  = ["wip", "waiting", "closed"];
-  const ALL_SECTIONS = ["ai", "queue", "wip", "waiting", "closed"];
-  const sections = view === "my" ? MY_SECTIONS : ALL_SECTIONS;
+  const ALL_SECTIONS = ["wip", "waiting", "queue", "ai", "closed"];
+  const ALL_MAIN = ["wip", "waiting", "queue"];
+  const ALL_MORE = ["ai", "closed"];
+  const [moreOpen, setMoreOpen] = useStateD(false);
 
   function switchView(v) {
     setView(v);
+    setMoreOpen(false);
     const valid = v === "my" ? MY_SECTIONS : ALL_SECTIONS;
     if (!valid.includes(filter)) setFilter("wip");
   }
@@ -572,8 +583,6 @@ function DialogsScreen({
     }
   }
 
-  const SECTION_LABELS = { ai: "ИИ", queue: "Очередь", wip: "В работе", waiting: "Ожидание", closed: "Закрытые" };
-  const filterTabs = sections.map((id) => ({ id, label: SECTION_LABELS[id], count: counts[id] }));
 
   return (
     <>
@@ -600,22 +609,68 @@ function DialogsScreen({
                 className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg pl-9 pr-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50"
               />
             </div>
-            <div className="flex gap-1 text-[11px] flex-wrap">
-              {filterTabs.map((t) => (
+            <div className="flex gap-1 text-[11px] relative">
+              {(view === "my" ? MY_SECTIONS : ALL_MAIN).map((id) => (
                 <button
-                  key={t.id}
-                  onClick={() => setFilter(t.id)}
+                  key={id}
+                  onClick={() => { setFilter(id); setMoreOpen(false); }}
                   className={
-                    "flex-1 px-1.5 py-1.5 rounded-md font-medium transition whitespace-nowrap " +
-                    (filter === t.id
+                    "flex-1 px-1 py-1.5 rounded-md font-medium transition flex flex-col items-center gap-0.5 " +
+                    (filter === id
                       ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
                       : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
                   }
                 >
-                  {t.label}
-                  <span className="ml-1 opacity-60">{t.count}</span>
+                  <span className="text-sm leading-none">{SECTION_META[id].icon}</span>
+                  <span className="whitespace-nowrap">{SECTION_META[id].label}</span>
+                  <span className="opacity-60">{counts[id]}</span>
                 </button>
               ))}
+              {view === "all" && (
+                <>
+                  <button
+                    onClick={() => setMoreOpen((v) => !v)}
+                    title="Ещё разделы"
+                    className={
+                      "px-2 py-1.5 rounded-md font-medium transition flex flex-col items-center justify-center gap-0.5 " +
+                      (ALL_MORE.includes(filter)
+                        ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
+                        : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
+                    }
+                  >
+                    {ALL_MORE.includes(filter) ? (
+                      <>
+                        <span className="text-sm leading-none">{SECTION_META[filter].icon}</span>
+                        <span className="whitespace-nowrap">{SECTION_META[filter].label}</span>
+                        <span className="opacity-60">{counts[filter]}</span>
+                      </>
+                    ) : (
+                      <span className="text-base leading-none px-0.5">⋯</span>
+                    )}
+                  </button>
+                  {moreOpen && (
+                    <>
+                      <div className="fixed inset-0 z-10" onClick={() => setMoreOpen(false)}></div>
+                      <div className="absolute right-0 top-full mt-1 z-20 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg shadow-2xl py-1 min-w-[150px]">
+                        {ALL_MORE.map((id) => (
+                          <button
+                            key={id}
+                            onClick={() => { setFilter(id); setMoreOpen(false); }}
+                            className={
+                              "w-full text-left px-3 py-2 flex items-center gap-2 transition " +
+                              (filter === id ? "text-[#7BA8F9]" : "text-[#d1d1d8] hover:bg-[#2a2a3a]/50")
+                            }
+                          >
+                            <span>{SECTION_META[id].icon}</span>
+                            <span>{SECTION_META[id].label}</span>
+                            <span className="opacity-60 ml-auto">{counts[id]}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
             </div>
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1 scrollbar-thin">
