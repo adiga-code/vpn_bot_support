@@ -57,11 +57,8 @@ function StarRating({ rating, size = "sm" }) {
 }
 
 function ConvCard({ conv, active, onClick }) {
-  const statusDot = {
-    new: "bg-[#4F8EF7]",
-    in_progress: "bg-[#eab308]",
-    closed: "bg-zinc-500",
-  }[conv.status];
+  // escalated but not yet served — grabs attention in «ИИ»/«Очередь»
+  const calledUnserved = conv.operatorCalled && ["ai", "queue"].includes(conv.status);
   return (
     <button
       onClick={onClick}
@@ -69,7 +66,7 @@ function ConvCard({ conv, active, onClick }) {
         "w-full text-left p-3 rounded-lg transition relative group " +
         (active
           ? "bg-[#1a1a24] ring-1 ring-[#4F8EF7]/40"
-          : conv.operatorCalled && conv.status === "new" && !conv.assignedOperator
+          : calledUnserved
           ? "bg-[#1a0a0a] ring-1 ring-[#ef4444]/50 hover:bg-[#1a1a24]/60"
           : conv.status === "in_progress" && conv.unread > 0
           ? "bg-[#1a1a18] ring-1 ring-[#eab308]/30 hover:bg-[#1a1a24]/60"
@@ -77,7 +74,7 @@ function ConvCard({ conv, active, onClick }) {
       }
     >
       {active && <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-[#4F8EF7] rounded-r"></div>}
-      {!active && conv.operatorCalled && conv.status === "new" && !conv.assignedOperator && (
+      {!active && calledUnserved && (
         <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-[#ef4444] rounded-r animate-pulse"></div>
       )}
       {!active && conv.status === "in_progress" && conv.unread > 0 && (
@@ -102,28 +99,26 @@ function ConvCard({ conv, active, onClick }) {
           </div>
           <div className="text-[10px] text-[#6b7280]/70 truncate -mt-0.5 mb-0.5">{conv.username}</div>
           <div className="text-xs text-[#6b7280] truncate mb-1.5">{conv.preview}</div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <StatusBadge status={conv.status} />
+            {conv.status === "waiting" && <WaitingLabel reason={conv.waitingReason} />}
+            <SlaTimer slaSeconds={conv.slaSeconds} slaStartedAt={conv.slaStartedAt} />
             {conv.operatorCalled && (
               <span
                 title="Вызван оператор"
                 className={"inline-flex items-center justify-center w-4 h-4 rounded-full text-[#ef4444] " +
-                  (conv.status === "new" && !conv.assignedOperator
-                    ? "bg-[#ef4444]/25 animate-pulse"
-                    : "bg-[#ef4444]/15")}
+                  (calledUnserved ? "bg-[#ef4444]/25 animate-pulse" : "bg-[#ef4444]/15")}
               >
                 <Icon name="bellRing" className="w-2.5 h-2.5" strokeWidth={2.5} />
               </span>
             )}
           </div>
-          {conv.assignedOperator ? (
+          {conv.assignedOperator && (
             <div className="flex items-center gap-1 mt-1 text-[10px] text-[#6b7280]">
               <Icon name="user" className="w-2.5 h-2.5 shrink-0" />
               <span className="truncate">{conv.assignedOperator}</span>
             </div>
-          ) : conv.status !== "closed" ? (
-            <div className="mt-1 text-[10px] text-[#6b7280]/60">В очереди</div>
-          ) : null}
+          )}
         </div>
       </div>
     </button>
@@ -394,13 +389,13 @@ function DialogsScreen({
   conversations, setConversations,
   activeId, setActiveId,
   showToast,
-  onReply, onToggleAI, onClose, onHandoff, onReopen, onBillingAction,
+  onReply, onToggleAI, onClose, onHandoff, onReopen, onWait, onBillingAction,
   currentOperator, operators,
   servers,
 }) {
   const [searchQ, setSearchQ] = useStateD("");
   const [view,   setView]   = useStateD("my");  // "my" | "all"
-  const [filter, setFilter] = useStateD("all");
+  const [filter, setFilter] = useStateD("wip");
   const [draft, setDraft] = useStateD("");
   const [mode, setMode] = useStateD("message"); // "message" | "comment"
   const [aiEnabled, setAiEnabled] = useStateD(true);
@@ -426,17 +421,38 @@ function DialogsScreen({
     }
   }, [active?.id, active?.messages?.length]);
 
-  const filtered = useMemoD(() => {
-    let list = view === "my"
+  // Sections per view: «Все» — the whole pipeline, «Мои» — only own tickets.
+  // «Все» shows 3 main tabs + an overflow menu («ещё») with ИИ and Закрытые.
+  const SECTION_STATUS = { ai: "ai", queue: "queue", wip: "in_progress", waiting: "waiting", closed: "closed" };
+  const SECTION_META = {
+    wip:     { label: "В работе", icon: "📁" },
+    waiting: { label: "Ожидание", icon: "⏸️" },
+    queue:   { label: "Очередь",  icon: "⌛" },
+    ai:      { label: "ИИ",       icon: "🤖" },
+    closed:  { label: "Закрытые", icon: "✅" },
+  };
+  const MY_SECTIONS  = ["wip", "waiting", "closed"];
+  const ALL_SECTIONS = ["wip", "waiting", "queue", "ai", "closed"];
+  const ALL_MAIN = ["wip", "waiting", "queue"];
+  const ALL_MORE = ["ai", "closed"];
+  const [moreOpen, setMoreOpen] = useStateD(false);
+
+  function switchView(v) {
+    setView(v);
+    setMoreOpen(false);
+    const valid = v === "my" ? MY_SECTIONS : ALL_SECTIONS;
+    if (!valid.includes(filter)) setFilter("wip");
+  }
+
+  const baseList = useMemoD(() =>
+    view === "my"
       ? conversations.filter((c) => c.assignedOperator === currentOperator?.name)
-      : conversations;
-    if (filter === "closed") {
-      list = list.filter((c) => c.status === "closed");
-    } else {
-      list = list.filter((c) => c.status !== "closed");
-      if (filter === "open") list = list.filter((c) => c.status === "new");
-      if (filter === "wip") list = list.filter((c) => c.status === "in_progress");
-    }
+      : conversations,
+    [conversations, view, currentOperator]
+  );
+
+  const filtered = useMemoD(() => {
+    let list = baseList.filter((c) => c.status === SECTION_STATUS[filter]);
     if (searchQ.trim()) {
       const q = searchQ.toLowerCase();
       list = list.filter(
@@ -451,21 +467,15 @@ function DialogsScreen({
       const tb = b.updatedAt || "";
       return tb.localeCompare(ta);
     });
-  }, [conversations, view, filter, searchQ, currentOperator]);
+  }, [baseList, filter, searchQ]);
 
-  const baseList = useMemoD(() =>
-    view === "my"
-      ? conversations.filter((c) => c.assignedOperator === currentOperator?.name)
-      : conversations,
-    [conversations, view, currentOperator]
-  );
-
-  const counts = useMemoD(() => ({
-    all: baseList.filter((c) => c.status !== "closed").length,
-    open: baseList.filter((c) => c.status === "new").length,
-    wip: baseList.filter((c) => c.status === "in_progress").length,
-    closed: baseList.filter((c) => c.status === "closed").length,
-  }), [baseList]);
+  const counts = useMemoD(() => {
+    const res = {};
+    for (const id of ALL_SECTIONS) {
+      res[id] = baseList.filter((c) => c.status === SECTION_STATUS[id]).length;
+    }
+    return res;
+  }, [baseList]);
 
   async function handleTransfer(operatorName) {
     setShowTransfer(false);
@@ -524,6 +534,12 @@ function DialogsScreen({
     if (onReopen) onReopen(active.id);
   }
 
+  function waitDialog() {
+    if (!active) return;
+    showToast("Тикет переведён в ожидание");
+    if (onWait) onWait(active.id);
+  }
+
   function closeDialog() {
     if (!active) return;
     setConfirmClose(false);
@@ -561,12 +577,6 @@ function DialogsScreen({
     }
   }
 
-  const filterTabs = [
-    { id: "all", label: "Все", count: counts.all },
-    { id: "open", label: "Открытые", count: counts.open },
-    { id: "wip", label: "В работе", count: counts.wip },
-    { id: "closed", label: "Закрытые", count: counts.closed },
-  ];
 
   return (
     <>
@@ -577,7 +587,7 @@ function DialogsScreen({
             {/* Мои / Все */}
             <div className="flex bg-[#0d0d12] rounded-lg p-0.5 gap-0.5">
               {[["my", "Мои"], ["all", "Все"]].map(([v, label]) => (
-                <button key={v} onClick={() => setView(v)}
+                <button key={v} onClick={() => switchView(v)}
                   className={"flex-1 py-1.5 rounded-md text-xs font-medium transition " +
                     (view === v ? "bg-[#4F8EF7] text-white" : "text-[#6b7280] hover:text-[#f1f1f5]")}>
                   {label}
@@ -593,22 +603,68 @@ function DialogsScreen({
                 className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg pl-9 pr-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50"
               />
             </div>
-            <div className="flex gap-1 text-[11px]">
-              {filterTabs.map((t) => (
+            <div className="flex gap-1 text-[11px] relative">
+              {(view === "my" ? MY_SECTIONS : ALL_MAIN).map((id) => (
                 <button
-                  key={t.id}
-                  onClick={() => setFilter(t.id)}
+                  key={id}
+                  onClick={() => { setFilter(id); setMoreOpen(false); }}
                   className={
-                    "flex-1 px-1.5 py-1.5 rounded-md font-medium transition " +
-                    (filter === t.id
+                    "flex-1 px-1 py-1.5 rounded-md font-medium transition flex flex-col items-center gap-0.5 " +
+                    (filter === id
                       ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
                       : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
                   }
                 >
-                  {t.label}
-                  <span className="ml-1 opacity-60">{t.count}</span>
+                  <span className="text-sm leading-none">{SECTION_META[id].icon}</span>
+                  <span className="whitespace-nowrap">{SECTION_META[id].label}</span>
+                  <span className="opacity-60">{counts[id]}</span>
                 </button>
               ))}
+              {view === "all" && (
+                <>
+                  <button
+                    onClick={() => setMoreOpen((v) => !v)}
+                    title="Ещё разделы"
+                    className={
+                      "px-2 py-1.5 rounded-md font-medium transition flex flex-col items-center justify-center gap-0.5 " +
+                      (ALL_MORE.includes(filter)
+                        ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
+                        : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
+                    }
+                  >
+                    {ALL_MORE.includes(filter) ? (
+                      <>
+                        <span className="text-sm leading-none">{SECTION_META[filter].icon}</span>
+                        <span className="whitespace-nowrap">{SECTION_META[filter].label}</span>
+                        <span className="opacity-60">{counts[filter]}</span>
+                      </>
+                    ) : (
+                      <span className="text-base leading-none px-0.5">⋯</span>
+                    )}
+                  </button>
+                  {moreOpen && (
+                    <>
+                      <div className="fixed inset-0 z-10" onClick={() => setMoreOpen(false)}></div>
+                      <div className="absolute right-0 top-full mt-1 z-20 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg shadow-2xl py-1 min-w-[150px]">
+                        {ALL_MORE.map((id) => (
+                          <button
+                            key={id}
+                            onClick={() => { setFilter(id); setMoreOpen(false); }}
+                            className={
+                              "w-full text-left px-3 py-2 flex items-center gap-2 transition " +
+                              (filter === id ? "text-[#7BA8F9]" : "text-[#d1d1d8] hover:bg-[#2a2a3a]/50")
+                            }
+                          >
+                            <span>{SECTION_META[id].icon}</span>
+                            <span>{SECTION_META[id].label}</span>
+                            <span className="opacity-60 ml-auto">{counts[id]}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
             </div>
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1 scrollbar-thin">
@@ -633,12 +689,14 @@ function DialogsScreen({
                     <div className="flex items-center gap-2">
                       <div className="font-medium text-[#f1f1f5] truncate">{active.name}</div>
                       <StatusBadge status={active.status} />
+                      {active.status === "waiting" && <WaitingLabel reason={active.waitingReason} />}
+                      <SlaTimer slaSeconds={active.slaSeconds} slaStartedAt={active.slaStartedAt} />
                     </div>
                     <div className="text-xs text-[#6b7280]">{active.username} · ID {active.tgId}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {active.status === "new" && (
+                  {["ai", "queue"].includes(active.status) && (
                     <button
                       onClick={handoffToOperator}
                       className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#A855F7]/15 text-[#C084FC] border border-[#A855F7]/30 hover:bg-[#A855F7]/25 transition flex items-center gap-1.5"
@@ -647,7 +705,7 @@ function DialogsScreen({
                       Взять в работу
                     </button>
                   )}
-                  {active.status === "in_progress" && (
+                  {["in_progress", "waiting"].includes(active.status) && (
                     <>
                       {active.assignedOperator && (
                         <span className="flex items-center gap-1.5 text-xs text-[#6b7280] px-2">
@@ -663,6 +721,16 @@ function DialogsScreen({
                         Вернуть в очередь
                       </button>
                     </>
+                  )}
+                  {active.status === "in_progress" && (
+                    <button
+                      onClick={waitDialog}
+                      title="Перевести в «Ожидание» (клиент ждёт ответ)"
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#ef4444]/10 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/20 transition flex items-center gap-1.5"
+                    >
+                      <Icon name="clock" className="w-3.5 h-3.5" />
+                      В ожидание
+                    </button>
                   )}
                   {active.status !== "closed" && (
                     <button

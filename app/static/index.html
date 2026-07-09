@@ -526,6 +526,16 @@
 
           ws.onopen = () => {
             pongPending = false;
+            // The connect-time queue drain can reassign dialogs between the
+            // initial GET snapshot and this socket opening (a slow GET can
+            // even overwrite an already-received broadcast) — re-sync once,
+            // keeping locally loaded messages.
+            apiGet("/api/dialogs").then((fresh) => {
+              setConversations((prev) => fresh.map((d) => {
+                const old = prev.find((c) => c.id === d.id);
+                return { ...d, messages: old?.messages || [], tickets: old?.tickets || [] };
+              }));
+            }).catch(() => {});
             pingInterval = setInterval(() => {
               if (pongPending) {
                 ws.close();
@@ -721,6 +731,14 @@
         }
       }
 
+      async function handleWait(dialog_id) {
+        try {
+          await apiPost(`/api/dialogs/${dialog_id}/wait`);
+        } catch (e) {
+          console.error("Wait failed:", e);
+        }
+      }
+
       async function handleTogglePause() {
         const newPaused = !(currentOperator?.paused ?? false);
         try {
@@ -820,6 +838,7 @@
                 onClose={handleClose}
                 onHandoff={handleHandoff}
                 onReopen={handleReopen}
+                onWait={handleWait}
                 onBillingAction={handleBillingAction}
                 currentOperator={currentOperator}
                 operators={opsState}

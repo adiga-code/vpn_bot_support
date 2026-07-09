@@ -7,18 +7,24 @@ from app.ai_client import ChatClient
 from app.classifier import classify_message
 from app.database import DatabaseManager
 from app.n8n_client import N8NClient
-from app.web_server import _fmt_dialog, _fmt_message
+from app.routing import RoutingEngine
+from app.serializers import fmt_dialog as _fmt_dialog, fmt_message as _fmt_message
 from app.ws_manager import WebSocketManager
 
 
 class RedisConsumer:
-    """Reads inbound n8n events from the Redis queue and pushes them to the UI via WebSocket."""
+    """Reads inbound n8n events from the Redis queue and pushes them to the UI via WebSocket.
 
-    def __init__(self, redis: aioredis.Redis, db: DatabaseManager, ws: WebSocketManager, n8n: N8NClient, chat_client: ChatClient | None = None):
+    NOTE: not wired in main.py (RabbitMQConsumer is the live path). Keep the
+    handlers in lockstep with app/rabbitmq_consumer.py or delete this module.
+    """
+
+    def __init__(self, redis: aioredis.Redis, db: DatabaseManager, ws: WebSocketManager, n8n: N8NClient, routing: RoutingEngine, chat_client: ChatClient | None = None):
         self.redis = redis
         self.db = db
         self.ws = ws
         self.n8n = n8n
+        self.routing = routing
         self.chat_client = chat_client
 
     # ── Main loop ─────────────────────────────────────────────────────────────
@@ -99,9 +105,6 @@ class RedisConsumer:
 
         if is_new:
             await self.db.sync_n8n_dialog_status(chat_id, "active")
-            automation = await self.db.get_setting_json("automation", {})
-            max_tickets = int(automation.get("max_tickets_per_operator") or 10)
-            await self.db.auto_assign_dialog(dialog_id, max_tickets)
 
         updated = await self.db.get_dialog(dialog_id)
         username = updated.get("user_username") or dialog_id
@@ -118,8 +121,20 @@ class RedisConsumer:
         else:
             await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
 
-        if operator_called:
-            await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+        # ── Routing ──
+        # AI dialogs stay in the «ИИ» section unassigned — no eager pre-assign.
+        if operator_called and updated["status"] == "ai":
+            # the client asked for a human → escalate (notifies operator_called)
+            await self.routing.handoff_from_ai(dialog_id)
+        else:
+            if operator_called:
+                await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+            if is_new and updated["status"] == "queue":
+                # AI disabled on the bot side → route straight to operators
+                await self.routing.assign_or_queue(dialog_id)
+            elif not is_new:
+                # scenario 3/5: a client reply wakes a waiting ticket
+                await self.routing.on_client_message(updated)
 
         # Кнопка вызова оператора после N-го сообщения
         automation = await self.db.get_setting_json("automation", {})
@@ -177,19 +192,12 @@ class RedisConsumer:
             dialog = await self.db.get_dialog(dialog_id)
             if not dialog or dialog.get("operator_called"):
                 return
-            await self.db.update_operator_called(dialog_id, True)
-            automation = await self.db.get_setting_json("automation", {})
-            max_tickets = int(automation.get("max_tickets_per_operator") or 10)
-            op_name = await self.db.auto_assign_dialog(dialog_id, max_tickets)
+            # ai → full handoff; already-escalated → flag + re-notify operators
+            op_name = await self.routing.on_operator_requested(dialog)
             if op_name:
-                await self.db.update_status(dialog_id, "in_progress")
-                print(f"[callback] operator called → assigned to {op_name} for dialog={dialog_id}")
+                print(f"[callback] operator called → with {op_name} for dialog={dialog_id}")
             else:
-                print(f"[callback] operator called → no operator available, queued dialog={dialog_id}")
-            updated = await self.db.get_dialog(dialog_id)
-            await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-            username = updated.get("user_username") or dialog_id
-            await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+                print(f"[callback] operator called → no free slot, queued dialog={dialog_id}")
 
         elif callback_data.startswith("rate:"):
             parts = callback_data.split(":")
@@ -206,18 +214,6 @@ class RedisConsumer:
 
     async def _auto_handoff(self, dialog_id: str, dialog: dict):
         print(f"[auto-handoff] dialog={dialog_id}")
-        automation = await self.db.get_setting_json("automation", {})
-        max_tickets = int(automation.get("max_tickets_per_operator") or 10)
-        op_name = await self.db.auto_assign_dialog(dialog_id, max_tickets)
-        if op_name:
-            msg_text = f"ИИ передал диалог оператору {op_name}"
-            await self.db.update_status(dialog_id, "in_progress")
-        else:
-            msg_text = "ИИ передал диалог в очередь"
-        sys_row = await self.db.save_message(dialog_id, "system", msg_text)
-        await self.db.update_operator_called(dialog_id, True)
-        updated = await self.db.get_dialog(dialog_id)
-        await self.ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(sys_row)})
-        await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        username = updated.get("user_username") or dialog_id
-        await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+        # RoutingEngine guards on status='ai', assigns or queues, disables AI,
+        # records the system message, broadcasts and notifies operator_called.
+        await self.routing.handoff_from_ai(dialog_id)
