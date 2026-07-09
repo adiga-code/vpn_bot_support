@@ -206,10 +206,10 @@ class RabbitMQConsumer:
             dialog = await self.db.get_dialog(dialog_id)
             if not dialog or dialog.get("operator_called"):
                 return
-            # escalate: assigns or queues, broadcasts, notifies operator_called
-            op_name = await self.routing.handoff_from_ai(dialog_id)
+            # ai → full handoff; already-escalated → flag + re-notify operators
+            op_name = await self.routing.on_operator_requested(dialog)
             if op_name:
-                print(f"[callback] operator called → assigned to {op_name} for dialog={dialog_id}")
+                print(f"[callback] operator called → with {op_name} for dialog={dialog_id}")
             else:
                 print(f"[callback] operator called → no free slot, queued dialog={dialog_id}")
 

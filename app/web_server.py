@@ -1,7 +1,6 @@
 import asyncio
 import json
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -18,7 +17,6 @@ from app.database import DatabaseManager
 from app.kb import delete_from_qdrant, process_document
 from app.routing import AUTOMATION_DEFAULTS as _AUTOMATION_DEFAULTS, RoutingEngine
 from app.serializers import (
-    NOTIF_PREFS_DEFAULT as _NOTIF_PREFS_DEFAULT,
     fmt_dialog as _fmt_dialog,
     fmt_message as _fmt_message,
     fmt_operator as _fmt_operator,
@@ -55,8 +53,8 @@ _SCHEDULE_DEFAULTS = {
 }
 
 
-# Formatters live in app.serializers; the _fmt_* aliases above keep the old
-# import surface (rabbitmq_consumer/redis_consumer import them from here).
+# Formatters live in app.serializers; the _fmt_* aliases above are the names
+# this module uses internally.
 
 
 # ── Request bodies ────────────────────────────────────────────────────────────

@@ -50,13 +50,20 @@ class RoutingEngine:
         stored = await self.db.get_setting_json("automation", None) or {}
         return {**AUTOMATION_DEFAULTS, **stored}
 
+    @staticmethod
+    def _cfg_int(automation: dict, key: str) -> int:
+        # `or default` would eat an explicit 0 (e.g. offline_grace_seconds=0
+        # meaning "reassign immediately") — fall back only on missing/None.
+        val = automation.get(key)
+        return int(AUTOMATION_DEFAULTS[key] if val is None else val)
+
     async def _max_tickets(self, automation: dict = None) -> int:
         automation = automation or await self._automation()
-        return int(automation.get("max_tickets_per_operator") or 10)
+        return self._cfg_int(automation, "max_tickets_per_operator")
 
     async def _grace_seconds(self, automation: dict = None) -> int:
         automation = automation or await self._automation()
-        return int(automation.get("offline_grace_seconds") or 60)
+        return self._cfg_int(automation, "offline_grace_seconds")
 
     async def _emit(self, dialog_id: str, sys_text: str = None) -> dict | None:
         """Optionally record a system message, then broadcast the fresh dialog."""
@@ -102,6 +109,20 @@ class RoutingEngine:
             await self._emit(dialog_id, "ИИ передал диалог в очередь")
         await self._notify_operator_called(dialog)
         return op_name
+
+    async def on_operator_requested(self, dialog: dict) -> str | None:
+        """The client explicitly asked for a human (call-operator button).
+        From «ИИ» this is a full handoff; a ticket that is already escalated
+        (queue/in_progress/waiting) just gets the operator_called flag raised
+        and operators re-notified — it must never be a silent no-op."""
+        dialog_id = dialog["dialog_id"]
+        if dialog["status"] == "ai":
+            return await self.handoff_from_ai(dialog_id)
+        if dialog["status"] != "closed" and not dialog.get("operator_called"):
+            await self.db.update_operator_called(dialog_id, True)
+            await self._emit(dialog_id)
+            await self._notify_operator_called(dialog)
+        return dialog.get("assigned_operator")
 
     async def take_in_work(self, dialog_id: str, op_name: str) -> dict | None:
         """Operator manually takes an ai/queue ticket («Взять в работу»).
@@ -232,10 +253,17 @@ class RoutingEngine:
 
     async def release_offline_operator(self, op: dict):
         """Offline grace expired: the operator's in_progress tickets go back to
-        the queue; waiting tickets stay bound (they wake up on a client reply)."""
+        the queue. Waiting tickets with the blue «ждём ответ» label stay bound
+        (the ball is on the client's side — they wake up on a client reply),
+        but red manual ones («клиент ждёт ответ») are owed an answer and must
+        not stay bound to a gone operator."""
         for d in await self.db.get_operator_dialogs_by_status(op["name"], "in_progress"):
             await self.db.move_to_queue(d["dialog_id"])
             await self._emit(d["dialog_id"], "Оператор офлайн — тикет возвращён в очередь")
+        for d in await self.db.get_operator_dialogs_by_status(op["name"], "waiting"):
+            if d.get("waiting_reason") == WAITING_MANUAL:
+                await self.db.move_to_queue(d["dialog_id"])
+                await self._emit(d["dialog_id"], "Оператор офлайн — тикет возвращён в очередь")
         # Consume the grace timer: from now on the operator counts as gone.
         await self.db.set_operator_offline_since(op["id"], False)
 
@@ -260,8 +288,7 @@ class RoutingEngine:
         already replied (back to their own operators), then the global queue.
         Safe to call from anywhere; errors are logged, never raised."""
         try:
-            automation = await self._automation()
-            max_tickets = int(automation.get("max_tickets_per_operator") or 10)
+            max_tickets = await self._max_tickets()
             while True:
                 result = await self.db.claim_pending_return(max_tickets)
                 if not result:

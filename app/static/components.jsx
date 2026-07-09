@@ -73,10 +73,17 @@ function fmtSla(totalSeconds) {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-function SlaTimer({ slaSeconds, slaStartedAt, now, className = "" }) {
-  const base = slaSeconds || 0;
+function SlaTimer({ slaSeconds, slaStartedAt, className = "" }) {
   const running = !!slaStartedAt;
-  const extra = running ? Math.max(0, ((now || Date.now()) - Date.parse(slaStartedAt)) / 1000) : 0;
+  // Each running timer ticks itself — idle cards never re-render.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setTick((v) => v + 1), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  const base = slaSeconds || 0;
+  const extra = running ? Math.max(0, (Date.now() - Date.parse(slaStartedAt)) / 1000) : 0;
   const total = base + extra;
   if (!running && total === 0) return null;
   const cls = running ? "text-[#eab308]" : "text-zinc-500";

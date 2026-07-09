@@ -24,6 +24,9 @@ async def main():
 
     db = DatabaseManager(settings)
     await db.init_db()
+    # A hard crash skips WS disconnect handlers — clear phantom online flags
+    # and arm the offline grace so stuck tickets get redistributed.
+    await db.reset_operator_presence()
 
     # ── Initial admin account ─────────────────────────────────────────────────
     if settings.ADMIN_INIT_TG and settings.ADMIN_INIT_PASSWORD:

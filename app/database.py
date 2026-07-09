@@ -378,18 +378,6 @@ class DatabaseManager:
             text, dialog_id,
         )
 
-    async def update_status(self, dialog_id: str, status: str):
-        if status == "closed":
-            await self.pool.execute(
-                "UPDATE dialogs SET status=$1, updated_at=NOW(), closed_at=NOW() WHERE dialog_id=$2",
-                status, dialog_id,
-            )
-        else:
-            await self.pool.execute(
-                "UPDATE dialogs SET status=$1, updated_at=NOW() WHERE dialog_id=$2",
-                status, dialog_id,
-            )
-
     async def update_ai_enabled(self, dialog_id: str, ai_enabled: bool):
         await self.pool.execute(
             "UPDATE dialogs SET ai_enabled=$1, updated_at=NOW() WHERE dialog_id=$2",
@@ -782,15 +770,19 @@ class DatabaseManager:
         return [r["chat_id"] for r in rows]
 
     # Slot definition: only in_progress tickets occupy an operator slot.
-    _FREE_OPERATOR_SQL = """
+    # Single source of truth for per-operator slot usage — every capacity
+    # check below must join against this fragment.
+    _SLOT_COUNT_SQL = """
+        SELECT assigned_operator, COUNT(*) AS cnt
+        FROM dialogs
+        WHERE status = 'in_progress' AND assigned_operator IS NOT NULL
+        GROUP BY assigned_operator
+    """
+
+    _FREE_OPERATOR_SQL = f"""
         SELECT o.name
         FROM operators o
-        LEFT JOIN (
-            SELECT assigned_operator, COUNT(*) AS cnt
-            FROM dialogs
-            WHERE status = 'in_progress' AND assigned_operator IS NOT NULL
-            GROUP BY assigned_operator
-        ) active ON active.assigned_operator = o.name
+        LEFT JOIN ({_SLOT_COUNT_SQL}) active ON active.assigned_operator = o.name
         WHERE o.online = TRUE
           AND COALESCE(o.paused, FALSE) = FALSE
           AND COALESCE(active.cnt, 0) < $1
@@ -798,8 +790,9 @@ class DatabaseManager:
         LIMIT 1
     """
 
+    # Full in_progress claim state; callers that (re)bind an operator prepend
+    # `assigned_operator = $1,` — pending returns keep the existing binding.
     _CLAIM_STATE_SQL = """
-        assigned_operator = $1,
         status = 'in_progress',
         sla_started_at = COALESCE(sla_started_at, NOW()),
         waiting_reason = NULL,
@@ -820,7 +813,8 @@ class DatabaseManager:
                     return None
                 op_name = row["name"]
                 await conn.execute(
-                    f"UPDATE dialogs SET {self._CLAIM_STATE_SQL} WHERE dialog_id = $2",
+                    f"UPDATE dialogs SET assigned_operator = $1, {self._CLAIM_STATE_SQL} "
+                    f"WHERE dialog_id = $2",
                     op_name, dialog_id,
                 )
                 return op_name
@@ -836,7 +830,7 @@ class DatabaseManager:
                 if not op_row:
                     return None
                 dialog_row = await conn.fetchrow(f"""
-                    UPDATE dialogs SET {self._CLAIM_STATE_SQL}
+                    UPDATE dialogs SET assigned_operator = $1, {self._CLAIM_STATE_SQL}
                     WHERE dialog_id = (
                         SELECT dialog_id FROM dialogs
                         WHERE status = 'queue'
@@ -856,24 +850,14 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT pg_advisory_xact_lock($1)", self._ASSIGN_LOCK)
-                dialog_row = await conn.fetchrow("""
-                    UPDATE dialogs SET
-                        status = 'in_progress',
-                        sla_started_at = COALESCE(sla_started_at, NOW()),
-                        waiting_reason = NULL,
-                        queued_at = NULL,
-                        return_requested_at = NULL,
-                        updated_at = NOW()
+                dialog_row = await conn.fetchrow(f"""
+                    UPDATE dialogs SET {self._CLAIM_STATE_SQL}
                     WHERE dialog_id = (
                         SELECT d.dialog_id
                         FROM dialogs d
                         JOIN operators o ON o.name = d.assigned_operator
-                        LEFT JOIN (
-                            SELECT assigned_operator, COUNT(*) AS cnt
-                            FROM dialogs
-                            WHERE status = 'in_progress' AND assigned_operator IS NOT NULL
-                            GROUP BY assigned_operator
-                        ) active ON active.assigned_operator = o.name
+                        LEFT JOIN ({self._SLOT_COUNT_SQL}) active
+                               ON active.assigned_operator = o.name
                         WHERE d.status = 'waiting'
                           AND d.return_requested_at IS NOT NULL
                           AND o.online = TRUE
@@ -920,7 +904,7 @@ class DatabaseManager:
         """→ in_progress bound to op_name, bypassing slot limits (manual take /
         transfer / own-ticket return decided by the caller). Starts SLA."""
         await self.pool.execute(f"""
-            UPDATE dialogs SET {self._CLAIM_STATE_SQL}
+            UPDATE dialogs SET assigned_operator = $1, {self._CLAIM_STATE_SQL}
             WHERE dialog_id = $2
         """, op_name, dialog_id)
 
@@ -967,6 +951,17 @@ class DatabaseManager:
             op_name, status,
         )
         return [dict(r) for r in rows]
+
+    async def reset_operator_presence(self):
+        """Startup: nobody is connected yet, so any online=TRUE row is a phantom
+        left by a hard crash (the WS disconnect handler never ran). Mark them
+        offline and arm the grace timer so the routing sweeper redistributes
+        their tickets unless they reconnect in time."""
+        await self.pool.execute(
+            """UPDATE operators
+               SET online=FALSE, offline_since=COALESCE(offline_since, NOW())
+               WHERE COALESCE(online, FALSE) = TRUE"""
+        )
 
     async def set_operator_offline_since(self, op_id: int, offline: bool):
         """Stamp/clear the offline-grace timer for an operator."""

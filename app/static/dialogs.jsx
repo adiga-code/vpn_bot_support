@@ -56,7 +56,7 @@ function StarRating({ rating, size = "sm" }) {
   );
 }
 
-function ConvCard({ conv, active, onClick, now }) {
+function ConvCard({ conv, active, onClick }) {
   // escalated but not yet served — grabs attention in «ИИ»/«Очередь»
   const calledUnserved = conv.operatorCalled && ["ai", "queue"].includes(conv.status);
   return (
@@ -102,7 +102,7 @@ function ConvCard({ conv, active, onClick, now }) {
           <div className="flex items-center gap-1.5 flex-wrap">
             <StatusBadge status={conv.status} />
             {conv.status === "waiting" && <WaitingLabel reason={conv.waitingReason} />}
-            <SlaTimer slaSeconds={conv.slaSeconds} slaStartedAt={conv.slaStartedAt} now={now} />
+            <SlaTimer slaSeconds={conv.slaSeconds} slaStartedAt={conv.slaStartedAt} />
             {conv.operatorCalled && (
               <span
                 title="Вызван оператор"
@@ -396,12 +396,6 @@ function DialogsScreen({
   const [searchQ, setSearchQ] = useStateD("");
   const [view,   setView]   = useStateD("my");  // "my" | "all"
   const [filter, setFilter] = useStateD("wip");
-  // 1s tick so SLA timers count up while a ticket is in_progress
-  const [nowTick, setNowTick] = useStateD(Date.now());
-  useEffectD(() => {
-    const t = setInterval(() => setNowTick(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
   const [draft, setDraft] = useStateD("");
   const [mode, setMode] = useStateD("message"); // "message" | "comment"
   const [aiEnabled, setAiEnabled] = useStateD(true);
@@ -678,7 +672,7 @@ function DialogsScreen({
               <div className="text-center text-xs text-[#6b7280] py-8">Диалоги не найдены</div>
             )}
             {filtered.map((c) => (
-              <ConvCard key={c.id} conv={c} active={c.id === activeId} onClick={() => setActiveId(c.id)} now={nowTick} />
+              <ConvCard key={c.id} conv={c} active={c.id === activeId} onClick={() => setActiveId(c.id)} />
             ))}
           </div>
         </aside>
@@ -696,7 +690,7 @@ function DialogsScreen({
                       <div className="font-medium text-[#f1f1f5] truncate">{active.name}</div>
                       <StatusBadge status={active.status} />
                       {active.status === "waiting" && <WaitingLabel reason={active.waitingReason} />}
-                      <SlaTimer slaSeconds={active.slaSeconds} slaStartedAt={active.slaStartedAt} now={nowTick} />
+                      <SlaTimer slaSeconds={active.slaSeconds} slaStartedAt={active.slaStartedAt} />
                     </div>
                     <div className="text-xs text-[#6b7280]">{active.username} · ID {active.tgId}</div>
                   </div>
