@@ -638,22 +638,29 @@ def build_app(
     async def get_ai_settings(operator: dict = Depends(require_auth)):
         return await db.get_setting_json("ai_settings", _AI_DEFAULTS)
 
+    async def _sync_ai_settings_to_redis(ai: dict):
+        """Push AI settings to the Redis copy the n8n agent reads, appending
+        the escalation instruction while auto-handoff is on. EVERY endpoint
+        that rewrites vpn_bot:ai_settings must go through here — writing the
+        raw prompt silently kills auto-handoff (the model stops being told
+        how to escalate)."""
+        n8n_data = dict(ai)
+        if ai.get("handoff_enabled"):
+            n8n_data["prompt"] = (ai.get("prompt") or "").rstrip() + (
+                "\n\nЕсли вопрос сложный, ты не уверен в ответе или пользователь просит живого оператора — "
+                "поставь handoff=true и кратко укажи причину в поле reason, "
+                "а в поле answer обычным текстом предупреди клиента, что передаёшь диалог оператору. "
+                "Иначе всегда handoff=false."
+            )
+        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
+
     @app.put("/api/settings/ai")
     async def save_ai_settings(body: AISettingsBody, operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
         data = body.model_dump()
         await db.set_setting_json("ai_settings", data)
-        # For n8n: append [HANDOFF] instruction when handoff is enabled
-        n8n_data = dict(data)
-        if data.get("handoff_enabled"):
-            n8n_data["prompt"] = (data["prompt"] or "").rstrip() + (
-                "\n\nЕсли вопрос сложный, ты не уверен в ответе или пользователь просит живого оператора — "
-                "добавь [HANDOFF] в самое начало своего ответа. "
-                "Пример: «[HANDOFF] Передаю вас оператору, он скоро ответит.» "
-                "Без [HANDOFF] — отвечай самостоятельно."
-            )
-        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
+        await _sync_ai_settings_to_redis(data)
         return {"ok": True}
 
     # ── Settings: Schedule ────────────────────────────────────────────────────
@@ -768,11 +775,12 @@ def build_app(
             raise HTTPException(403, "Admin only")
         data = body.model_dump()
         await db.set_setting_json("automation", data)
-        # Синхронизировать auto_handoff_enabled → ai_settings для RedisConsumer
+        # Синхронизировать auto_handoff_enabled → ai_settings для консьюмеров
         ai = await db.get_setting_json("ai_settings", _AI_DEFAULTS)
         ai["handoff_enabled"] = data["auto_handoff_enabled"]
         await db.set_setting_json("ai_settings", ai)
-        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(ai, ensure_ascii=False))
+        # через общий хелпер — иначе инструкция эскалации пропадёт из промпта
+        await _sync_ai_settings_to_redis(ai)
         return {"ok": True}
 
     # ── Broadcast ─────────────────────────────────────────────────────────────

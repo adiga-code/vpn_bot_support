@@ -93,20 +93,23 @@ class RoutingEngine:
 
     # ── Transitions ───────────────────────────────────────────────────────────
 
-    async def handoff_from_ai(self, dialog_id: str) -> str | None:
+    async def handoff_from_ai(self, dialog_id: str, reason: str = None) -> str | None:
         """AI → humans (scenario 1). AI is disabled at handoff time; the ticket
-        lands in_progress if an online operator has a free slot, else in queue."""
+        lands in_progress if an online operator has a free slot, else in queue.
+        `reason` is the AI's own explanation — shown to operators in the
+        system message."""
         dialog = await self.db.get_dialog(dialog_id)
         if not dialog or dialog["status"] != "ai":
             return None
         await self._disable_ai(dialog)
         await self.db.update_operator_called(dialog_id, True)
+        suffix = f" — причина: {reason}" if reason else ""
         op_name = await self.db.assign_dialog(dialog_id, await self._max_tickets())
         if op_name:
-            await self._emit(dialog_id, f"ИИ передал диалог оператору {op_name}")
+            await self._emit(dialog_id, f"ИИ передал диалог оператору {op_name}{suffix}")
         else:
             await self.db.move_to_queue(dialog_id)
-            await self._emit(dialog_id, "ИИ передал диалог в очередь")
+            await self._emit(dialog_id, f"ИИ передал диалог в очередь{suffix}")
         await self._notify_operator_called(dialog)
         return op_name
 
