@@ -165,7 +165,10 @@ class RedisConsumer:
             print(f"AI response for unknown dialog: {dialog_id}")
             return
 
-        wants_handoff = "[HANDOFF]" in text
+        # New contract: explicit handoff flag (+ optional reason) from the n8n
+        # structured output; the [HANDOFF] text marker is a legacy fallback.
+        wants_handoff = bool(data.get("handoff")) or "[HANDOFF]" in text
+        handoff_reason = (data.get("handoff_reason") or "").strip()
         clean_text = text.replace("[HANDOFF]", "").strip()
 
         if clean_text:
@@ -182,7 +185,7 @@ class RedisConsumer:
         if wants_handoff and not dialog.get("operator_called"):
             ai_settings = await self.db.get_setting_json("ai_settings", {})
             if ai_settings.get("handoff_enabled", True):
-                await self._auto_handoff(dialog_id, dialog)
+                await self._auto_handoff(dialog_id, dialog, handoff_reason)
 
     async def _handle_callback(self, data: dict):
         callback_data = data.get("callback_data", "")
@@ -212,8 +215,8 @@ class RedisConsumer:
                 except ValueError:
                     pass
 
-    async def _auto_handoff(self, dialog_id: str, dialog: dict):
-        print(f"[auto-handoff] dialog={dialog_id}")
+    async def _auto_handoff(self, dialog_id: str, dialog: dict, reason: str = ""):
+        print(f"[auto-handoff] dialog={dialog_id} reason={reason!r}")
         # RoutingEngine guards on status='ai', assigns or queues, disables AI,
         # records the system message, broadcasts and notifies operator_called.
-        await self.routing.handoff_from_ai(dialog_id)
+        await self.routing.handoff_from_ai(dialog_id, reason=reason)
