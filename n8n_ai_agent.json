@@ -57,10 +57,11 @@
     },
     {
       "parameters": {
-        "jsonSchemaExample": "{\n  \"answer\": \"Текст ответа клиенту — обычный человеческий текст, без служебных слов и маркеров\",\n  \"handoff\": false,\n  \"reason\": \"почему нужен оператор (пустая строка, если handoff=false)\"\n}"
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"answer\": {\n      \"type\": \"string\",\n      \"description\": \"Текст ответа клиенту — обычный человеческий текст, без служебных слов и маркеров\"\n    },\n    \"handoff\": {\n      \"type\": \"boolean\",\n      \"description\": \"true — только если диалог нужно передать живому оператору (вопрос сложный, нет ответа в базе, клиент просит человека). Иначе false.\"\n    },\n    \"reason\": {\n      \"type\": \"string\",\n      \"description\": \"Короткая причина передачи оператору. Заполняй только при handoff=true.\"\n    }\n  },\n  \"required\": [\"answer\", \"handoff\"]\n}"
       },
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
-      "typeVersion": 1.2,
+      "typeVersion": 1.3,
       "position": [
         1616,
         224
