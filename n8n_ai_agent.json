@@ -40,7 +40,6 @@
       "parameters": {
         "promptType": "define",
         "text": "={{ $('Приведение к 1 формату').item.json.prompt }}",
-        "hasOutputParser": true,
         "needsFallback": true,
         "options": {
           "systemMessage": "={{ $json.ai_prompt }}"
@@ -57,17 +56,16 @@
     },
     {
       "parameters": {
-        "schemaType": "manual",
-        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"answer\": {\n      \"type\": \"string\",\n      \"description\": \"Текст ответа клиенту — обычный человеческий текст, без служебных слов и маркеров\"\n    },\n    \"handoff\": {\n      \"type\": \"boolean\",\n      \"description\": \"true — только если диалог нужно передать живому оператору (вопрос сложный, нет ответа в базе, клиент просит человека). Иначе false.\"\n    },\n    \"reason\": {\n      \"type\": \"string\",\n      \"description\": \"Короткая причина передачи оператору. Заполняй только при handoff=true.\"\n    }\n  },\n  \"required\": [\"answer\", \"handoff\"]\n}"
+        "jsCode": "// Разбираем ответ ИИ: ждём JSON {answer, handoff, reason}, но НИКОГДА не падаем.\n// Если модель ответила обычным текстом — отправляем его клиенту как есть (handoff=false).\nconst raw = String($json.output ?? '').trim();\n\nlet answer = raw;\nlet handoff = false;\nlet reason = '';\n\n// модель может обернуть JSON в ```json ... ```\nconst stripped = raw.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '').trim();\n\ntry {\n  const parsed = JSON.parse(stripped);\n  if (parsed && typeof parsed === 'object' && typeof parsed.answer === 'string') {\n    answer = parsed.answer;\n    handoff = parsed.handoff === true;\n    reason = typeof parsed.reason === 'string' ? parsed.reason : '';\n  }\n} catch (e) {\n  // не JSON — обычный текст, оставляем как есть\n}\n\n// страховка: legacy-маркер в тексте тоже означает передачу\nif (answer.includes('[HANDOFF]')) {\n  handoff = true;\n  answer = answer.replace('[HANDOFF]', '').trim();\n}\n\nreturn [{ json: { answer, handoff, reason } }];"
       },
-      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
-      "typeVersion": 1.3,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         1616,
-        224
+        0
       ],
       "id": "3f9a2b1c-7d4e-4a5b-9c8d-1e2f3a4b5c6d",
-      "name": "Structured Output"
+      "name": "Разбор ответа ИИ"
     },
     {
       "parameters": {
@@ -520,7 +518,7 @@
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
-            "message": "={{ ($('AI Agent').item.json.output.answer || '').replace('[HANDOFF]', '').trim() }}",
+            "message": "={{ $('Разбор ответа ИИ').item.json.answer }}",
             "chat_id": "={{ $('AI').item.json.chat_id }}"
           },
           "matchingColumns": [],
@@ -584,7 +582,7 @@
       "parameters": {
         "queue": "vpn_bot.incoming",
         "sendInputData": false,
-        "message": "={{ JSON.stringify({\n  \"type\": \"ai_response\",\n  \"dialog_id\": $('AI').item.json.dialog_id,\n  \"chat_id\": $('AI').item.json.chat_id,\n  \"message\": ($json.output.answer || '').replace('[HANDOFF]', '').trim(),\n  \"handoff\": $json.output.handoff === true,\n  \"handoff_reason\": $json.output.reason || '',\n  \"ai_enabled\": $('AI').item.json.ai_enabled\n}) }}",
+        "message": "={{ JSON.stringify({\n  \"type\": \"ai_response\",\n  \"dialog_id\": $('AI').item.json.dialog_id,\n  \"chat_id\": $('AI').item.json.chat_id,\n  \"message\": $json.answer,\n  \"handoff\": $json.handoff === true,\n  \"handoff_reason\": $json.reason || '',\n  \"ai_enabled\": $('AI').item.json.ai_enabled\n}) }}",
         "options": {}
       },
       "type": "n8n-nodes-base.rabbitmq",
@@ -619,19 +617,19 @@
       "main": [
         [
           {
-            "node": "RabbitMQ1",
+            "node": "Разбор ответа ИИ",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Structured Output": {
-      "ai_outputParser": [
+    "Разбор ответа ИИ": {
+      "main": [
         [
           {
-            "node": "AI Agent",
-            "type": "ai_outputParser",
+            "node": "RabbitMQ1",
+            "type": "main",
             "index": 0
           }
         ]

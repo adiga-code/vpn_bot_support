@@ -647,10 +647,12 @@ def build_app(
         n8n_data = dict(ai)
         if ai.get("handoff_enabled"):
             n8n_data["prompt"] = (ai.get("prompt") or "").rstrip() + (
-                "\n\nЕсли вопрос сложный, ты не уверен в ответе или пользователь просит живого оператора — "
-                "поставь handoff=true и кратко укажи причину в поле reason, "
-                "а в поле answer обычным текстом предупреди клиента, что передаёшь диалог оператору. "
-                "Иначе всегда handoff=false."
+                "\n\nФОРМАТ ОТВЕТА. Отвечай всегда строго одним JSON-объектом, без пояснений "
+                "и без markdown-обёрток:\n"
+                '{"answer": "текст ответа клиенту", "handoff": false, "reason": ""}\n'
+                "Если вопрос сложный, ты не уверен в ответе или пользователь просит живого "
+                "оператора — поставь handoff=true, кратко укажи причину в reason, а в answer "
+                "предупреди клиента, что передаёшь диалог оператору. Иначе всегда handoff=false."
             )
         await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
 
