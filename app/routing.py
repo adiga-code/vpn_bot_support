@@ -35,6 +35,12 @@ AUTOMATION_DEFAULTS = {
     "close_message_text": "Спасибо за обращение! Если появятся вопросы — просто напишите нам.",
     "max_tickets_per_operator": 10,
     "offline_grace_seconds": 60,
+    # Deterministic escalation: a client message on an AI dialog matching any
+    # of these keywords (comma-separated, case-insensitive) escalates
+    # immediately — no LLM judgement involved. A multi-word keyword matches
+    # when ALL its parts occur as substrings, so word stems cover Russian
+    # inflection: «жив человек» matches «живого человека».
+    "operator_call_keywords": "оператор, менеджер, жив человек, реальн человек, поддержк",
 }
 
 
@@ -112,6 +118,26 @@ class RoutingEngine:
             await self._emit(dialog_id, f"ИИ передал диалог в очередь{suffix}")
         await self._notify_operator_called(dialog)
         return op_name
+
+    async def maybe_escalate_by_keywords(self, dialog: dict, text: str) -> bool:
+        """Deterministic handoff: the client explicitly asked for a human in
+        plain words («позови оператора») while the AI still owns the dialog.
+        Fires regardless of what the model does — the [HANDOFF] marker is the
+        AI's own judgement, this is the guarantee on top of it."""
+        if dialog["status"] != "ai" or not text:
+            return False
+        automation = await self._automation()
+        keywords = [k.strip().lower() for k in
+                    str(automation.get("operator_call_keywords") or "").split(",") if k.strip()]
+        if not keywords:
+            return False
+        lowered = text.lower()
+        # A multi-word keyword matches when all its parts are present — stems
+        # survive Russian inflection («жив человек» ловит «живого человека»).
+        if not any(all(part in lowered for part in k.split()) for k in keywords):
+            return False
+        await self.handoff_from_ai(dialog["dialog_id"], reason="клиент попросил оператора")
+        return True
 
     async def on_operator_requested(self, dialog: dict) -> str | None:
         """The client explicitly asked for a human (call-operator button).

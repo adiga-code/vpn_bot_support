@@ -437,6 +437,25 @@ function AISection({ showToast }) {
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
         <SettingsRow title="Автоматические ответы" desc="ИИ сам отвечает на сообщения" control={<Switch on={settings.auto_reply} onChange={() => setSettings((s) => ({ ...s, auto_reply: !s.auto_reply }))} />} />
         <div className="px-5 py-4">
+          <div className="text-sm text-[#f1f1f5] mb-1">Модель</div>
+          <div className="text-xs text-[#6b7280] mb-2">Модель OpenAI для ответов ИИ (n8n подхватывает после сохранения)</div>
+          <input
+            list="ai-model-options"
+            value={settings.model ?? "gpt-4o-mini"}
+            onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
+            placeholder="gpt-4o-mini"
+            className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50"
+          />
+          <datalist id="ai-model-options">
+            <option value="gpt-4o-mini" />
+            <option value="gpt-4o" />
+            <option value="gpt-4.1-mini" />
+            <option value="gpt-4.1" />
+            <option value="gpt-4.1-nano" />
+            <option value="o4-mini" />
+          </datalist>
+        </div>
+        <div className="px-5 py-4">
           <div className="flex justify-between mb-2">
             <div>
               <div className="text-sm text-[#f1f1f5]">Температура модели</div>
@@ -807,6 +826,17 @@ function AutomationSection({ showToast }) {
               value={s.offline_grace_seconds ?? 60}
               onChange={e => set("offline_grace_seconds", Math.max(0, parseInt(e.target.value) || 0))}
               className="w-20 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-1.5 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 text-center ml-auto"
+            />
+          </div>
+          <div>
+            <div className="text-sm text-[#f1f1f5]">Стоп-слова вызова оператора</div>
+            <div className="text-xs text-[#6b7280] mt-0.5 mb-2">Если клиент пишет ИИ сообщение с любым из этих слов — тикет сразу передаётся оператору, независимо от ИИ. Через запятую; регистр не важен, совпадение по подстроке («оператор» покрывает «оператора»). Фраза из нескольких слов срабатывает, когда встречаются все её части — используйте основы слов: «жив человек» покрывает «живого человека»</div>
+            <input
+              type="text"
+              value={s.operator_call_keywords ?? ""}
+              onChange={e => set("operator_call_keywords", e.target.value)}
+              placeholder="оператор, менеджер, жив человек"
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50"
             />
           </div>
         </div>

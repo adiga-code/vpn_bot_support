@@ -36,6 +36,7 @@ _AI_DEFAULTS = {
         "Отвечай кратко, на русском. "
         "Если не знаешь ответ — предложи передать диалог оператору."
     ),
+    "model": "gpt-4o-mini",
     "temperature": 0.7,
     "auto_reply": True,
     "handoff_enabled": True,
@@ -93,6 +94,7 @@ class OperatorBody(BaseModel):
 
 class AISettingsBody(BaseModel):
     prompt: str
+    model: str = "gpt-4o-mini"
     temperature: float
     auto_reply: bool
     handoff_enabled: bool
@@ -118,6 +120,7 @@ class AutomationSettingsBody(BaseModel):
     close_message_text: str = ""
     max_tickets_per_operator: int = 10
     offline_grace_seconds: int = 60
+    operator_call_keywords: str = "оператор, менеджер, жив человек, реальн человек, поддержк"
 
 class BroadcastBody(BaseModel):
     text: str
@@ -636,7 +639,9 @@ def build_app(
 
     @app.get("/api/settings/ai")
     async def get_ai_settings(operator: dict = Depends(require_auth)):
-        return await db.get_setting_json("ai_settings", _AI_DEFAULTS)
+        stored = await db.get_setting_json("ai_settings", None) or {}
+        # merge so settings saved before 'model' existed still expose the default
+        return {**_AI_DEFAULTS, **stored}
 
     async def _sync_ai_settings_to_redis(ai: dict):
         """Push AI settings to the Redis copy the n8n agent reads, appending
@@ -647,10 +652,11 @@ def build_app(
         n8n_data = dict(ai)
         if ai.get("handoff_enabled"):
             n8n_data["prompt"] = (ai.get("prompt") or "").rstrip() + (
-                "\n\nЕсли вопрос сложный, ты не уверен в ответе или пользователь просит живого оператора — "
-                "поставь handoff=true и кратко укажи причину в поле reason, "
-                "а в поле answer обычным текстом предупреди клиента, что передаёшь диалог оператору. "
-                "Иначе всегда handoff=false."
+                "\n\nЕсли вопрос сложный, ты не уверен в ответе, ИЛИ пользователь любым способом "
+                "просит живого человека (примеры: «позови оператора», «дай человека», "
+                "«соедини с поддержкой», «хватит, оператора») — добавь [HANDOFF] в самое начало "
+                "своего ответа. Пример: «[HANDOFF] Передаю вас оператору, он скоро ответит.» "
+                "Без [HANDOFF] — отвечай самостоятельно."
             )
         await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
 

@@ -1,5 +1,5 @@
 {
-  "name": "AI (structured handoff)",
+  "name": "AI (handoff)",
   "nodes": [
     {
       "parameters": {
@@ -40,7 +40,6 @@
       "parameters": {
         "promptType": "define",
         "text": "={{ $('Приведение к 1 формату').item.json.prompt }}",
-        "hasOutputParser": true,
         "needsFallback": true,
         "options": {
           "systemMessage": "={{ $json.ai_prompt }}"
@@ -54,19 +53,6 @@
       ],
       "id": "8e741028-f5a9-45a4-a139-0fe8806c84d8",
       "name": "AI Agent"
-    },
-    {
-      "parameters": {
-        "jsonSchemaExample": "{\n  \"answer\": \"Текст ответа клиенту — обычный человеческий текст, без служебных слов и маркеров\",\n  \"handoff\": false,\n  \"reason\": \"почему нужен оператор (пустая строка, если handoff=false)\"\n}"
-      },
-      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
-      "typeVersion": 1.2,
-      "position": [
-        1616,
-        224
-      ],
-      "id": "3f9a2b1c-7d4e-4a5b-9c8d-1e2f3a4b5c6d",
-      "name": "Structured Output"
     },
     {
       "parameters": {
@@ -519,7 +505,7 @@
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
-            "message": "={{ ($('AI Agent').item.json.output.answer || '').replace('[HANDOFF]', '').trim() }}",
+            "message": "={{ ($('AI Agent').item.json.output || '').replace('[HANDOFF]', '').trim() }}",
             "chat_id": "={{ $('AI').item.json.chat_id }}"
           },
           "matchingColumns": [],
@@ -583,7 +569,7 @@
       "parameters": {
         "queue": "vpn_bot.incoming",
         "sendInputData": false,
-        "message": "={{ JSON.stringify({\n  \"type\": \"ai_response\",\n  \"dialog_id\": $('AI').item.json.dialog_id,\n  \"chat_id\": $('AI').item.json.chat_id,\n  \"message\": ($json.output.answer || '').replace('[HANDOFF]', '').trim(),\n  \"handoff\": $json.output.handoff === true,\n  \"handoff_reason\": $json.output.reason || '',\n  \"ai_enabled\": $('AI').item.json.ai_enabled\n}) }}",
+        "message": "={{ JSON.stringify({\n  \"type\": \"ai_response\",\n  \"dialog_id\": $('AI').item.json.dialog_id,\n  \"chat_id\": $('AI').item.json.chat_id,\n  \"message\": $json.output,\n  \"ai_enabled\": $('AI').item.json.ai_enabled\n}) }}",
         "options": {}
       },
       "type": "n8n-nodes-base.rabbitmq",
@@ -620,17 +606,6 @@
           {
             "node": "RabbitMQ1",
             "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Structured Output": {
-      "ai_outputParser": [
-        [
-          {
-            "node": "AI Agent",
-            "type": "ai_outputParser",
             "index": 0
           }
         ]

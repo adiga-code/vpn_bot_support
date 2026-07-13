@@ -141,6 +141,10 @@ class RabbitMQConsumer:
         if operator_called and updated["status"] == "ai":
             # the client asked for a human → escalate (notifies operator_called)
             await self.routing.handoff_from_ai(dialog_id)
+        elif updated["status"] == "ai" and await self.routing.maybe_escalate_by_keywords(updated, text):
+            # deterministic escalation by stop-words («позови оператора») —
+            # fires even when the AI model fails to emit [HANDOFF]
+            pass
         else:
             if operator_called:
                 await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
@@ -179,10 +183,9 @@ class RabbitMQConsumer:
             print(f"AI response for unknown dialog: {dialog_id}")
             return
 
-        # New contract: explicit handoff flag (+ optional reason) from the n8n
-        # structured output; the [HANDOFF] text marker is a legacy fallback.
-        wants_handoff = bool(data.get("handoff")) or "[HANDOFF]" in text
-        handoff_reason = (data.get("handoff_reason") or "").strip()
+        # The AI signals escalation with a [HANDOFF] marker at the start of its
+        # reply; the marker is stripped before saving — clients never see it.
+        wants_handoff = "[HANDOFF]" in text
         clean_text = text.replace("[HANDOFF]", "").strip()
 
         if clean_text:
@@ -199,7 +202,7 @@ class RabbitMQConsumer:
         if wants_handoff and not dialog.get("operator_called"):
             ai_settings = await self.db.get_setting_json("ai_settings", {})
             if ai_settings.get("handoff_enabled", True):
-                await self._auto_handoff(dialog_id, dialog, handoff_reason)
+                await self._auto_handoff(dialog_id, dialog)
 
     async def _handle_callback(self, data: dict):
         callback_data = data.get("callback_data", "")
@@ -250,8 +253,8 @@ class RabbitMQConsumer:
             "error":      error,
         })
 
-    async def _auto_handoff(self, dialog_id: str, dialog: dict, reason: str = ""):
-        print(f"[auto-handoff] dialog={dialog_id} reason={reason!r}")
+    async def _auto_handoff(self, dialog_id: str, dialog: dict):
+        print(f"[auto-handoff] dialog={dialog_id}")
         # RoutingEngine guards on status='ai', assigns or queues, disables AI,
         # records the system message, broadcasts and notifies operator_called.
-        await self.routing.handoff_from_ai(dialog_id, reason=reason)
+        await self.routing.handoff_from_ai(dialog_id)
