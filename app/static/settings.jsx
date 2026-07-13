@@ -809,6 +809,17 @@ function AutomationSection({ showToast }) {
               className="w-20 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-1.5 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 text-center ml-auto"
             />
           </div>
+          <div>
+            <div className="text-sm text-[#f1f1f5]">Стоп-слова вызова оператора</div>
+            <div className="text-xs text-[#6b7280] mt-0.5 mb-2">Если клиент пишет ИИ сообщение с любым из этих слов — тикет сразу передаётся оператору, независимо от ИИ. Через запятую; регистр не важен, совпадение по подстроке («оператор» покрывает «оператора»). Фраза из нескольких слов срабатывает, когда встречаются все её части — используйте основы слов: «жив человек» покрывает «живого человека»</div>
+            <input
+              type="text"
+              value={s.operator_call_keywords ?? ""}
+              onChange={e => set("operator_call_keywords", e.target.value)}
+              placeholder="оператор, менеджер, жив человек"
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50"
+            />
+          </div>
         </div>
       </div>
 

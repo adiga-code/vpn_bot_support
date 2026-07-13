@@ -118,6 +118,7 @@ class AutomationSettingsBody(BaseModel):
     close_message_text: str = ""
     max_tickets_per_operator: int = 10
     offline_grace_seconds: int = 60
+    operator_call_keywords: str = "оператор, менеджер, жив человек, реальн человек, поддержк"
 
 class BroadcastBody(BaseModel):
     text: str
@@ -647,12 +648,11 @@ def build_app(
         n8n_data = dict(ai)
         if ai.get("handoff_enabled"):
             n8n_data["prompt"] = (ai.get("prompt") or "").rstrip() + (
-                "\n\nФОРМАТ ОТВЕТА. Отвечай всегда строго одним JSON-объектом, без пояснений "
-                "и без markdown-обёрток:\n"
-                '{"answer": "текст ответа клиенту", "handoff": false, "reason": ""}\n'
-                "Если вопрос сложный, ты не уверен в ответе или пользователь просит живого "
-                "оператора — поставь handoff=true, кратко укажи причину в reason, а в answer "
-                "предупреди клиента, что передаёшь диалог оператору. Иначе всегда handoff=false."
+                "\n\nЕсли вопрос сложный, ты не уверен в ответе, ИЛИ пользователь любым способом "
+                "просит живого человека (примеры: «позови оператора», «дай человека», "
+                "«соедини с поддержкой», «хватит, оператора») — добавь [HANDOFF] в самое начало "
+                "своего ответа. Пример: «[HANDOFF] Передаю вас оператору, он скоро ответит.» "
+                "Без [HANDOFF] — отвечай самостоятельно."
             )
         await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
 

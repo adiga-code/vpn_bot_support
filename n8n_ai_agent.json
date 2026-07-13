@@ -1,5 +1,5 @@
 {
-  "name": "AI (structured handoff)",
+  "name": "AI (handoff)",
   "nodes": [
     {
       "parameters": {
@@ -53,19 +53,6 @@
       ],
       "id": "8e741028-f5a9-45a4-a139-0fe8806c84d8",
       "name": "AI Agent"
-    },
-    {
-      "parameters": {
-        "jsCode": "// Разбираем ответ ИИ: ждём JSON {answer, handoff, reason}, но НИКОГДА не падаем.\n// Если модель ответила обычным текстом — отправляем его клиенту как есть (handoff=false).\nconst raw = String($json.output ?? '').trim();\n\nlet answer = raw;\nlet handoff = false;\nlet reason = '';\n\n// модель может обернуть JSON в ```json ... ```\nconst stripped = raw.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '').trim();\n\ntry {\n  const parsed = JSON.parse(stripped);\n  if (parsed && typeof parsed === 'object' && typeof parsed.answer === 'string') {\n    answer = parsed.answer;\n    handoff = parsed.handoff === true;\n    reason = typeof parsed.reason === 'string' ? parsed.reason : '';\n  }\n} catch (e) {\n  // не JSON — обычный текст, оставляем как есть\n}\n\n// страховка: legacy-маркер в тексте тоже означает передачу\nif (answer.includes('[HANDOFF]')) {\n  handoff = true;\n  answer = answer.replace('[HANDOFF]', '').trim();\n}\n\nreturn [{ json: { answer, handoff, reason } }];"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1616,
-        0
-      ],
-      "id": "3f9a2b1c-7d4e-4a5b-9c8d-1e2f3a4b5c6d",
-      "name": "Разбор ответа ИИ"
     },
     {
       "parameters": {
@@ -518,7 +505,7 @@
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
-            "message": "={{ $('Разбор ответа ИИ').item.json.answer }}",
+            "message": "={{ ($('AI Agent').item.json.output || '').replace('[HANDOFF]', '').trim() }}",
             "chat_id": "={{ $('AI').item.json.chat_id }}"
           },
           "matchingColumns": [],
@@ -582,7 +569,7 @@
       "parameters": {
         "queue": "vpn_bot.incoming",
         "sendInputData": false,
-        "message": "={{ JSON.stringify({\n  \"type\": \"ai_response\",\n  \"dialog_id\": $('AI').item.json.dialog_id,\n  \"chat_id\": $('AI').item.json.chat_id,\n  \"message\": $json.answer,\n  \"handoff\": $json.handoff === true,\n  \"handoff_reason\": $json.reason || '',\n  \"ai_enabled\": $('AI').item.json.ai_enabled\n}) }}",
+        "message": "={{ JSON.stringify({\n  \"type\": \"ai_response\",\n  \"dialog_id\": $('AI').item.json.dialog_id,\n  \"chat_id\": $('AI').item.json.chat_id,\n  \"message\": $json.output,\n  \"ai_enabled\": $('AI').item.json.ai_enabled\n}) }}",
         "options": {}
       },
       "type": "n8n-nodes-base.rabbitmq",
@@ -614,17 +601,6 @@
       ]
     },
     "AI Agent": {
-      "main": [
-        [
-          {
-            "node": "Разбор ответа ИИ",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Разбор ответа ИИ": {
       "main": [
         [
           {
