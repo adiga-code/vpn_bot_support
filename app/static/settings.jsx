@@ -704,7 +704,18 @@ function AutomationSection({ showToast }) {
     } catch { showToast("Ошибка сохранения"); }
   }
 
-  function toggle(key) { setS(v => ({ ...v, [key]: !v[key] })); }
+  // Switches save immediately (like the operator's «Пауза» toggle elsewhere
+  // in the app) — otherwise a toggle silently reverts if the operator
+  // navigates away or reloads before finding the distant «Сохранить» button,
+  // which is exactly the bug this fixes.
+  async function toggle(key) {
+    const next = { ...s, [key]: !s[key] };
+    setS(next);
+    try {
+      await window.apiFetch("PUT", "/api/settings/automation", next);
+      showToast("Настройки автоматизации сохранены");
+    } catch { showToast("Ошибка сохранения"); }
+  }
   function set(key, val) { setS(v => ({ ...v, [key]: val })); }
 
   if (!s) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
