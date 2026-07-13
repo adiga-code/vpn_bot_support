@@ -43,6 +43,32 @@ _AI_DEFAULTS = {
     "classification_enabled": False,
 }
 
+# Sentinel marking the auto-appended escalation instruction inside the prompt
+# that gets published to n8n. Rebuilt from scratch on every sync (strip
+# everything from the marker onward, then conditionally re-add exactly one
+# copy) so the handoff toggle is authoritative regardless of what was there
+# before — a stale or duplicated copy left by a previous bug or a manual
+# edit can never survive a save.
+_HANDOFF_MARKER = "### AUTO-HANDOFF INSTRUCTION — do not edit below this line ###"
+
+
+def _strip_handoff_instruction(prompt: str) -> str:
+    return (prompt or "").split(_HANDOFF_MARKER, 1)[0].rstrip()
+
+
+def _build_n8n_prompt(prompt: str, handoff_enabled: bool) -> str:
+    base = _strip_handoff_instruction(prompt)
+    if not handoff_enabled:
+        return base
+    return base + "\n\n" + _HANDOFF_MARKER + "\n" + (
+        "Если вопрос сложный, ты не уверен в ответе, ИЛИ пользователь любым способом "
+        "просит живого человека (примеры: «позови оператора», «дай человека», "
+        "«соедини с поддержкой», «хватит, оператора») — добавь [HANDOFF] в самое начало "
+        "своего ответа. Пример: «[HANDOFF] Передаю вас оператору, он скоро ответит.» "
+        "Без [HANDOFF] — отвечай самостоятельно."
+    )
+
+
 _SCHEDULE_DEFAULTS = {
     "mon": {"enabled": True,  "from": "09:00", "to": "21:00"},
     "tue": {"enabled": True,  "from": "09:00", "to": "21:00"},
@@ -644,20 +670,15 @@ def build_app(
         return {**_AI_DEFAULTS, **stored}
 
     async def _sync_ai_settings_to_redis(ai: dict):
-        """Push AI settings to the Redis copy the n8n agent reads, appending
-        the escalation instruction while auto-handoff is on. EVERY endpoint
-        that rewrites vpn_bot:ai_settings must go through here — writing the
-        raw prompt silently kills auto-handoff (the model stops being told
-        how to escalate)."""
+        """Push AI settings to the Redis copy the n8n agent reads, rebuilding
+        the escalation instruction from scratch every time (strip, then
+        conditionally re-add exactly one copy). EVERY endpoint that rewrites
+        vpn_bot:ai_settings must go through here — writing the raw prompt
+        silently kills auto-handoff (the model stops being told how to
+        escalate), and appending without stripping first can leave a stale
+        copy behind when the toggle is switched off."""
         n8n_data = dict(ai)
-        if ai.get("handoff_enabled"):
-            n8n_data["prompt"] = (ai.get("prompt") or "").rstrip() + (
-                "\n\nЕсли вопрос сложный, ты не уверен в ответе, ИЛИ пользователь любым способом "
-                "просит живого человека (примеры: «позови оператора», «дай человека», "
-                "«соедини с поддержкой», «хватит, оператора») — добавь [HANDOFF] в самое начало "
-                "своего ответа. Пример: «[HANDOFF] Передаю вас оператору, он скоро ответит.» "
-                "Без [HANDOFF] — отвечай самостоятельно."
-            )
+        n8n_data["prompt"] = _build_n8n_prompt(ai.get("prompt"), bool(ai.get("handoff_enabled")))
         await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
 
     @app.put("/api/settings/ai")
@@ -782,7 +803,10 @@ def build_app(
         data = body.model_dump()
         await db.set_setting_json("automation", data)
         # Синхронизировать auto_handoff_enabled → ai_settings для консьюмеров
-        ai = await db.get_setting_json("ai_settings", _AI_DEFAULTS)
+        # (get_setting_json returns the default object AS-IS when nothing is
+        # stored yet — never mutate it in place, or the process-wide default
+        # gets corrupted on the very first save of a fresh install)
+        ai = await db.get_setting_json("ai_settings", None) or dict(_AI_DEFAULTS)
         ai["handoff_enabled"] = data["auto_handoff_enabled"]
         await db.set_setting_json("ai_settings", ai)
         # через общий хелпер — иначе инструкция эскалации пропадёт из промпта
