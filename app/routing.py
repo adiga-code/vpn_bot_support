@@ -123,10 +123,14 @@ class RoutingEngine:
         """Deterministic handoff: the client explicitly asked for a human in
         plain words («позови оператора») while the AI still owns the dialog.
         Fires regardless of what the model does — the [HANDOFF] marker is the
-        AI's own judgement, this is the guarantee on top of it."""
+        AI's own judgement, this is the guarantee on top of it. Gated by the
+        same «Авто-вызов от ИИ» toggle as the marker path — with escalation
+        entirely off, stop-words must not be a separate live channel."""
         if dialog["status"] != "ai" or not text:
             return False
         automation = await self._automation()
+        if not automation.get("auto_handoff_enabled"):
+            return False
         keywords = [k.strip().lower() for k in
                     str(automation.get("operator_call_keywords") or "").split(",") if k.strip()]
         if not keywords:
