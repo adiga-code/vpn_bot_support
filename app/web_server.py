@@ -36,6 +36,7 @@ _AI_DEFAULTS = {
         "Отвечай кратко, на русском. "
         "Если не знаешь ответ — предложи передать диалог оператору."
     ),
+    "model": "gpt-4o-mini",
     "temperature": 0.7,
     "auto_reply": True,
     "handoff_enabled": True,
@@ -93,6 +94,7 @@ class OperatorBody(BaseModel):
 
 class AISettingsBody(BaseModel):
     prompt: str
+    model: str = "gpt-4o-mini"
     temperature: float
     auto_reply: bool
     handoff_enabled: bool
@@ -637,7 +639,9 @@ def build_app(
 
     @app.get("/api/settings/ai")
     async def get_ai_settings(operator: dict = Depends(require_auth)):
-        return await db.get_setting_json("ai_settings", _AI_DEFAULTS)
+        stored = await db.get_setting_json("ai_settings", None) or {}
+        # merge so settings saved before 'model' existed still expose the default
+        return {**_AI_DEFAULTS, **stored}
 
     async def _sync_ai_settings_to_redis(ai: dict):
         """Push AI settings to the Redis copy the n8n agent reads, appending
