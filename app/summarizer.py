@@ -24,7 +24,7 @@ async def summarize_dialog(messages: list[dict], chat_client: "ChatClient") -> s
         resp = await chat_client.client.chat.completions.create(
             model=chat_client.model,
             messages=[{"role": "user", "content": _PROMPT.format(dialog=dialog_text)}],
-            max_tokens=30,
+            max_completion_tokens=30,
             temperature=0,
         )
         return resp.choices[0].message.content.strip().strip('"').strip("'")
