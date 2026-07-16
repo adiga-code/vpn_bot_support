@@ -195,16 +195,20 @@ async def delete_from_qdrant(article_id: str, qdrant_url: str):
 
 async def process_document(text: str, chat_client: "ChatClient", openai_key: str, qdrant_url: str) -> list[dict]:
     """Full pipeline: text → chunks (via chat LLM) → embeddings (OpenAI) → Qdrant."""
-    print(f"[KB] Chunking document ({len(text)} chars) via {chat_client.model}...")
-    chunks = await chunk_document(text, chat_client)
-    if not chunks:
-        print("[KB] No chunks created, skipping embedding and upsert.")
-        return []
-    print(f"[KB] Created {len(chunks)} chunks, embedding...")
-    chunks = await embed_chunks(chunks, openai_key)
-    await ensure_collection(qdrant_url)
-    await upsert_to_qdrant(chunks, qdrant_url)
-    print(f"[KB] Upserted {len(chunks)} vectors to Qdrant")
-    for c in chunks:
-        c.pop("embedding", None)
-    return chunks
+    try:
+        print(f"[KB] Chunking document ({len(text)} chars) via {chat_client.model}...")
+        chunks = await chunk_document(text, chat_client)
+        if not chunks:
+            print("[KB] No chunks created, skipping embedding and upsert.")
+            return []
+        print(f"[KB] Created {len(chunks)} chunks, embedding...")
+        chunks = await embed_chunks(chunks, openai_key)
+        await ensure_collection(qdrant_url)
+        await upsert_to_qdrant(chunks, qdrant_url)
+        print(f"[KB] Upserted {len(chunks)} vectors to Qdrant")
+        for c in chunks:
+            c.pop("embedding", None)
+        return chunks
+    except Exception as e:
+        print(f"[KB] Exception in process_document: {e}")
+        raise
