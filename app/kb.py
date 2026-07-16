@@ -69,8 +69,7 @@ def _make_slug(title: str, existing: set[str]) -> str:
 
 async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
     """Call the configured chat LLM to split the document into KB chunks."""
-    MAX_INPUT_LENGTH = 15000  # Limit input length to avoid too long responses
-    input_text = text if len(text) <= MAX_INPUT_LENGTH else text[:MAX_INPUT_LENGTH]
+    # Removed input length limit to allow full text processing
     attempt = 0
     max_attempts = 3
     while attempt < max_attempts:
@@ -79,7 +78,7 @@ async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
                 model=chat_client.model,
                 messages=[
                     {"role": "system", "content": _CHUNKING_PROMPT},
-                    {"role": "user",   "content": input_text},
+                    {"role": "user",   "content": text},
                 ],
                 temperature=0,
                 response_format={"type": "json_object"},
