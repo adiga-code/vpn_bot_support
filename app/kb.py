@@ -102,7 +102,16 @@ async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
                 except Exception:
                     # If still fails, raise original error
                     raise e
-            chunks = parsed if isinstance(parsed, list) else parsed.get("chunks", list(parsed.values())[0])
+            if isinstance(parsed, list):
+                chunks = parsed
+            elif isinstance(parsed, dict):
+                # If dict has 'chunks' key with list, use it; else wrap dict in list
+                if "chunks" in parsed and isinstance(parsed["chunks"], list):
+                    chunks = parsed["chunks"]
+                else:
+                    chunks = [parsed]
+            else:
+                chunks = []
             print(f"[chunk_document] Number of chunks received: {len(chunks)}")
             break
         except Exception as e:
