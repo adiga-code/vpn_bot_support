@@ -189,7 +189,6 @@ docker compose up -d --build
 | `CHAT_PROVIDER` | `openai` | Провайдер LLM: `openai` или `gemini` |
 | `OPENAI_API_KEY` | — | Ключ OpenAI. Обязателен для KB (эмбеддинги всегда через OpenAI), для `openai`-провайдера |
 | `GEMINI_API_KEY` | — | Ключ Google Gemini. Нужен только при `CHAT_PROVIDER=gemini` |
-| `CHAT_MODEL` | — | Модель для чанкинга базы знаний, классификации сообщений и сводок диалогов. Пусто = дефолт провайдера (`gpt-4o-mini` / `gemini-2.0-flash`) |
 | `QDRANT_URL` | `http://qdrant:6333` | URL Qdrant (для базы знаний) |
 
 ### Биллинг

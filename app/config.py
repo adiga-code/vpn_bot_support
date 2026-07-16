@@ -69,9 +69,6 @@ class Settings(BaseSettings):
     CHAT_PROVIDER: str = "openai"
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
-    # Модель для чанкинга базы знаний, классификации сообщений и сводок диалогов.
-    # Пусто = дефолт провайдера (openai: gpt-4o-mini, gemini: gemini-2.0-flash).
-    CHAT_MODEL: str = ""
 
     # ── Qdrant ────────────────────────────────────────────────────────────────
     QDRANT_URL: str = "http://qdrant:6333"
