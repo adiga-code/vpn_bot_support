@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.ai_client import make_chat_client
+from app.ai_client import make_chat_client, make_kb_chat_client
 from app.auth import create_token, decode_token, hash_password, verify_password
 from app.billing import BillingProvider
 from app.config import Settings
@@ -185,6 +185,7 @@ def build_app(
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
     chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
+    kb_chat_client = make_kb_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
     storage = make_storage(settings)
 
     if _STATIC.exists():
@@ -730,7 +731,7 @@ def build_app(
         text = (await file.read()).decode("utf-8", errors="ignore")
         if not text.strip():
             raise HTTPException(400, "File is empty")
-        chunks = await process_document(text, chat_client, settings.OPENAI_API_KEY, settings.QDRANT_URL)
+        chunks = await process_document(text, kb_chat_client, settings.OPENAI_API_KEY, settings.QDRANT_URL)
         for c in chunks:
             await db.save_kb_article(
                 c["id"], c["title"], c["category"],

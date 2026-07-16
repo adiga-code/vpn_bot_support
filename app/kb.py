@@ -28,14 +28,18 @@ Each chunk must:
 
 ## OUTPUT FORMAT
 
-Return a JSON array. Each element is an object:
+Return a JSON object with a single "chunks" key holding an array:
 
 {
-  "id": "unique_slug",
-  "category": "troubleshooting | setup | payment | faq | escalation",
-  "title": "Short descriptive title",
-  "keywords": ["keyword1", "keyword2", ...],
-  "content": "Full self-contained text of this chunk"
+  "chunks": [
+    {
+      "id": "unique_slug",
+      "category": "troubleshooting | setup | payment | faq | escalation",
+      "title": "Short descriptive title",
+      "keywords": ["keyword1", "keyword2", ...],
+      "content": "Full self-contained text of this chunk"
+    }
+  ]
 }
 
 ## CHUNKING STRATEGY
@@ -74,34 +78,25 @@ async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
     max_attempts = 3
     while attempt < max_attempts:
         try:
+            # gpt-5-mini is a reasoning model: it rejects any temperature
+            # other than the default, so the parameter is omitted entirely.
             response = await chat_client.client.chat.completions.create(
                 model=chat_client.model,
                 messages=[
                     {"role": "system", "content": _CHUNKING_PROMPT},
                     {"role": "user",   "content": text},
                 ],
-                temperature=0,
                 response_format={"type": "json_object"},
             )
-            raw = response.choices[0].message.content
-            print(f"[chunk_document] Raw response: {raw}")
-            try:
-                parsed = json.loads(raw)
-                print(f"[chunk_document] Parsed JSON successfully.")
-            except json.JSONDecodeError as e:
-                # Log the error and raw response for debugging
-                print(f"[chunk_document] JSON decode error: {e}")
-                # Attempt to fix common JSON issues, e.g., replace single quotes with double quotes
-                fixed_raw = raw.replace("'", '"')
-                # Additional fix: try to close unterminated strings by adding a quote at the end if missing
-                if fixed_raw.count('"') % 2 != 0:
-                    fixed_raw += '"'
-                try:
-                    parsed = json.loads(fixed_raw)
-                    print(f"[chunk_document] Parsed fixed JSON successfully.")
-                except Exception:
-                    # If still fails, raise original error
-                    raise e
+            choice = response.choices[0]
+            raw = choice.message.content
+            print(f"[chunk_document] Raw response: {len(raw or '')} chars, finish_reason={choice.finish_reason}")
+            if choice.finish_reason == "length":
+                # Output hit the model's token limit — the JSON is truncated
+                # and unrecoverable; retrying the same request won't help.
+                print("[chunk_document] Response truncated by output token limit; the document is too large for a single request.")
+                return []
+            parsed = json.loads(raw)
             if isinstance(parsed, list):
                 chunks = parsed
             elif isinstance(parsed, dict):
