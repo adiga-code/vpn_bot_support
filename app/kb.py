@@ -115,13 +115,17 @@ async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
         # Defensive check: if c is a string, wrap it in a dict with id and content
         if isinstance(c, str):
             c = {"id": c, "title": c, "category": "faq", "keywords": [], "content": c}
+        # Filter out chunks that are too short or empty
+        content = c.get("content", "")
+        if not content or len(content.strip()) < 20:
+            continue
         slug = _make_slug(c.get("id") or c.get("title", "chunk"), seen)
         result.append({
             "id":       slug,
             "title":    c.get("title", ""),
             "category": c.get("category", "faq"),
             "keywords": c.get("keywords", []),
-            "content":  c.get("content", ""),
+            "content":  content,
         })
     return result
 
