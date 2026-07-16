@@ -84,12 +84,13 @@ async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
                 response_format={"type": "json_object"},
             )
             raw = response.choices[0].message.content
+            print(f"[chunk_document] Raw response: {raw}")
             try:
                 parsed = json.loads(raw)
+                print(f"[chunk_document] Parsed JSON successfully.")
             except json.JSONDecodeError as e:
                 # Log the error and raw response for debugging
                 print(f"[chunk_document] JSON decode error: {e}")
-                print(f"[chunk_document] Raw response: {raw}")
                 # Attempt to fix common JSON issues, e.g., replace single quotes with double quotes
                 fixed_raw = raw.replace("'", '"')
                 # Additional fix: try to close unterminated strings by adding a quote at the end if missing
@@ -97,10 +98,12 @@ async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
                     fixed_raw += '"'
                 try:
                     parsed = json.loads(fixed_raw)
+                    print(f"[chunk_document] Parsed fixed JSON successfully.")
                 except Exception:
                     # If still fails, raise original error
                     raise e
             chunks = parsed if isinstance(parsed, list) else parsed.get("chunks", list(parsed.values())[0])
+            print(f"[chunk_document] Number of chunks received: {len(chunks)}")
             break
         except Exception as e:
             print(f"[chunk_document] Error during chunking attempt {attempt+1}: {e}")
@@ -127,6 +130,7 @@ async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
             "keywords": c.get("keywords", []),
             "content":  content,
         })
+    print(f"[chunk_document] Number of chunks after filtering: {len(result)}")
     return result
 
 
