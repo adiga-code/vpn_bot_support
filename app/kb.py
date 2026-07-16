@@ -69,19 +69,35 @@ def _make_slug(title: str, existing: set[str]) -> str:
 
 async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
     """Call the configured chat LLM to split the document into KB chunks."""
-    response = await chat_client.client.chat.completions.create(
-        model=chat_client.model,
-        messages=[
-            {"role": "system", "content": _CHUNKING_PROMPT},
-            {"role": "user",   "content": text},
-        ],
-        temperature=0,
-        response_format={"type": "json_object"},
-    )
-    raw = response.choices[0].message.content
-    parsed = json.loads(raw)
-    chunks = parsed if isinstance(parsed, list) else parsed.get("chunks", list(parsed.values())[0])
-
+    try:
+        response = await chat_client.client.chat.completions.create(
+            model=chat_client.model,
+            messages=[
+                {"role": "system", "content": _CHUNKING_PROMPT},
+                {"role": "user",   "content": text},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            # Log the error and raw response for debugging
+            print(f"[chunk_document] JSON decode error: {e}")
+            print(f"[chunk_document] Raw response: {raw}")
+            # Attempt to fix common JSON issues, e.g., replace single quotes with double quotes
+            fixed_raw = raw.replace("'", '"')
+            try:
+                parsed = json.loads(fixed_raw)
+            except Exception:
+                # If still fails, raise original error
+                raise e
+        chunks = parsed if isinstance(parsed, list) else parsed.get("chunks", list(parsed.values())[0])
+    except Exception as e:
+        print(f"[chunk_document] Error during chunking: {e}")
+        return []
+    
     seen: set[str] = set()
     result = []
     for c in chunks:
