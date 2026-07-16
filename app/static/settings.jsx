@@ -750,11 +750,27 @@ function AutomationSection({ showToast }) {
             </div>
           )}
         </div>
-        <SettingsRow
-          title="Авто-вызов от ИИ"
-          desc="ИИ сам передаёт диалог оператору, если не уверен в ответе"
-          control={<Switch on={s.auto_handoff_enabled} onChange={() => toggle("auto_handoff_enabled")} />}
-        />
+        <div className="px-5 py-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-[#f1f1f5]">Авто-вызов от ИИ</div>
+              <div className="text-xs text-[#6b7280] mt-0.5">ИИ сам передаёт диалог оператору, если не уверен в ответе</div>
+            </div>
+            <Switch on={s.auto_handoff_enabled} onChange={() => toggle("auto_handoff_enabled")} />
+          </div>
+          {s.auto_handoff_enabled && (
+            <div className="mt-3">
+              <label className="block text-xs text-[#6b7280] mb-2">Инструкция для ИИ при автопередаче</label>
+              <textarea
+                value={s.handoff_instruction_text ?? ""}
+                onChange={e => set("handoff_instruction_text", e.target.value)}
+                rows={5}
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
+              />
+              <div className="text-xs text-[#6b7280] mt-1.5">Дописывается к системному промпту, когда включён авто-вызов. Обязательно требуйте маркер [HANDOFF] в начале ответа — по нему система понимает, что ИИ передаёт диалог. Следите, чтобы остальной промпт не запрещал служебные маркеры. Пустое поле = стандартный текст. Сохраняется кнопкой «Сохранить»</div>
+            </div>
+          )}
+        </div>
         <div className="px-5 py-4">
           <div className="text-sm text-[#f1f1f5]">Стоп-слова вызова оператора</div>
           <div className="text-xs text-[#6b7280] mt-0.5 mb-2">Если клиент пишет ИИ сообщение с любым из этих слов — тикет сразу передаётся оператору, независимо от ИИ. Через запятую; регистр не важен, совпадение по подстроке («оператор» покрывает «оператора»). Фраза из нескольких слов срабатывает, когда встречаются все её части — используйте основы слов: «жив человек» покрывает «живого человека»</div>
