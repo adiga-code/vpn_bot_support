@@ -113,6 +113,9 @@ async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
     seen: set[str] = set()
     result = []
     for c in chunks:
+        # Defensive check: if c is a string, wrap it in a dict with id and content
+        if isinstance(c, str):
+            c = {"id": c, "title": c, "category": "faq", "keywords": [], "content": c}
         slug = _make_slug(c.get("id") or c.get("title", "chunk"), seen)
         result.append({
             "id":       slug,
