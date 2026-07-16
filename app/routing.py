@@ -35,6 +35,17 @@ AUTOMATION_DEFAULTS = {
     "close_message_text": "Спасибо за обращение! Если появятся вопросы — просто напишите нам.",
     "max_tickets_per_operator": 10,
     "offline_grace_seconds": 60,
+    # Instruction appended to the system prompt (after the sentinel marker in
+    # web_server._build_n8n_prompt) while auto-handoff is on. Editable in the
+    # panel; an empty value falls back to this default so escalation never
+    # silently loses its instruction.
+    "handoff_instruction_text": (
+        "Если вопрос сложный, ты не уверен в ответе, ИЛИ пользователь любым способом "
+        "просит живого человека (примеры: «позови оператора», «дай человека», "
+        "«соедини с поддержкой», «хватит, оператора») — добавь [HANDOFF] в самое начало "
+        "своего ответа. Пример: «[HANDOFF] Передаю вас оператору, он скоро ответит.» "
+        "Без [HANDOFF] — отвечай самостоятельно."
+    ),
     # Deterministic escalation: a client message on an AI dialog matching any
     # of these keywords (comma-separated, case-insensitive) escalates
     # immediately — no LLM judgement involved. A multi-word keyword matches

@@ -56,17 +56,14 @@ def _strip_handoff_instruction(prompt: str) -> str:
     return (prompt or "").split(_HANDOFF_MARKER, 1)[0].rstrip()
 
 
-def _build_n8n_prompt(prompt: str, handoff_enabled: bool) -> str:
+def _build_n8n_prompt(prompt: str, handoff_enabled: bool, instruction_text: str = "") -> str:
     base = _strip_handoff_instruction(prompt)
     if not handoff_enabled:
         return base
-    return base + "\n\n" + _HANDOFF_MARKER + "\n" + (
-        "Если вопрос сложный, ты не уверен в ответе, ИЛИ пользователь любым способом "
-        "просит живого человека (примеры: «позови оператора», «дай человека», "
-        "«соедини с поддержкой», «хватит, оператора») — добавь [HANDOFF] в самое начало "
-        "своего ответа. Пример: «[HANDOFF] Передаю вас оператору, он скоро ответит.» "
-        "Без [HANDOFF] — отвечай самостоятельно."
-    )
+    # An emptied-out instruction would silently kill auto-handoff — fall back
+    # to the default text instead.
+    text = (instruction_text or "").strip() or _AUTOMATION_DEFAULTS["handoff_instruction_text"]
+    return base + "\n\n" + _HANDOFF_MARKER + "\n" + text
 
 
 _SCHEDULE_DEFAULTS = {
@@ -147,6 +144,7 @@ class AutomationSettingsBody(BaseModel):
     max_tickets_per_operator: int = 10
     offline_grace_seconds: int = 60
     operator_call_keywords: str = "оператор, менеджер, жив человек, реальн человек, поддержк"
+    handoff_instruction_text: str = _AUTOMATION_DEFAULTS["handoff_instruction_text"]
 
 class BroadcastBody(BaseModel):
     text: str
@@ -186,7 +184,7 @@ def build_app(
 ) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
-    chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
+    chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY, settings.CHAT_MODEL)
     storage = make_storage(settings)
 
     if _STATIC.exists():
@@ -677,8 +675,13 @@ def build_app(
         silently kills auto-handoff (the model stops being told how to
         escalate), and appending without stripping first can leave a stale
         copy behind when the toggle is switched off."""
+        automation = await db.get_setting_json("automation", None) or {}
         n8n_data = dict(ai)
-        n8n_data["prompt"] = _build_n8n_prompt(ai.get("prompt"), bool(ai.get("handoff_enabled")))
+        n8n_data["prompt"] = _build_n8n_prompt(
+            ai.get("prompt"),
+            bool(ai.get("handoff_enabled")),
+            automation.get("handoff_instruction_text") or "",
+        )
         await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
 
     @app.put("/api/settings/ai")

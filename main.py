@@ -79,7 +79,7 @@ async def main():
         on_server_down=on_server_down,
     )
 
-    chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
+    chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY, settings.CHAT_MODEL)
     routing = RoutingEngine(db, ws_manager, n8n_client)
     consumer = RabbitMQConsumer(rmq, db, ws_manager, n8n_client, routing, chat_client)
     app = build_app(settings, db, ws_manager, n8n_client, routing, billing, server_monitor)
