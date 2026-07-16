@@ -2,17 +2,26 @@
 
 const { useState, useEffect, useRef, useMemo } = React;
 
-// Generic avatar circle with initials
-function Avatar({ initials, color, size = 36, ring = false }) {
+// Generic avatar circle with initials or real photo
+function Avatar({ initials, color, size = 36, ring = false, photoUrl = null }) {
+  const [imgError, setImgError] = useState(false);
+  const ringCls = ring ? "ring-2 ring-[#13131a]" : "";
+
+  if (photoUrl && !imgError) {
+    return (
+      <img
+        src={photoUrl}
+        alt={initials}
+        className={"rounded-full shrink-0 object-cover " + ringCls}
+        style={{ width: size, height: size }}
+        onError={() => setImgError(true)}
+      />
+    );
+  }
   return (
     <div
-      className={"flex items-center justify-center rounded-full text-white font-medium shrink-0 " + (ring ? "ring-2 ring-[#13131a]" : "")}
-      style={{
-        width: size,
-        height: size,
-        background: color,
-        fontSize: size * 0.38,
-      }}
+      className={"flex items-center justify-center rounded-full text-white font-medium shrink-0 " + ringCls}
+      style={{ width: size, height: size, background: color, fontSize: size * 0.38 }}
     >
       {initials}
     </div>
@@ -21,14 +30,68 @@ function Avatar({ initials, color, size = 36, ring = false }) {
 
 function StatusBadge({ status }) {
   const map = {
-    new: { label: "Новый", cls: "bg-[#4F8EF7]/15 text-[#7BA8F9] border-[#4F8EF7]/30" },
+    ai: { label: "ИИ", cls: "bg-[#4F8EF7]/15 text-[#7BA8F9] border-[#4F8EF7]/30" },
+    queue: { label: "Очередь", cls: "bg-[#f97316]/15 text-[#f97316] border-[#f97316]/30" },
     in_progress: { label: "В работе", cls: "bg-[#eab308]/15 text-[#eab308] border-[#eab308]/30" },
+    waiting: { label: "Ожидание", cls: "bg-[#A855F7]/15 text-[#c084fc] border-[#A855F7]/30" },
     closed: { label: "Закрыт", cls: "bg-zinc-500/15 text-zinc-400 border-zinc-600/40" },
+    // legacy rows that predate the ai/queue/waiting model
+    new: { label: "Новый", cls: "bg-[#4F8EF7]/15 text-[#7BA8F9] border-[#4F8EF7]/30" },
   };
-  const cfg = map[status] || map.new;
+  const cfg = map[status] || map.queue;
   return (
     <span className={"inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium border " + cfg.cls}>
       {cfg.label}
+    </span>
+  );
+}
+
+// Waiting-reason label: why the ticket sits in «Ожидание»
+// operator_replied → blue «ждём ответ» (ball is on the client's side)
+// manual → red «клиент ждёт ответ» (operator paused it, client is owed an answer)
+function WaitingLabel({ reason }) {
+  if (!reason) return null;
+  const cfg = reason === "manual"
+    ? { label: "клиент ждёт ответ", cls: "bg-[#ef4444]/15 text-[#ef4444] border-[#ef4444]/30" }
+    : { label: "ждём ответ", cls: "bg-[#4F8EF7]/15 text-[#7BA8F9] border-[#4F8EF7]/30" };
+  return (
+    <span className={"inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium border whitespace-nowrap " + cfg.cls}>
+      {cfg.label}
+    </span>
+  );
+}
+
+// Accumulated time the ticket has spent «В работе» (SLA); ticks only while
+// slaStartedAt is set (i.e. the ticket is in_progress right now).
+function fmtSla(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const mm = String(m).padStart(2, "0");
+  const ss = String(sec).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function SlaTimer({ slaSeconds, slaStartedAt, className = "" }) {
+  const running = !!slaStartedAt;
+  // Each running timer ticks itself — idle cards never re-render.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setTick((v) => v + 1), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  const base = slaSeconds || 0;
+  const extra = running ? Math.max(0, (Date.now() - Date.parse(slaStartedAt)) / 1000) : 0;
+  const total = base + extra;
+  if (!running && total === 0) return null;
+  const cls = running ? "text-[#eab308]" : "text-zinc-500";
+  return (
+    <span className={"inline-flex items-center gap-1 text-[11px] font-medium tabular-nums " + cls + " " + className}
+          title="Время в работе (SLA)">
+      <Icon name="clock" className="w-3 h-3" />
+      {fmtSla(total)}
     </span>
   );
 }
@@ -92,7 +155,11 @@ function Icon({ name, className = "w-4 h-4", strokeWidth = 1.75 }) {
     operators: <><circle cx="9" cy="8" r="4" /><path d="M3 21a6 6 0 0 1 12 0" /><circle cx="17" cy="9" r="3" /><path d="M21 19a4 4 0 0 0-4-4" /></>,
     book: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></>,
     clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
-    server: <><rect x="2" y="2" width="20" height="8" rx="2" /><rect x="2" y="14" width="20" height="8" rx="2" /><path d="M6 6h.01M6 18h.01" /></>,
+    server:    <><rect x="2" y="2" width="20" height="8" rx="2" /><rect x="2" y="14" width="20" height="8" rx="2" /><path d="M6 6h.01M6 18h.01" /></>,
+    zap:       <><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /></>,
+    megaphone: <><path d="M3 11v2" /><path d="M11.5 5.5L19 3v18l-7.5-2.5" /><path d="M11.5 5.5v13" /><path d="M3 11a2 2 0 0 0 0 4v-4z" /></>,
+    template:  <><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" /><rect x="9" y="3" width="6" height="4" rx="1" /><path d="M9 12h6M9 16h4" /></>,
+    link:      <><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></>,
   };
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -101,16 +168,17 @@ function Icon({ name, className = "w-4 h-4", strokeWidth = 1.75 }) {
   );
 }
 
-function Toast({ msg }) {
+function Toast({ msg, type = "ok" }) {
   if (!msg) return null;
+  const dot = type === "warn" ? "bg-[#f59e0b]" : "bg-[#22c55e]";
   return (
     <div className="fixed bottom-6 right-6 z-50 animate-[slideUp_.2s_ease-out]">
       <div className="bg-[#1a1a24] border border-[#2a2a3a] rounded-lg px-4 py-3 shadow-2xl flex items-center gap-2.5 text-sm text-[#f1f1f5]">
-        <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e]"></span>
+        <span className={"w-1.5 h-1.5 rounded-full " + dot}></span>
         {msg}
       </div>
     </div>
   );
 }
 
-Object.assign(window, { Avatar, StatusBadge, PlanBadge, SubStatus, Icon, Toast });
+Object.assign(window, { Avatar, StatusBadge, WaitingLabel, SlaTimer, fmtSla, PlanBadge, SubStatus, Icon, Toast });

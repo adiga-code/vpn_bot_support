@@ -1,7 +1,8 @@
 import asyncio
 import json
 
-import redis.asyncio as aioredis
+import aio_pika
+import aio_pika.abc
 
 from app.ai_client import ChatClient
 from app.classifier import classify_message
@@ -11,16 +12,22 @@ from app.routing import RoutingEngine
 from app.serializers import fmt_dialog as _fmt_dialog, fmt_message as _fmt_message
 from app.ws_manager import WebSocketManager
 
+QUEUE_INCOMING = "vpn_bot.incoming"
 
-class RedisConsumer:
-    """Reads inbound n8n events from the Redis queue and pushes them to the UI via WebSocket.
 
-    NOTE: not wired in main.py (RabbitMQConsumer is the live path). Keep the
-    handlers in lockstep with app/rabbitmq_consumer.py or delete this module.
-    """
+class RabbitMQConsumer:
+    """Reads inbound n8n events from RabbitMQ and pushes them to the UI via WebSocket."""
 
-    def __init__(self, redis: aioredis.Redis, db: DatabaseManager, ws: WebSocketManager, n8n: N8NClient, routing: RoutingEngine, chat_client: ChatClient | None = None):
-        self.redis = redis
+    def __init__(
+        self,
+        rmq: aio_pika.abc.AbstractRobustConnection,
+        db: DatabaseManager,
+        ws: WebSocketManager,
+        n8n: N8NClient,
+        routing: RoutingEngine,
+        chat_client: ChatClient | None = None,
+    ):
+        self._rmq = rmq
         self.db = db
         self.ws = ws
         self.n8n = n8n
@@ -30,31 +37,39 @@ class RedisConsumer:
     # ── Main loop ─────────────────────────────────────────────────────────────
 
     async def consume(self):
-        print("Redis consumer started")
-        while True:
-            try:
-                result = await self.redis.blpop("vpn_bot:incoming", timeout=0)
-                if not result:
-                    continue
+        print("RabbitMQ consumer started")
+        channel = await self._rmq.channel()
+        await channel.set_qos(prefetch_count=1)
+        queue = await channel.declare_queue(QUEUE_INCOMING, durable=True)
 
-                data = json.loads(result[1])
-                msg_type = data.get("type")
-                print(f"Received {msg_type} dialog={data.get('dialog_id')}")
+        async with queue.iterator() as q_iter:
+            async for message in q_iter:
+                async with message.process(ignore_processed=True):
+                    try:
+                        raw = message.body
+                        try:
+                            data = json.loads(raw)
+                        except json.JSONDecodeError as je:
+                            preview = raw[:200].decode("utf-8", errors="replace")
+                            print(f"Consumer JSON error: {je} | body preview: {preview!r}")
+                            continue
+                        msg_type = data.get("type")
+                        print(f"Received {msg_type} dialog={data.get('dialog_id')}")
 
-                if msg_type == "user_message":
-                    await self._handle_user_message(data)
-                elif msg_type == "ai_response":
-                    await self._handle_ai_response(data)
-                elif msg_type == "callback":
-                    await self._handle_callback(data)
-                else:
-                    print(f"Unknown type: {msg_type}")
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"Consumer error: {e}")
-                await asyncio.sleep(1)
+                        if msg_type == "user_message":
+                            await self._handle_user_message(data)
+                        elif msg_type == "ai_response":
+                            await self._handle_ai_response(data)
+                        elif msg_type == "callback":
+                            await self._handle_callback(data)
+                        elif msg_type == "delivery_confirmation":
+                            await self._handle_delivery_confirmation(data)
+                        else:
+                            print(f"Unknown type: {msg_type}")
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        print(f"Consumer error: {e}")
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -140,7 +155,6 @@ class RedisConsumer:
                 # scenario 3/5: a client reply wakes a waiting ticket
                 await self.routing.on_client_message(updated)
 
-        # Кнопка вызова оператора после N-го сообщения
         automation = await self.db.get_setting_json("automation", {})
         if automation.get("operator_button_enabled") and not operator_called:
             n = int(automation.get("operator_button_after_msgs") or 3)
@@ -215,8 +229,29 @@ class RedisConsumer:
                     updated = await self.db.get_dialog(dialog_id)
                     if updated:
                         await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+                        chat_id = updated.get("chat_id") or data.get("chat_id")
+                        if chat_id:
+                            automation = await self.db.get_setting_json("automation", {})
+                            thanks = automation.get("rating_thanks_text") or "Спасибо за оценку! 🙏"
+                            await self.n8n.send_to_user(str(chat_id), thanks)
                 except ValueError:
                     pass
+
+    async def _handle_delivery_confirmation(self, data: dict):
+        message_id = data.get("message_id")
+        dialog_id  = data.get("dialog_id")
+        status     = data.get("status")
+        error      = data.get("error")
+        if not message_id or not status:
+            return
+        await self.db.update_message_delivery(int(message_id), status, error)
+        await self.ws.broadcast({
+            "type":       "message_status",
+            "dialog_id":  dialog_id,
+            "message_id": int(message_id),
+            "status":     status,
+            "error":      error,
+        })
 
     async def _auto_handoff(self, dialog_id: str, dialog: dict):
         print(f"[auto-handoff] dialog={dialog_id}")

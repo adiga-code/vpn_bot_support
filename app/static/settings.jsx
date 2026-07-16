@@ -1,6 +1,6 @@
 // Settings screen
 
-const { useState: useStateT, useEffect: useEffectT } = React;
+const { useState: useStateT, useEffect: useEffectT, useMemo: useMemoT } = React;
 
 function SettingsScreen({ operators: ops, setOperators, showToast, currentOperator }) {
   const isAdmin = currentOperator?.role === "admin";
@@ -13,9 +13,12 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
   const allSections = [
     { id: "operators",     label: "Операторы",    icon: "operators", adminOnly: true  },
     { id: "profile",       label: "Профиль",      icon: "user",      adminOnly: false },
-    { id: "schedule",      label: "Расписание",   icon: "clock",     adminOnly: true  },
     { id: "ai",            label: "ИИ-настройки", icon: "sparkles",  adminOnly: true  },
     { id: "kb",            label: "База знаний",  icon: "book",      adminOnly: true  },
+    { id: "automation",    label: "Автоматизация",icon: "zap",       adminOnly: true  },
+    { id: "sounds",        label: "Звуки",        icon: "bellRing",  adminOnly: true  },
+    { id: "broadcast",     label: "Рассылка",     icon: "megaphone", adminOnly: true  },
+    { id: "templates",     label: "Шаблоны",      icon: "template",  adminOnly: true  },
   ];
   const sections = allSections.filter(s => !s.adminOnly || isAdmin);
 
@@ -66,9 +69,12 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       <div className="flex-1 overflow-y-auto scrollbar-thin">
         {section === "operators"     && <OperatorsSection operators={ops} onAdd={() => { setEditingOp(null); setModalOpen(true); }} onEdit={(op) => { setEditingOp(op); setModalOpen(true); }} onDelete={(op) => setConfirmDelete(op)} />}
         {section === "profile"       && <ProfileSection showToast={showToast} />}
-        {section === "schedule"      && <ScheduleSection showToast={showToast} />}
         {section === "ai"            && <AISection showToast={showToast} />}
         {section === "kb"            && <KBSection />}
+        {section === "automation"    && <AutomationSection showToast={showToast} />}
+        {section === "sounds"        && <SoundsSection showToast={showToast} />}
+        {section === "broadcast"     && <BroadcastSection showToast={showToast} />}
+        {section === "templates"     && <TemplatesSection showToast={showToast} />}
       </div>
 
       {modalOpen && <OperatorModal editing={editingOp} onClose={() => setModalOpen(false)} onSave={saveOperator} />}
@@ -135,8 +141,10 @@ function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
                 </td>
                 <td className="px-3 py-3">
                   <span className="inline-flex items-center gap-1.5 text-xs">
-                    <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
-                    <span className={op.online ? "text-[#22c55e]" : "text-[#6b7280]"}>{op.online ? "Онлайн" : "Офлайн"}</span>
+                    <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? (op.paused ? "bg-[#eab308]" : "bg-[#22c55e]") : "bg-zinc-600")}></span>
+                    <span className={op.online ? (op.paused ? "text-[#eab308]" : "text-[#22c55e]") : "text-[#6b7280]"}>
+                      {op.online ? (op.paused ? "На паузе" : "Онлайн") : "Офлайн"}
+                    </span>
                   </span>
                 </td>
                 <td className="px-5 py-3">
@@ -248,6 +256,7 @@ function ProfileSection({ showToast }) {
   async function saveNotifPrefs() {
     try {
       await window.apiFetch("PUT", "/api/operators/me/notifications", notifPrefs);
+      if (window._setSoundEnabled) window._setSoundEnabled(!!notifPrefs.sound_enabled);
       showToast("Настройки уведомлений сохранены");
     } catch { showToast("Ошибка сохранения"); }
   }
@@ -291,7 +300,6 @@ function ProfileSection({ showToast }) {
           {[
             ["new_dialog",      "Новый диалог",        "Пользователь впервые написал в бот"],
             ["operator_called", "Вызов оператора",     "Пользователь или ИИ запросили человека"],
-            ["server_down",     "Сервер недоступен",   "VPN-сервер перестал отвечать"],
           ].map(([key, title, desc]) => (
             <div key={key} className="px-5 py-3 flex items-center justify-between">
               <div>
@@ -301,6 +309,13 @@ function ProfileSection({ showToast }) {
               <Switch on={!!notifPrefs[key]} onChange={() => setNotifPrefs((p) => ({ ...p, [key]: !p[key] }))} />
             </div>
           ))}
+          <div className="px-5 py-3 flex items-center justify-between">
+            <div>
+              <div className="text-sm text-[#f1f1f5]">Звуки уведомлений</div>
+              <div className="text-xs text-[#6b7280]">Воспроизводить звук при новых событиях в браузере</div>
+            </div>
+            <Switch on={!!notifPrefs.sound_enabled} onChange={() => setNotifPrefs((p) => ({ ...p, sound_enabled: !p.sound_enabled }))} />
+          </div>
         </div>
       )}
 
@@ -421,8 +436,25 @@ function AISection({ showToast }) {
       </div>
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
         <SettingsRow title="Автоматические ответы" desc="ИИ сам отвечает на сообщения" control={<Switch on={settings.auto_reply} onChange={() => setSettings((s) => ({ ...s, auto_reply: !s.auto_reply }))} />} />
-        <SettingsRow title="Передавать при низкой уверенности" desc="Если ИИ не уверен — зовёт оператора" control={<Switch on={settings.handoff_enabled} onChange={() => setSettings((s) => ({ ...s, handoff_enabled: !s.handoff_enabled }))} />} />
-        <SettingsRow title="Классификация вопросов" desc="Автоматически определять тему каждого сообщения через OpenAI. Требует OPENAI_API_KEY. Результат — в Статистике → Топ вопросов." control={<Switch on={!!settings.classification_enabled} onChange={() => setSettings((s) => ({ ...s, classification_enabled: !s.classification_enabled }))} />} />
+        <div className="px-5 py-4">
+          <div className="text-sm text-[#f1f1f5] mb-1">Модель</div>
+          <div className="text-xs text-[#6b7280] mb-2">Модель OpenAI для ответов ИИ (n8n подхватывает после сохранения)</div>
+          <input
+            list="ai-model-options"
+            value={settings.model ?? "gpt-4o-mini"}
+            onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
+            placeholder="gpt-4o-mini"
+            className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50"
+          />
+          <datalist id="ai-model-options">
+            <option value="gpt-4o-mini" />
+            <option value="gpt-4o" />
+            <option value="gpt-4.1-mini" />
+            <option value="gpt-4.1" />
+            <option value="gpt-4.1-nano" />
+            <option value="o4-mini" />
+          </datalist>
+        </div>
         <div className="px-5 py-4">
           <div className="flex justify-between mb-2">
             <div>
@@ -441,12 +473,6 @@ function AISection({ showToast }) {
         <div className="text-xs text-[#6b7280] mb-3">Инструкции для ИИ в начале каждого диалога</div>
         <textarea value={settings.prompt} onChange={(e) => setSettings((s) => ({ ...s, prompt: e.target.value }))} rows={6}
           className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed" />
-        {settings.handoff_enabled && (
-          <div className="mt-2 flex items-start gap-2 text-xs text-[#6b7280] bg-[#4F8EF7]/5 border border-[#4F8EF7]/15 rounded-lg px-3 py-2">
-            <span className="text-[#4F8EF7] mt-0.5 shrink-0">+</span>
-            <span>К промпту автоматически добавляется инструкция про <span className="font-mono text-[#7BA8F9]">[HANDOFF]</span> — ИИ будет знать когда звать оператора. В редакторе не отображается.</span>
-          </div>
-        )}
       </div>
       <div className="flex justify-end">
         <button onClick={save} className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold">Сохранить</button>
@@ -513,6 +539,7 @@ function KBSection() {
   const [uploadErr,  setUploadErr]  = useStateT(null);
   const [deleting,   setDeleting]   = useStateT(null);
   const [expanded,   setExpanded]   = useStateT(null);
+  const [resetting,  setResetting]  = useStateT(false);
   const fileRef = React.createRef();
 
   useEffectT(() => {
@@ -558,6 +585,18 @@ function KBSection() {
     }
   }
 
+  async function handleReset() {
+    if (!window.confirm("Сбросить всю базу знаний? Все статьи и векторы будут удалены без возможности восстановления.")) return;
+    setResetting(true);
+    try {
+      await window.apiFetch("DELETE", "/api/kb");
+      setArticles([]);
+    } catch {
+    } finally {
+      setResetting(false);
+    }
+  }
+
   if (articles === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
@@ -569,6 +608,13 @@ function KBSection() {
         </div>
         <div className="flex items-center gap-2">
           {uploading && <span className="text-xs text-[#6b7280] animate-pulse">Обработка ИИ...</span>}
+          {articles && articles.length > 0 && (
+            <button onClick={handleReset} disabled={resetting}
+              className="px-3 py-2 rounded-lg bg-[#ef4444]/10 hover:bg-[#ef4444]/20 text-[#ef4444] text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 border border-[#ef4444]/20">
+              <Icon name="trash-2" className="w-3.5 h-3.5" strokeWidth={2.5} />
+              {resetting ? "Сброс..." : "Сбросить всё"}
+            </button>
+          )}
           <button onClick={() => fileRef.current?.click()} disabled={uploading}
             className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50">
             <Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />
@@ -644,6 +690,340 @@ function KBSection() {
   );
 }
 
+function AutomationSection({ showToast }) {
+  const [s, setS] = useStateT(null);
+
+  useEffectT(() => {
+    window.apiFetch("GET", "/api/settings/automation").then(setS).catch(() => {});
+  }, []);
+
+  async function save() {
+    try {
+      await window.apiFetch("PUT", "/api/settings/automation", s);
+      showToast("Настройки автоматизации сохранены");
+    } catch { showToast("Ошибка сохранения"); }
+  }
+
+  // Switches save immediately (like the operator's «Пауза» toggle elsewhere
+  // in the app) — otherwise a toggle silently reverts if the operator
+  // navigates away or reloads before finding the distant «Сохранить» button,
+  // which is exactly the bug this fixes.
+  async function toggle(key) {
+    const next = { ...s, [key]: !s[key] };
+    setS(next);
+    try {
+      await window.apiFetch("PUT", "/api/settings/automation", next);
+      showToast("Настройки автоматизации сохранены");
+    } catch { showToast("Ошибка сохранения"); }
+  }
+  function set(key, val) { setS(v => ({ ...v, [key]: val })); }
+
+  if (!s) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+
+  return (
+    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+      <div>
+        <h1 className="text-xl font-semibold text-[#f1f1f5]">Автоматизация</h1>
+        <div className="text-xs text-[#6b7280] mt-0.5">Автоматические действия при диалогах</div>
+      </div>
+
+      {/* Operator handoff */}
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
+        <div className="px-5 py-3.5">
+          <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">Передача оператору</div>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-[#f1f1f5]">Показывать кнопку «Позвать оператора»</div>
+              <div className="text-xs text-[#6b7280] mt-0.5">Кнопка появляется у пользователя в Telegram</div>
+            </div>
+            <Switch on={s.operator_button_enabled} onChange={() => toggle("operator_button_enabled")} />
+          </div>
+          {s.operator_button_enabled && (
+            <div className="mt-3 flex items-center gap-3">
+              <span className="text-sm text-[#6b7280] shrink-0">Показать после</span>
+              <input
+                type="number" min="1" max="20" value={s.operator_button_after_msgs}
+                onChange={e => set("operator_button_after_msgs", Math.max(1, parseInt(e.target.value) || 1))}
+                className="w-20 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-1.5 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 text-center"
+              />
+              <span className="text-sm text-[#6b7280] shrink-0">сообщений от пользователя</span>
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-[#f1f1f5]">Авто-вызов от ИИ</div>
+              <div className="text-xs text-[#6b7280] mt-0.5">ИИ сам передаёт диалог оператору, если не уверен в ответе</div>
+            </div>
+            <Switch on={s.auto_handoff_enabled} onChange={() => toggle("auto_handoff_enabled")} />
+          </div>
+          {s.auto_handoff_enabled && (
+            <div className="mt-3">
+              <label className="block text-xs text-[#6b7280] mb-2">Инструкция для ИИ при автопередаче</label>
+              <textarea
+                value={s.handoff_instruction_text ?? ""}
+                onChange={e => set("handoff_instruction_text", e.target.value)}
+                rows={5}
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
+              />
+              <div className="text-xs text-[#6b7280] mt-1.5">Дописывается к системному промпту, когда включён авто-вызов. Обязательно требуйте маркер [HANDOFF] в начале ответа — по нему система понимает, что ИИ передаёт диалог. Следите, чтобы остальной промпт не запрещал служебные маркеры. Пустое поле = стандартный текст. Сохраняется кнопкой «Сохранить»</div>
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-4">
+          <div className="text-sm text-[#f1f1f5]">Стоп-слова вызова оператора</div>
+          <div className="text-xs text-[#6b7280] mt-0.5 mb-2">Если клиент пишет ИИ сообщение с любым из этих слов — тикет сразу передаётся оператору, независимо от ИИ. Через запятую; регистр не важен, совпадение по подстроке («оператор» покрывает «оператора»). Фраза из нескольких слов срабатывает, когда встречаются все её части — используйте основы слов: «жив человек» покрывает «живого человека»</div>
+          <input
+            type="text"
+            value={s.operator_call_keywords ?? ""}
+            onChange={e => set("operator_call_keywords", e.target.value)}
+            placeholder="оператор, менеджер, жив человек"
+            className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50"
+          />
+        </div>
+      </div>
+
+      {/* Rating */}
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
+        <SettingsRow
+          title="Запрашивать оценку после закрытия"
+          desc="Пользователь получает кнопки ⭐ — ⭐⭐⭐⭐⭐ в Telegram"
+          control={<Switch on={s.rating_enabled} onChange={() => toggle("rating_enabled")} />}
+        />
+        {s.rating_enabled && (
+          <div className="px-5 py-4 space-y-4">
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-2">Текст запроса оценки</label>
+              <textarea
+                value={s.rating_message_text}
+                onChange={e => set("rating_message_text", e.target.value)}
+                rows={2}
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
+                placeholder="Оцените качество поддержки:"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-2">Текст после получения оценки</label>
+              <textarea
+                value={s.rating_thanks_text ?? "Спасибо за оценку! 🙏"}
+                onChange={e => set("rating_thanks_text", e.target.value)}
+                rows={2}
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
+                placeholder="Спасибо за оценку! 🙏"
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Close message */}
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
+        <SettingsRow
+          title="Отправлять сообщение при закрытии"
+          desc="Пользователь получает текст после закрытия диалога оператором"
+          control={<Switch on={s.close_message_enabled} onChange={() => toggle("close_message_enabled")} />}
+        />
+        {s.close_message_enabled && (
+          <div className="px-5 py-4">
+            <label className="block text-xs text-[#6b7280] mb-2">Текст сообщения</label>
+            <textarea
+              value={s.close_message_text}
+              onChange={e => set("close_message_text", e.target.value)}
+              rows={3}
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
+              placeholder="Спасибо за обращение!..."
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Distribution settings */}
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl">
+        <div className="px-5 py-4 space-y-4">
+          <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold">Распределение</div>
+          <div className="flex items-center gap-4">
+            <div>
+              <div className="text-sm text-[#f1f1f5]">Макс. тикетов на оператора</div>
+              <div className="text-xs text-[#6b7280] mt-0.5">Слот занимают только тикеты «В работе»; сверх лимита — очередь</div>
+            </div>
+            <input
+              type="number" min="1" max="100"
+              value={s.max_tickets_per_operator ?? 10}
+              onChange={e => set("max_tickets_per_operator", Math.max(1, parseInt(e.target.value) || 1))}
+              className="w-20 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-1.5 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 text-center ml-auto"
+            />
+          </div>
+          <div className="flex items-center gap-4">
+            <div>
+              <div className="text-sm text-[#f1f1f5]">Грейс-период офлайна, сек</div>
+              <div className="text-xs text-[#6b7280] mt-0.5">Сколько ждать возвращения оператора, прежде чем передать его тикеты «В работе» другим</div>
+            </div>
+            <input
+              type="number" min="0" max="3600"
+              value={s.offline_grace_seconds ?? 60}
+              onChange={e => set("offline_grace_seconds", Math.max(0, parseInt(e.target.value) || 0))}
+              className="w-20 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-1.5 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 text-center ml-auto"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex justify-end">
+        <button onClick={save} className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold">
+          Сохранить
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SoundsSection({ showToast }) {
+  const [sounds, setSounds] = useStateT({});
+
+  useEffectT(() => {
+    window.apiFetch("GET", "/api/settings/sounds").then(setSounds).catch(() => {});
+  }, []);
+
+  async function handleUpload(event, file) {
+    if (!file) return;
+    try {
+      const res = await window.apiFetch("UPLOAD", `/api/settings/sounds/upload?event=${event}`, file);
+      setSounds((prev) => {
+        const next = { ...prev, [`${event}_url`]: res.url };
+        if (window._setSoundsConfig) window._setSoundsConfig(next);
+        return next;
+      });
+      showToast("Звук загружен");
+    } catch {
+      showToast("Ошибка загрузки");
+    }
+  }
+
+  const cards = [
+    { event: "operator_called", label: "Оператор вызван", desc: "Играет когда диалог передаётся на поддержку" },
+    { event: "new_message",     label: "Новое сообщение",  desc: "Играет при входящем сообщении в активный диалог" },
+  ];
+
+  return (
+    <div className="max-w-[600px] mx-auto p-6 space-y-5">
+      <div>
+        <h1 className="text-xl font-semibold text-[#f1f1f5]">Звуки уведомлений</h1>
+        <div className="text-xs text-[#6b7280] mt-0.5">Загрузите аудиофайлы для браузерных уведомлений</div>
+      </div>
+      <div className="space-y-4">
+        {cards.map(({ event, label, desc }) => {
+          const url = sounds[`${event}_url`];
+          return (
+            <div key={event} className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5 space-y-3">
+              <div>
+                <div className="text-sm font-medium text-[#f1f1f5]">{label}</div>
+                <div className="text-xs text-[#6b7280] mt-0.5">{desc}</div>
+              </div>
+              {url ? (
+                <audio controls src={url} className="w-full h-9 rounded-lg" style={{ accentColor: "#4F8EF7" }} />
+              ) : (
+                <div className="text-xs text-[#6b7280] bg-[#0d0d12] rounded-lg px-3 py-2 border border-dashed border-[#2a2a3a]">Звук не загружен</div>
+              )}
+              <label className="inline-flex items-center gap-2 cursor-pointer px-3 py-1.5 rounded-lg bg-[#1a1a24] border border-[#2a2a3a] hover:border-[#4F8EF7]/50 text-xs text-[#7BA8F9] transition">
+                <Icon name="plus" className="w-3.5 h-3.5" />
+                {url ? "Заменить файл" : "Загрузить файл"}
+                <input type="file" accept="audio/*" className="hidden" onChange={(e) => handleUpload(event, e.target.files[0])} />
+              </label>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function BroadcastSection({ showToast }) {
+  const [text, setText] = useStateT("");
+  const [confirm, setConfirm] = useStateT(false);
+  const [result, setResult] = useStateT(null);
+  const [loading, setLoading] = useStateT(false);
+
+  async function sendBroadcast() {
+    setConfirm(false);
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = await window.apiFetch("POST", "/api/broadcast", { text });
+      setResult(res);
+      if (res.failed === 0) showToast(`Отправлено ${res.sent} пользователям`);
+      else showToast(`Отправлено ${res.sent}, ошибок ${res.failed}`);
+    } catch (e) {
+      showToast("Ошибка рассылки");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="max-w-[700px] mx-auto p-6 space-y-5">
+      <div>
+        <h1 className="text-xl font-semibold text-[#f1f1f5]">Рассылка</h1>
+        <div className="text-xs text-[#6b7280] mt-0.5">Отправить сообщение всем пользователям из базы</div>
+      </div>
+
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5 space-y-4">
+        <div>
+          <label className="block text-xs text-[#6b7280] mb-2">Текст сообщения</label>
+          <textarea
+            value={text}
+            onChange={e => setText(e.target.value)}
+            rows={5}
+            placeholder="Введите текст рассылки..."
+            className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
+          />
+        </div>
+
+        {result && (
+          <div className="bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-4 py-3 text-sm">
+            <div className="flex items-center gap-4">
+              <span className="text-[#22c55e]">✓ Отправлено: <span className="font-semibold tabular-nums">{result.sent}</span></span>
+              {result.failed > 0 && <span className="text-[#ef4444]">✗ Ошибок: <span className="font-semibold tabular-nums">{result.failed}</span></span>}
+              <span className="text-[#6b7280]">Всего: {result.total}</span>
+            </div>
+          </div>
+        )}
+
+        <div className="flex justify-end">
+          <button
+            onClick={() => setConfirm(true)}
+            disabled={!text.trim() || loading}
+            className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            <Icon name="megaphone" className="w-4 h-4" />
+            {loading ? "Отправка..." : "Отправить всем"}
+          </button>
+        </div>
+      </div>
+
+      {confirm && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirm(false)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={e => e.stopPropagation()}>
+            <div className="font-semibold text-[#f1f1f5] mb-2">Отправить рассылку?</div>
+            <div className="text-sm text-[#6b7280] mb-4 leading-relaxed">
+              Сообщение получат все пользователи, которые когда-либо писали боту. Отменить нельзя.
+            </div>
+            <div className="bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-xs text-[#f1f1f5] mb-5 leading-relaxed max-h-24 overflow-y-auto">
+              {text}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirm(false)} className="px-3 py-1.5 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+              <button onClick={sendBroadcast} className="px-4 py-1.5 rounded-lg text-sm font-semibold bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white transition">
+                Отправить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsRow({ title, desc, control }) {
   return (
     <div className="px-5 py-4 flex items-center justify-between gap-4">
@@ -662,6 +1042,290 @@ function Switch({ on, onChange }) {
       className={"relative w-10 h-[22px] rounded-full transition shrink-0 " + (on ? "bg-[#4F8EF7]" : "bg-[#2a2a3a]")}>
       <span className={"absolute top-[2px] w-[18px] h-[18px] bg-white rounded-full transition-all " + (on ? "left-[20px]" : "left-[2px]")}></span>
     </button>
+  );
+}
+
+function TemplateModal({ template, groups, onSave, onClose }) {
+  const [form, setForm] = useStateT({
+    title: template?.title || "",
+    group_name: template?.group_name || (groups[0] || "Общие"),
+    text: template?.text || "",
+  });
+  function set(k, v) { setForm(f => ({ ...f, [k]: v })); }
+  function submit(e) {
+    e.preventDefault();
+    if (!form.title.trim() || !form.text.trim()) return;
+    onSave({ ...form, id: template?.id });
+  }
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-lg" onClick={e => e.stopPropagation()}>
+        <div className="font-semibold text-[#f1f1f5] mb-4">{template ? "Редактировать шаблон" : "Добавить шаблон"}</div>
+        <form onSubmit={submit} className="space-y-4">
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Название</label>
+            <input value={form.title} onChange={e => set("title", e.target.value)} required
+              placeholder="Занимаюсь решением вопроса"
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 placeholder:text-[#6b7280]" />
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Группа</label>
+            <input value={form.group_name} onChange={e => set("group_name", e.target.value)}
+              list="tpl-groups" placeholder="Общие"
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 placeholder:text-[#6b7280]" />
+            <datalist id="tpl-groups">
+              {groups.map(g => <option key={g} value={g} />)}
+            </datalist>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Текст шаблона</label>
+            <textarea value={form.text} onChange={e => set("text", e.target.value)} required rows={4}
+              placeholder="Принял вашу заявку. Как только у меня будет решение, вернусь к вам..."
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed resize-none placeholder:text-[#6b7280]" />
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose}
+              className="px-3 py-1.5 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+            <button type="submit"
+              className="px-4 py-1.5 rounded-lg text-sm font-medium bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white">Сохранить</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function TemplatesSection({ showToast }) {
+  const [templates, setTemplates] = useStateT(null);
+  const [modal, setModal] = useStateT(null);
+  const [deleting, setDeleting] = useStateT(null);
+  const [selectedGroup, setSelectedGroup] = useStateT(null);
+  const [renamingGroup, setRenamingGroup] = useStateT(null);
+  const [renameValue, setRenameValue] = useStateT("");
+  const [inlineAdding, setInlineAdding] = useStateT(null);
+  const [inlineForm, setInlineForm] = useStateT({ title: "", text: "" });
+  const [inlineSaving, setInlineSaving] = useStateT(false);
+
+  useEffectT(() => {
+    window.apiFetch("GET", "/api/templates").then(setTemplates).catch(() => setTemplates([]));
+  }, []);
+
+  const groups = useMemoT(() => {
+    if (!templates) return [];
+    return [...new Set(templates.map(t => t.group_name))];
+  }, [templates]);
+
+  const grouped = useMemoT(() => {
+    if (!templates) return {};
+    return templates.reduce((acc, t) => {
+      (acc[t.group_name] = acc[t.group_name] || []).push(t);
+      return acc;
+    }, {});
+  }, [templates]);
+
+  const visibleGroups = useMemoT(() => {
+    if (!grouped) return [];
+    if (selectedGroup === null) return Object.keys(grouped);
+    return selectedGroup in grouped ? [selectedGroup] : [];
+  }, [grouped, selectedGroup]);
+
+  async function saveTemplate(data) {
+    try {
+      const method = data.id ? "PUT" : "POST";
+      const url = data.id ? `/api/templates/${data.id}` : "/api/templates";
+      const saved = await window.apiFetch(method, url, data);
+      setTemplates(prev => data.id
+        ? prev.map(t => t.id === data.id ? saved : t)
+        : [...prev, saved].sort((a, b) => a.group_name.localeCompare(b.group_name) || a.title.localeCompare(b.title)));
+      showToast(data.id ? "Шаблон обновлён" : "Шаблон добавлен");
+    } catch { showToast("Ошибка сохранения"); }
+    setModal(null);
+  }
+
+  async function deleteTemplate(id) {
+    setDeleting(id);
+    try {
+      await window.apiFetch("DELETE", `/api/templates/${id}`);
+      setTemplates(prev => prev.filter(t => t.id !== id));
+      showToast("Шаблон удалён");
+    } catch { showToast("Ошибка удаления"); }
+    setDeleting(null);
+  }
+
+  async function handleRenameGroup(oldName, newName) {
+    const trimmed = (newName || "").trim();
+    if (!trimmed || trimmed === oldName) { setRenamingGroup(null); return; }
+    try {
+      await window.apiFetch("PATCH", "/api/templates/group", { old_name: oldName, new_name: trimmed });
+      setTemplates(prev => prev.map(t => t.group_name === oldName ? { ...t, group_name: trimmed } : t));
+      if (selectedGroup === oldName) setSelectedGroup(trimmed);
+      showToast("Группа переименована");
+    } catch { showToast("Ошибка переименования"); }
+    setRenamingGroup(null);
+  }
+
+  async function handleDeleteGroup(name) {
+    const items = grouped[name] || [];
+    if (!items.length) return;
+    try {
+      await Promise.all(items.map(t => window.apiFetch("DELETE", `/api/templates/${t.id}`)));
+      setTemplates(prev => prev.filter(t => t.group_name !== name));
+      if (selectedGroup === name) setSelectedGroup(null);
+      showToast(`Группа «${name}» удалена`);
+    } catch { showToast("Ошибка удаления группы"); }
+  }
+
+  async function saveInline(group) {
+    if (!inlineForm.title.trim() || !inlineForm.text.trim()) return;
+    setInlineSaving(true);
+    try {
+      const saved = await window.apiFetch("POST", "/api/templates", {
+        group_name: group, title: inlineForm.title.trim(), text: inlineForm.text.trim(),
+      });
+      setTemplates(prev => [...prev, saved].sort((a, b) => a.group_name.localeCompare(b.group_name) || a.title.localeCompare(b.title)));
+      setInlineForm({ title: "", text: "" });
+      setInlineAdding(null);
+      showToast("Шаблон добавлен");
+    } catch { showToast("Ошибка сохранения"); }
+    setInlineSaving(false);
+  }
+
+  if (templates === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+
+  return (
+    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold text-[#f1f1f5]">Шаблоны сообщений</h1>
+          <div className="text-xs text-[#6b7280] mt-0.5">{templates.length} шаблонов · {groups.length} групп</div>
+        </div>
+        <button onClick={() => setModal({})}
+          className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5">
+          <Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />
+          Добавить шаблон
+        </button>
+      </div>
+
+      {groups.length > 0 && (
+        <div className="flex flex-wrap gap-2 items-center">
+          <button onClick={() => setSelectedGroup(null)}
+            className={"px-3 py-1.5 rounded-lg text-xs font-medium transition border " +
+              (selectedGroup === null ? "bg-[#4F8EF7]/15 border-[#4F8EF7]/40 text-[#7BA8F9]" : "border-[#2a2a3a] text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}>
+            Все <span className="opacity-60 ml-1">{templates.length}</span>
+          </button>
+          {groups.map(g => (
+            <div key={g} className="group/chip relative flex items-center">
+              {renamingGroup === g ? (
+                <form onSubmit={e => { e.preventDefault(); handleRenameGroup(g, renameValue); }}>
+                  <input autoFocus value={renameValue}
+                    onChange={e => setRenameValue(e.target.value)}
+                    onBlur={() => handleRenameGroup(g, renameValue)}
+                    className="px-2.5 py-1.5 rounded-lg text-xs bg-[#0d0d12] border border-[#4F8EF7]/50 text-[#f1f1f5] focus:outline-none w-36" />
+                </form>
+              ) : (
+                <>
+                  <button onClick={() => setSelectedGroup(g === selectedGroup ? null : g)}
+                    className={"px-3 py-1.5 rounded-lg text-xs font-medium transition border " +
+                      (selectedGroup === g ? "bg-[#4F8EF7]/15 border-[#4F8EF7]/40 text-[#7BA8F9]" : "border-[#2a2a3a] text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}>
+                    {g} <span className="opacity-60 ml-1">{grouped[g]?.length || 0}</span>
+                  </button>
+                  <button onClick={() => { setRenamingGroup(g); setRenameValue(g); }}
+                    className="opacity-0 group-hover/chip:opacity-100 ml-0.5 p-1 text-[#6b7280] hover:text-[#f1f1f5] transition"
+                    title="Переименовать группу">
+                    <Icon name="edit" className="w-3 h-3" />
+                  </button>
+                  <button onClick={() => handleDeleteGroup(g)}
+                    className="opacity-0 group-hover/chip:opacity-100 p-1 text-[#6b7280] hover:text-[#ef4444] transition"
+                    title="Удалить группу">
+                    <Icon name="trash" className="w-3 h-3" />
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {templates.length === 0 && (
+        <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-10 text-center">
+          <div className="w-12 h-12 rounded-xl bg-[#4F8EF7]/10 text-[#7BA8F9] flex items-center justify-center mx-auto mb-3">
+            <Icon name="template" className="w-6 h-6" />
+          </div>
+          <div className="text-sm text-[#f1f1f5] font-medium mb-1">Шаблонов пока нет</div>
+          <div className="text-xs text-[#6b7280]">Добавьте готовые ответы — операторы смогут вставлять их в один клик</div>
+        </div>
+      )}
+
+      {visibleGroups.map(group => (
+        <div key={group} className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
+          <div className="px-5 py-2.5 bg-[#1a1a24]/60 border-b border-[#2a2a3a]/60">
+            <span className="text-xs font-semibold text-[#6b7280] uppercase tracking-wider">{group}</span>
+            <span className="ml-2 text-xs text-[#4a4a5a]">{grouped[group]?.length || 0}</span>
+          </div>
+          <div className="divide-y divide-[#2a2a3a]/40">
+            {(grouped[group] || []).map(t => (
+              <div key={t.id} className="px-5 py-3 flex items-start justify-between gap-3 hover:bg-[#1a1a24]/40 transition">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-[#f1f1f5] font-medium">{t.title}</div>
+                  <div className="text-xs text-[#6b7280] mt-0.5 truncate">{t.text}</div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button onClick={() => setModal({ template: t })}
+                    className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition">
+                    <Icon name="edit" className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => deleteTemplate(t.id)} disabled={deleting === t.id}
+                    className="p-1.5 text-[#6b7280] hover:text-[#ef4444] hover:bg-[#ef4444]/10 rounded transition disabled:opacity-40">
+                    <Icon name="trash" className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+            {inlineAdding === group ? (
+              <div className="px-5 py-3 bg-[#0d0d12]/60 space-y-2">
+                <div className="flex gap-2">
+                  <input autoFocus value={inlineForm.title}
+                    onChange={e => setInlineForm(f => ({...f, title: e.target.value}))}
+                    placeholder="Название шаблона"
+                    onKeyDown={e => { if (e.key === 'Escape') { setInlineAdding(null); setInlineForm({title:"",text:""}); } }}
+                    className="flex-1 bg-[#13131a] border border-[#2a2a3a] rounded-lg px-2.5 py-1.5 text-xs text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 placeholder:text-[#6b7280]" />
+                  <button onClick={() => saveInline(group)}
+                    disabled={!inlineForm.title.trim() || !inlineForm.text.trim() || inlineSaving}
+                    className="px-3 py-1.5 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold disabled:opacity-40 shrink-0">
+                    {inlineSaving ? "..." : "Сохранить"}
+                  </button>
+                  <button onClick={() => { setInlineAdding(null); setInlineForm({title:"",text:""}); }}
+                    className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5]">
+                    <Icon name="x" className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <textarea value={inlineForm.text}
+                  onChange={e => setInlineForm(f => ({...f, text: e.target.value}))}
+                  placeholder="Текст шаблона... (Ctrl+Enter для сохранения)"
+                  rows={2}
+                  onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveInline(group); } }}
+                  className="w-full bg-[#13131a] border border-[#2a2a3a] rounded-lg px-2.5 py-1.5 text-xs text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 resize-none placeholder:text-[#6b7280]" />
+              </div>
+            ) : (
+              <button onClick={() => { setInlineAdding(group); setInlineForm({title:"",text:""}); }}
+                className="w-full px-5 py-2 flex items-center gap-1.5 text-xs text-[#6b7280] hover:text-[#7BA8F9] hover:bg-[#1a1a24] transition">
+                <Icon name="plus" className="w-3 h-3" strokeWidth={2.5} />
+                Добавить в группу
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+
+      {modal !== null && (
+        <TemplateModal
+          template={modal.template}
+          groups={groups}
+          onSave={saveTemplate}
+          onClose={() => setModal(null)}
+        />
+      )}
+    </div>
   );
 }
 

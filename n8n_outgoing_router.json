@@ -1,0 +1,565 @@
+{
+  "name": "VPN Bot — Outgoing Router",
+  "nodes": [
+    {
+      "parameters": {
+        "channels": "vpn_bot:signal",
+        "options": {}
+      },
+      "id": "00000000-0001-4000-8000-000000000001",
+      "name": "Сигнал от бота",
+      "type": "n8n-nodes-base.redisTrigger",
+      "typeVersion": 1,
+      "position": [0, 200],
+      "credentials": {
+        "redis": {
+          "id": "hit3nIMoTAWeW4Gi",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 3
+            }
+          ]
+        }
+      },
+      "id": "00000000-0001-4000-8000-000000000021",
+      "name": "Fallback каждые 3 мин",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 400]
+    },
+    {
+      "parameters": {
+        "operation": "lpop",
+        "key": "vpn_bot:outgoing"
+      },
+      "id": "00000000-0002-4000-8000-000000000002",
+      "name": "Redis lPop",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [220, 300],
+      "credentials": {
+        "redis": {
+          "id": "hit3nIMoTAWeW4Gi",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-value-exists",
+              "leftValue": "={{ $json.value }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "00000000-0003-4000-8000-000000000003",
+      "name": "Есть данные?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.value;\nreturn [{ json: JSON.parse(raw) }];"
+      },
+      "id": "00000000-0004-4000-8000-000000000004",
+      "name": "Распарсить JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 200]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "sw-r1",
+                    "leftValue": "={{ $json.type }}",
+                    "rightValue": "manager_message",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "manager_message"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "sw-r2",
+                    "leftValue": "={{ $json.type }}",
+                    "rightValue": "send_to_user",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "send_to_user"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "sw-r3",
+                    "leftValue": "={{ $json.type }}",
+                    "rightValue": "operator_notify",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "operator_notify"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "sw-r4",
+                    "leftValue": "={{ $json.type }}",
+                    "rightValue": "billing_action",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "billing_action"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "00000000-0005-4000-8000-000000000005",
+      "name": "Switch по type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [880, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst out = {\n  dialog_id: d.dialog_id,\n  chat_id: String(d.chat_id),\n  message: d.message || ''\n};\nif (d.file_url) {\n  out.file_id = d.file_url;\n  out.file_type = d.file_type || 'document';\n} else if (d.file_id) {\n  out.file_id = d.file_id;\n  out.file_type = d.file_type || 'document';\n}\nreturn [{ json: out }];"
+      },
+      "id": "00000000-0006-4000-8000-000000000006",
+      "name": "Подготовить файл",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 60]
+    },
+    {
+      "parameters": {
+        "workflowId": "mU0DY8iuejvdYYA8",
+        "options": {}
+      },
+      "id": "00000000-0007-4000-8000-000000000007",
+      "name": "Отправить ответ оператора",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [1320, 60]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-keyboard",
+              "leftValue": "={{ Array.isArray($json.keyboard) && $json.keyboard.length > 0 ? 'yes' : '' }}",
+              "rightValue": "yes",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "00000000-0008-4000-8000-000000000008",
+      "name": "С клавиатурой?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1100, 230]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: String($json.chat_id), text: $json.text, reply_markup: { inline_keyboard: $json.keyboard } }) }}",
+        "options": {}
+      },
+      "id": "00000000-0009-4000-8000-000000000009",
+      "name": "TG sendMessage с кнопками",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 130]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nreturn [{ json: { chat_id: String(d.chat_id), message: d.text } }];"
+      },
+      "id": "00000000-000a-4000-8000-00000000000a",
+      "name": "Нормализовать text→message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 330]
+    },
+    {
+      "parameters": {
+        "workflowId": "mU0DY8iuejvdYYA8",
+        "options": {}
+      },
+      "id": "00000000-000b-4000-8000-00000000000b",
+      "name": "Отправить текст пользователю",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [1540, 330]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst event = d.event;\nconst texts = {\n  new_dialog:      () => `📩 Новый диалог\\nПользователь: ${d.username || d.dialog_id}`,\n  operator_called: () => `🆘 Вызов оператора\\nПользователь: ${d.username || d.dialog_id}`,\n  dialog_closed:   () => `✅ Диалог закрыт\\nОператор: ${d.operator_name || '—'}\\nID: ${d.dialog_id}`,\n  ai_toggled:      () => `🤖 ИИ ${d.ai_enabled ? 'включён ✅' : 'выключен ❌'}\\nДиалог: ${d.dialog_id}`,\n  server_down:     () => `🔴 Сервер vpn_bot недоступен!`,\n};\nconst text = texts[event] ? texts[event]() : `[${event}] ${JSON.stringify(d)}`;\nreturn [{ json: { text } }];"
+      },
+      "id": "00000000-000c-4000-8000-00000000000c",
+      "name": "Форматировать уведомление",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 400]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT tg_id FROM operators WHERE tg_id IS NOT NULL",
+        "options": {}
+      },
+      "id": "00000000-000d-4000-8000-00000000000d",
+      "name": "Получить tg_id операторов",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1320, 400],
+      "credentials": {
+        "postgres": {
+          "id": "5tWDSrTUFp4DiJlP",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.tg_id }}",
+        "text": "={{ $('Форматировать уведомление').first().json.text }}",
+        "additionalFields": {}
+      },
+      "id": "00000000-000e-4000-8000-00000000000e",
+      "name": "Отправить оператору",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1540, 400],
+      "credentials": {
+        "telegramApi": {
+          "id": "drGmrRpP856vKvMY",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.BILLING_API_URL }}/action",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: String($json.chat_id), action: $json.action, dialog_id: $json.dialog_id }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "00000000-000f-4000-8000-00000000000f",
+      "name": "Billing API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 540]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.first().json;\nconst orig = $('Распарсить JSON').first().json;\nconst text = resp.message || resp.result || resp.text || 'Готово';\nreturn [{ json: { chat_id: String(orig.chat_id), message: text } }];"
+      },
+      "id": "00000000-0010-4000-8000-000000000010",
+      "name": "Подготовить ответ биллинга",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 540]
+    },
+    {
+      "parameters": {
+        "workflowId": "mU0DY8iuejvdYYA8",
+        "options": {}
+      },
+      "id": "00000000-0011-4000-8000-000000000011",
+      "name": "Отправить результат биллинга",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [1540, 540]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-dialog-closed",
+              "leftValue": "={{ $json.event }}",
+              "rightValue": "dialog_closed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "00000000-0012-4000-8000-000000000012",
+      "name": "Закрытие диалога?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1100, 660]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE n8n_dialogs SET status='closed' WHERE user_id={{ $json.chat_id }}",
+        "options": {}
+      },
+      "id": "00000000-0013-4000-8000-000000000013",
+      "name": "Закрыть диалог в n8n_dialogs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1320, 660],
+      "credentials": {
+        "postgres": {
+          "id": "5tWDSrTUFp4DiJlP",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-ai-toggled",
+              "leftValue": "={{ $json.event }}",
+              "rightValue": "ai_toggled",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "00000000-0014-4000-8000-000000000014",
+      "name": "ИИ переключён?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1100, 790]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE n8n_dialogs SET ai_status={{ $json.ai_enabled }} WHERE user_id={{ $json.chat_id }}",
+        "options": {}
+      },
+      "id": "00000000-0015-4000-8000-000000000015",
+      "name": "Обновить ai_status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1320, 790],
+      "credentials": {
+        "postgres": {
+          "id": "5tWDSrTUFp4DiJlP",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Сигнал от бота": {
+      "main": [
+        [{"node": "Redis lPop", "type": "main", "index": 0}]
+      ]
+    },
+    "Fallback каждые 3 мин": {
+      "main": [
+        [{"node": "Redis lPop", "type": "main", "index": 0}]
+      ]
+    },
+    "Redis lPop": {
+      "main": [
+        [{"node": "Есть данные?", "type": "main", "index": 0}]
+      ]
+    },
+    "Есть данные?": {
+      "main": [
+        [{"node": "Распарсить JSON", "type": "main", "index": 0}],
+        []
+      ]
+    },
+    "Распарсить JSON": {
+      "main": [
+        [{"node": "Switch по type", "type": "main", "index": 0}]
+      ]
+    },
+    "Switch по type": {
+      "main": [
+        [{"node": "Подготовить файл", "type": "main", "index": 0}],
+        [{"node": "С клавиатурой?", "type": "main", "index": 0}],
+        [
+          {"node": "Форматировать уведомление", "type": "main", "index": 0},
+          {"node": "Закрытие диалога?", "type": "main", "index": 0},
+          {"node": "ИИ переключён?", "type": "main", "index": 0}
+        ],
+        [{"node": "Billing API", "type": "main", "index": 0}]
+      ]
+    },
+    "Подготовить файл": {
+      "main": [
+        [{"node": "Отправить ответ оператора", "type": "main", "index": 0}]
+      ]
+    },
+    "С клавиатурой?": {
+      "main": [
+        [{"node": "TG sendMessage с кнопками", "type": "main", "index": 0}],
+        [{"node": "Нормализовать text→message", "type": "main", "index": 0}]
+      ]
+    },
+    "Нормализовать text→message": {
+      "main": [
+        [{"node": "Отправить текст пользователю", "type": "main", "index": 0}]
+      ]
+    },
+    "Форматировать уведомление": {
+      "main": [
+        [{"node": "Получить tg_id операторов", "type": "main", "index": 0}]
+      ]
+    },
+    "Получить tg_id операторов": {
+      "main": [
+        [{"node": "Отправить оператору", "type": "main", "index": 0}]
+      ]
+    },
+    "Закрытие диалога?": {
+      "main": [
+        [{"node": "Закрыть диалог в n8n_dialogs", "type": "main", "index": 0}],
+        []
+      ]
+    },
+    "ИИ переключён?": {
+      "main": [
+        [{"node": "Обновить ai_status", "type": "main", "index": 0}],
+        []
+      ]
+    },
+    "Billing API": {
+      "main": [
+        [{"node": "Подготовить ответ биллинга", "type": "main", "index": 0}]
+      ]
+    },
+    "Подготовить ответ биллинга": {
+      "main": [
+        [{"node": "Отправить результат биллинга", "type": "main", "index": 0}]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "9dffad8a498b707a550807b62d36e78c238fa5edde5be37f9c3b19f4c0784011"
+  }
+}

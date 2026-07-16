@@ -1,12 +1,11 @@
 import asyncio
 import json
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -14,8 +13,15 @@ from app.ai_client import make_chat_client
 from app.auth import create_token, decode_token, hash_password, verify_password
 from app.billing import BillingProvider
 from app.config import Settings
-from app.database import DatabaseManager, avatar_color, make_initials
+from app.database import DatabaseManager
 from app.kb import delete_from_qdrant, process_document
+from app.routing import AUTOMATION_DEFAULTS as _AUTOMATION_DEFAULTS, RoutingEngine
+from app.serializers import (
+    fmt_dialog as _fmt_dialog,
+    fmt_message as _fmt_message,
+    fmt_operator as _fmt_operator,
+    fmt_time as _fmt_time,
+)
 from app.storage import make_storage
 from app.summarizer import summarize_dialog
 from app.n8n_client import N8NClient
@@ -30,13 +36,35 @@ _AI_DEFAULTS = {
         "Отвечай кратко, на русском. "
         "Если не знаешь ответ — предложи передать диалог оператору."
     ),
+    "model": "gpt-4o-mini",
     "temperature": 0.7,
     "auto_reply": True,
     "handoff_enabled": True,
     "classification_enabled": False,
 }
 
-_NOTIF_PREFS_DEFAULT = {"new_dialog": True, "operator_called": True, "server_down": True}
+# Sentinel marking the auto-appended escalation instruction inside the prompt
+# that gets published to n8n. Rebuilt from scratch on every sync (strip
+# everything from the marker onward, then conditionally re-add exactly one
+# copy) so the handoff toggle is authoritative regardless of what was there
+# before — a stale or duplicated copy left by a previous bug or a manual
+# edit can never survive a save.
+_HANDOFF_MARKER = "### AUTO-HANDOFF INSTRUCTION — do not edit below this line ###"
+
+
+def _strip_handoff_instruction(prompt: str) -> str:
+    return (prompt or "").split(_HANDOFF_MARKER, 1)[0].rstrip()
+
+
+def _build_n8n_prompt(prompt: str, handoff_enabled: bool, instruction_text: str = "") -> str:
+    base = _strip_handoff_instruction(prompt)
+    if not handoff_enabled:
+        return base
+    # An emptied-out instruction would silently kill auto-handoff — fall back
+    # to the default text instead.
+    text = (instruction_text or "").strip() or _AUTOMATION_DEFAULTS["handoff_instruction_text"]
+    return base + "\n\n" + _HANDOFF_MARKER + "\n" + text
+
 
 _SCHEDULE_DEFAULTS = {
     "mon": {"enabled": True,  "from": "09:00", "to": "21:00"},
@@ -49,86 +77,8 @@ _SCHEDULE_DEFAULTS = {
 }
 
 
-# ── Formatters ────────────────────────────────────────────────────────────────
-
-def _fmt_time(dt: datetime) -> str:
-    if dt is None:
-        return ""
-    now = datetime.now(timezone.utc)
-    dt_utc = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
-    diff = now - dt_utc
-    if diff.days == 0:
-        return dt_utc.strftime("%H:%M")
-    if diff.days == 1:
-        return "Вчера"
-    return dt_utc.strftime("%d.%m")
-
-
-def _fmt_dialog(row: dict, tickets: list = None) -> dict:
-    did = row["dialog_id"]
-    name = row.get("user_name") or did
-    username = row.get("user_username") or f"@{row['chat_id']}"
-    return {
-        "id": did,
-        "chatId": row["chat_id"],
-        "name": name,
-        "username": username,
-        "tgId": row["chat_id"],
-        "initials": make_initials(name),
-        "avatarColor": avatar_color(did),
-        "status": row["status"],
-        "operatorCalled": row["operator_called"],
-        "unread": row["unread_count"],
-        "aiEnabled": row["ai_enabled"],
-        "plan": row.get("user_plan") or "Basic",
-        "subStatus": row.get("user_sub_status") or "active",
-        "nextPayment": row.get("user_next_payment") or "—",
-        "traffic": {
-            "used": float(row.get("user_traffic_used") or 0),
-            "total": float(row.get("user_traffic_total") or 100),
-        },
-        "lastPayment": {
-            "amount": row.get("last_payment_amount") or "—",
-            "date": row.get("last_payment_date") or "—",
-        },
-        "preview": row.get("last_message_text") or "",
-        "time": _fmt_time(row.get("last_message_time")),
-        "tickets": tickets or [],
-    }
-
-
-def _fmt_message(row: dict) -> dict:
-    file_id = row.get("file_id")
-    file_url = row.get("file_url")
-    # handle legacy records where n8n put the URL into file_id
-    if not file_url and file_id and str(file_id).startswith("http"):
-        file_url, file_id = file_id, None
-    return {
-        "id": row["id"],
-        "kind": row["kind"],
-        "text": row.get("text") or "",
-        "fileId": file_id,
-        "fileType": row.get("file_type"),
-        "fileUrl": file_url,
-        "operator": row.get("operator_name"),
-        "time": _fmt_time(row.get("created_at")),
-    }
-
-
-def _fmt_operator(op: dict) -> dict:
-    raw_prefs = op.get("notif_prefs")
-    notif_prefs = json.loads(raw_prefs) if raw_prefs else _NOTIF_PREFS_DEFAULT
-    return {
-        "id": op["id"],
-        "name": op["name"],
-        "tg": op["tg"],
-        "tgId": op.get("tg_id"),
-        "role": op["role"],
-        "initials": op.get("initials") or make_initials(op["name"]),
-        "color": op.get("color") or "#4F8EF7",
-        "online": op.get("online", False),
-        "notifPrefs": notif_prefs,
-    }
+# Formatters live in app.serializers; the _fmt_* aliases above are the names
+# this module uses internally.
 
 
 # ── Request bodies ────────────────────────────────────────────────────────────
@@ -148,12 +98,15 @@ class ChangePasswordBody(BaseModel):
 
 class ReplyBody(BaseModel):
     text: str = ""
-    operator_name: str = "Оператор"
+    operator_name: str | None = None
     file_url: Optional[str] = None
     file_type: Optional[str] = None
 
+class CommentBody(BaseModel):
+    text: str
+
 class HandoffBody(BaseModel):
-    operator_name: str = "Оператор"
+    operator_name: str | None = None
 
 class OperatorBody(BaseModel):
     name: str
@@ -164,6 +117,7 @@ class OperatorBody(BaseModel):
 
 class AISettingsBody(BaseModel):
     prompt: str
+    model: str = "gpt-4o-mini"
     temperature: float
     auto_reply: bool
     handoff_enabled: bool
@@ -173,9 +127,48 @@ class NotifPrefsBody(BaseModel):
     new_dialog:      bool = True
     operator_called: bool = True
     server_down:     bool = True
+    sound_enabled:   bool = True
 
 class ScheduleBody(BaseModel):
     schedule: dict
+
+class AutomationSettingsBody(BaseModel):
+    operator_button_enabled: bool = False
+    operator_button_after_msgs: int = 3
+    auto_handoff_enabled: bool = False
+    rating_enabled: bool = False
+    rating_message_text: str = "Оцените качество поддержки:"
+    rating_thanks_text: str = "Спасибо за оценку! 🙏"
+    close_message_enabled: bool = False
+    close_message_text: str = ""
+    max_tickets_per_operator: int = 10
+    offline_grace_seconds: int = 60
+    operator_call_keywords: str = "оператор, менеджер, жив человек, реальн человек, поддержк"
+    handoff_instruction_text: str = _AUTOMATION_DEFAULTS["handoff_instruction_text"]
+
+class BroadcastBody(BaseModel):
+    text: str
+
+class TemplateBody(BaseModel):
+    group_name: str = "Общие"
+    title: str
+    text: str
+
+class TransferBody(BaseModel):
+    operator_name: str
+
+class PauseBody(BaseModel):
+    paused: bool
+
+class RenameGroupBody(BaseModel):
+    old_name: str
+    new_name: str
+
+class NotesBody(BaseModel):
+    text: str
+
+class PhotoBody(BaseModel):
+    url: str
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -185,12 +178,13 @@ def build_app(
     db: DatabaseManager,
     ws: WebSocketManager,
     n8n: N8NClient,
+    routing: RoutingEngine,
     billing: BillingProvider,
     server_monitor: ServerMonitor,
 ) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
-    chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
+    chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY, settings.CHAT_MODEL)
     storage = make_storage(settings)
 
     if _STATIC.exists():
@@ -322,6 +316,7 @@ def build_app(
                 "title": t.get("summary") or t["last_message_text"] or "Диалог",
                 "date": _fmt_time(t["updated_at"]),
                 "solved": True,
+                "rating": t.get("rating"),
             }
             for t in tickets
         ])
@@ -355,8 +350,7 @@ def build_app(
         if not dialog:
             raise HTTPException(404)
 
-        # Use authenticated operator's name if body doesn't override it
-        op_name = body.operator_name or operator["name"]
+        op_name = body.operator_name or operator["name"] or "Оператор"
         msg_row = await db.save_message(
             dialog_id, "operator",
             body.text or None,
@@ -366,17 +360,80 @@ def build_app(
         )
         preview = body.text or (f"[{body.file_type}]" if body.file_type else "—")
         await db.update_last_message(dialog_id, preview)
-        if dialog["status"] == "new":
-            await db.update_status(dialog_id, "in_progress")
 
-        await n8n.send_manager_message(
+        delivered = await n8n.send_manager_message(
             dialog_id, dialog["chat_id"], body.text,
             file_url=body.file_url, file_type=body.file_type,
+            message_id=msg_row["id"],
         )
+        if not delivered:
+            await db.update_message_delivery(msg_row["id"], "failed", "Очередь недоступна")
+        await db.clear_unread(dialog_id)
 
-        updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+        # Scenario 2: the answered ticket moves to waiting («ждём ответ»),
+        # SLA pauses, the slot frees up (broadcasts the updated dialog).
+        await routing.on_operator_reply(dialog, op_name)
+        return {"ok": True, "delivered": delivered}
+
+    @app.post("/api/dialogs/{dialog_id}/comment")
+    async def add_comment(dialog_id: str, body: CommentBody, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        if not body.text.strip():
+            raise HTTPException(400, "Пустой комментарий")
+        msg_row = await db.save_message(
+            dialog_id, "comment", body.text.strip(), operator_name=operator["name"]
+        )
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+        return {"ok": True}
+
+    @app.put("/api/dialogs/{dialog_id}/notes")
+    async def update_notes(dialog_id: str, body: NotesBody, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        await db.pool.execute(
+            "UPDATE dialogs SET user_notes=$1 WHERE dialog_id=$2", body.text, dialog_id
+        )
+        updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/dismiss_called")
+    async def dismiss_called(dialog_id: str, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        await db.pool.execute(
+            "UPDATE dialogs SET operator_called=FALSE WHERE dialog_id=$1", dialog_id
+        )
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        return {"ok": True}
+
+    @app.get("/api/dialogs/{dialog_id}/has_photo")
+    async def has_photo(dialog_id: str, request: Request):
+        key = request.headers.get("X-API-Key", "")
+        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
+            raise HTTPException(401, "Invalid API key")
+        row = await db.pool.fetchrow(
+            "SELECT user_photo_url FROM dialogs WHERE dialog_id=$1", dialog_id
+        )
+        return {"has_photo": bool(row and row["user_photo_url"])}
+
+    @app.post("/api/dialogs/{dialog_id}/set_photo")
+    async def set_photo(dialog_id: str, request: Request, body: PhotoBody):
+        key = request.headers.get("X-API-Key", "")
+        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
+            raise HTTPException(401, "Invalid API key")
+        await db.pool.execute(
+            "UPDATE dialogs SET user_photo_url=$1 WHERE dialog_id=$2", body.url, dialog_id
+        )
+        updated = await db.get_dialog(dialog_id)
+        if updated:
+            await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/toggle_ai")
@@ -386,7 +443,11 @@ def build_app(
             raise HTTPException(404)
         new_value = not dialog["ai_enabled"]
         await db.update_ai_enabled(dialog_id, new_value)
+        await db.sync_n8n_dialog_ai_status(dialog["chat_id"], new_value)
         await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], new_value)
+        # Keep the status model coherent: AI back on while queued → «ИИ» section;
+        # AI off while unattended in «ИИ» → escalate to humans.
+        await routing.on_ai_toggled(dialog_id, new_value)
         updated = await db.get_dialog(dialog_id)
         await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
         return {"ai_enabled": new_value}
@@ -396,15 +457,62 @@ def build_app(
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
             raise HTTPException(404)
-        op_name = body.operator_name or operator["name"]
-        msg_row = await db.save_message(dialog_id, "system", f"Диалог передан оператору {op_name}")
-        await db.update_status(dialog_id, "in_progress")
-        await db.update_operator_called(dialog_id, True)
-        updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        username = updated.get("user_username") or dialog_id
-        await n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+        op_name = body.operator_name or operator["name"] or "Оператор"
+        updated = await routing.take_in_work(dialog_id, op_name)
+        if not updated:
+            raise HTTPException(400, "Dialog is closed")
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/reopen-closed")
+    async def reopen_closed_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        if dialog["status"] != "closed":
+            raise HTTPException(400, "Dialog is not closed")
+        active = await db.get_active_dialog_by_chat_id(dialog["chat_id"], exclude_dialog_id=dialog_id)
+        if active:
+            return JSONResponse(status_code=409, content={"active_dialog_id": active["dialog_id"]})
+        # → queue, unassigned; AI stays off (the ticket had been escalated)
+        await routing.reopen_closed(dialog_id, dialog["chat_id"])
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/reopen")
+    async def reopen_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        if dialog["status"] == "closed":
+            raise HTTPException(400, "Cannot reopen closed dialog")
+        # → queue for another operator; the AI is NOT re-enabled — the ticket
+        # was already escalated (use the AI toggle to hand it back to the bot).
+        await routing.return_to_queue(dialog_id)
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/wait")
+    async def wait_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
+        """Manual «В ожидание»: pause an in_progress ticket (red label
+        «клиент ждёт ответ») while the operator waits for the team."""
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        try:
+            await routing.set_waiting_manual(dialog_id, operator["name"])
+        except ValueError:
+            raise HTTPException(400, "Only in_progress tickets can be paused")
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/transfer")
+    async def transfer_dialog(dialog_id: str, body: TransferBody, operator: dict = Depends(require_auth)):
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        if operator["role"] != "admin" and dialog.get("assigned_operator") != operator["name"]:
+            raise HTTPException(403, "Can only transfer your own dialogs")
+        target = await db.get_operator_by_name(body.operator_name)
+        if not target:
+            raise HTTPException(404, "Target operator not found")
+        await routing.transfer(dialog_id, body.operator_name)
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/close")
@@ -412,15 +520,16 @@ def build_app(
         dialog = await db.get_dialog(dialog_id)
         if not dialog:
             raise HTTPException(404)
-        msg_row = await db.save_message(dialog_id, "system", "Диалог закрыт оператором")
-        await db.update_status(dialog_id, "closed")
-        await db.update_operator_called(dialog_id, False)
-        updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        await n8n.notify_dialog_closed(dialog_id, dialog["chat_id"], operator["name"])
+        # Transition + system message + broadcasts + n8n sync + queue drain
+        await routing.close(dialog_id, dialog["chat_id"], operator["name"])
         if chat_client:
             asyncio.create_task(_summarize_dialog_bg(dialog_id))
+        automation = await db.get_setting_json("automation", _AUTOMATION_DEFAULTS)
+        if automation.get("close_message_enabled") and automation.get("close_message_text"):
+            asyncio.create_task(n8n.send_to_user(dialog["chat_id"], automation["close_message_text"]))
+        if automation.get("rating_enabled"):
+            rating_text = automation.get("rating_message_text") or "Оцените качество поддержки:"
+            asyncio.create_task(n8n.send_rating_request(dialog["chat_id"], dialog_id, rating_text))
         return {"ok": True}
 
     async def _summarize_dialog_bg(dialog_id: str):
@@ -485,6 +594,12 @@ def build_app(
             raise HTTPException(403, "Admin only")
         return await db.get_stats(days)
 
+    @app.get("/api/stats/times")
+    async def get_time_stats(days: int = 30, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        return await db.get_time_stats(days)
+
     # ── Operators ─────────────────────────────────────────────────────────────
 
     @app.get("/api/operators")
@@ -499,6 +614,19 @@ def build_app(
     async def save_my_notif_prefs(body: NotifPrefsBody, operator: dict = Depends(require_auth)):
         await db.update_operator_notif_prefs(operator["id"], body.model_dump())
         return {"ok": True}
+
+    @app.patch("/api/operators/me/pause")
+    async def set_my_pause(body: PauseBody, operator: dict = Depends(require_auth)):
+        await db.set_operator_paused(operator["id"], body.paused)
+        await ws.broadcast({
+            "type": "operator_status",
+            "op_id": operator["id"],
+            "online": operator.get("online", False),
+            "paused": body.paused,
+        })
+        if not body.paused:
+            asyncio.create_task(routing.drain())
+        return {"ok": True, "paused": body.paused}
 
     @app.post("/api/operators")
     async def create_operator(body: OperatorBody, operator: dict = Depends(require_auth)):
@@ -535,7 +663,26 @@ def build_app(
 
     @app.get("/api/settings/ai")
     async def get_ai_settings(operator: dict = Depends(require_auth)):
-        return await db.get_setting_json("ai_settings", _AI_DEFAULTS)
+        stored = await db.get_setting_json("ai_settings", None) or {}
+        # merge so settings saved before 'model' existed still expose the default
+        return {**_AI_DEFAULTS, **stored}
+
+    async def _sync_ai_settings_to_redis(ai: dict):
+        """Push AI settings to the Redis copy the n8n agent reads, rebuilding
+        the escalation instruction from scratch every time (strip, then
+        conditionally re-add exactly one copy). EVERY endpoint that rewrites
+        vpn_bot:ai_settings must go through here — writing the raw prompt
+        silently kills auto-handoff (the model stops being told how to
+        escalate), and appending without stripping first can leave a stale
+        copy behind when the toggle is switched off."""
+        automation = await db.get_setting_json("automation", None) or {}
+        n8n_data = dict(ai)
+        n8n_data["prompt"] = _build_n8n_prompt(
+            ai.get("prompt"),
+            bool(ai.get("handoff_enabled")),
+            automation.get("handoff_instruction_text") or "",
+        )
+        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
 
     @app.put("/api/settings/ai")
     async def save_ai_settings(body: AISettingsBody, operator: dict = Depends(require_auth)):
@@ -543,16 +690,7 @@ def build_app(
             raise HTTPException(403, "Admin only")
         data = body.model_dump()
         await db.set_setting_json("ai_settings", data)
-        # For n8n: append [HANDOFF] instruction when handoff is enabled
-        n8n_data = dict(data)
-        if data.get("handoff_enabled"):
-            n8n_data["prompt"] = (data["prompt"] or "").rstrip() + (
-                "\n\nЕсли вопрос сложный, ты не уверен в ответе или пользователь просит живого оператора — "
-                "добавь [HANDOFF] в самое начало своего ответа. "
-                "Пример: «[HANDOFF] Передаю вас оператору, он скоро ответит.» "
-                "Без [HANDOFF] — отвечай самостоятельно."
-            )
-        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
+        await _sync_ai_settings_to_redis(data)
         return {"ok": True}
 
     # ── Settings: Schedule ────────────────────────────────────────────────────
@@ -601,6 +739,23 @@ def build_app(
             )
         return {"chunks_created": len(chunks), "ids": [c["id"] for c in chunks]}
 
+    @app.delete("/api/kb")
+    async def reset_kb_all(operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        await db.reset_kb()
+        from qdrant_client import AsyncQdrantClient
+        from app.kb import ensure_collection
+        client = AsyncQdrantClient(url=settings.QDRANT_URL)
+        try:
+            await client.delete_collection("kb")
+        except Exception:
+            pass
+        finally:
+            await client.close()
+        await ensure_collection(settings.QDRANT_URL)
+        return {"ok": True}
+
     @app.delete("/api/kb/{article_id}")
     async def delete_kb_article(article_id: str, operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
@@ -609,6 +764,125 @@ def build_app(
         if not ok:
             raise HTTPException(404)
         await delete_from_qdrant(article_id, settings.QDRANT_URL)
+        return {"ok": True}
+
+    # ── Settings: Sounds ─────────────────────────────────────────────────────
+
+    @app.get("/api/settings/sounds")
+    async def get_sounds(operator: dict = Depends(require_auth)):
+        return await db.get_setting_json("sounds", {})
+
+    @app.post("/api/settings/sounds/upload")
+    async def upload_sound(
+        event: str,
+        file: UploadFile = File(...),
+        operator: dict = Depends(require_auth),
+    ):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if event not in ("operator_called", "new_message"):
+            raise HTTPException(400, "event must be operator_called or new_message")
+        ext = Path(file.filename).suffix if file.filename else ".mp3"
+        filename = f"sound_{event}_{uuid.uuid4().hex}{ext}"
+        content = await file.read()
+        url = await storage.save(content, filename)
+        sounds = await db.get_setting_json("sounds", {})
+        sounds[f"{event}_url"] = url
+        await db.set_setting_json("sounds", sounds)
+        return {"url": url}
+
+    # ── Settings: Automation ─────────────────────────────────────────────────
+
+    @app.get("/api/settings/automation")
+    async def get_automation(operator: dict = Depends(require_auth)):
+        stored = await db.get_setting_json("automation", None) or {}
+        # merge so settings saved before new keys existed still expose defaults
+        return {**_AUTOMATION_DEFAULTS, **stored}
+
+    @app.put("/api/settings/automation")
+    async def save_automation(body: AutomationSettingsBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        data = body.model_dump()
+        await db.set_setting_json("automation", data)
+        # Синхронизировать auto_handoff_enabled → ai_settings для консьюмеров
+        # (get_setting_json returns the default object AS-IS when nothing is
+        # stored yet — never mutate it in place, or the process-wide default
+        # gets corrupted on the very first save of a fresh install)
+        ai = await db.get_setting_json("ai_settings", None) or dict(_AI_DEFAULTS)
+        ai["handoff_enabled"] = data["auto_handoff_enabled"]
+        await db.set_setting_json("ai_settings", ai)
+        # через общий хелпер — иначе инструкция эскалации пропадёт из промпта
+        await _sync_ai_settings_to_redis(ai)
+        return {"ok": True}
+
+    # ── Broadcast ─────────────────────────────────────────────────────────────
+
+    @app.post("/api/broadcast")
+    async def broadcast_msg(body: BroadcastBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not body.text.strip():
+            raise HTTPException(400, "Текст не может быть пустым")
+        lock_key = "vpn_bot:broadcast_lock"
+        if await n8n.redis.get(lock_key):
+            raise HTTPException(429, "Рассылка уже выполняется")
+        await n8n.redis.set(lock_key, "1", ex=30)
+        chat_ids = await db.get_all_chat_ids()
+        sent = 0
+        failed = 0
+        try:
+            for cid in chat_ids:
+                ok = await n8n.send_to_user(cid, body.text)
+                if ok:
+                    sent += 1
+                else:
+                    failed += 1
+        finally:
+            await n8n.redis.delete(lock_key)
+        # Rate-limiting (30 msg/sec Telegram limit) is handled by n8n — add a
+        # 50 ms Wait node between iterations in the "Send to User" workflow.
+        return {"sent": sent, "failed": failed, "total": len(chat_ids)}
+
+    # ── Templates ─────────────────────────────────────────────────────────────
+
+    @app.get("/api/templates")
+    async def get_templates(operator: dict = Depends(require_auth)):
+        return await db.get_templates()
+
+    @app.post("/api/templates")
+    async def create_template(body: TemplateBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not body.title.strip() or not body.text.strip():
+            raise HTTPException(400, "Название и текст обязательны")
+        return await db.save_template(None, body.group_name.strip() or "Общие", body.title.strip(), body.text.strip())
+
+    @app.put("/api/templates/{template_id}")
+    async def update_template(template_id: int, body: TemplateBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        row = await db.save_template(template_id, body.group_name.strip() or "Общие", body.title.strip(), body.text.strip())
+        if not row:
+            raise HTTPException(404)
+        return row
+
+    @app.delete("/api/templates/{template_id}")
+    async def delete_template_ep(template_id: int, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        ok = await db.delete_template(template_id)
+        if not ok:
+            raise HTTPException(404)
+        return {"ok": True}
+
+    @app.patch("/api/templates/group")
+    async def rename_template_group(body: RenameGroupBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not body.new_name.strip():
+            raise HTTPException(400, "Название группы не может быть пустым")
+        await db.rename_template_group(body.old_name.strip(), body.new_name.strip())
         return {"ok": True}
 
     # ── WebSocket ─────────────────────────────────────────────────────────────
@@ -621,15 +895,25 @@ def build_app(
             return
         went_online = await ws.connect(websocket, op_id)
         if went_online:
+            op = await db.get_operator(op_id)
             await db.set_operator_online(op_id, True)
-            await ws.broadcast({"type": "operator_status", "op_id": op_id, "online": True})
+            # back within the grace period — cancel the offline timer
+            await db.set_operator_offline_since(op_id, False)
+            await ws.broadcast({"type": "operator_status", "op_id": op_id, "online": True, "paused": op.get("paused", False) if op else False})
+            if op:
+                asyncio.create_task(routing.drain())
         try:
             while True:
-                await websocket.receive_text()
+                text = await websocket.receive_text()
+                if text == "ping":
+                    await websocket.send_text("pong")
         except WebSocketDisconnect:
             departed_id, went_offline = ws.disconnect(websocket)
             if went_offline and departed_id:
                 await db.set_operator_online(departed_id, False)
-                await ws.broadcast({"type": "operator_status", "op_id": departed_id, "online": False})
+                # start the offline grace timer; the routing sweeper releases
+                # the operator's in_progress tickets when it expires
+                await db.set_operator_offline_since(departed_id, True)
+                await ws.broadcast({"type": "operator_status", "op_id": departed_id, "online": False, "paused": False})
 
     return app

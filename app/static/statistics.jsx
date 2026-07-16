@@ -1,18 +1,25 @@
 // Statistics screen
 
-const { useState: useStateS, useMemo: useMemoS } = React;
+const { useState: useStateS, useEffect: useEffectS, useMemo: useMemoS } = React;
 
-function StatCard({ label, value, delta, deltaPositive }) {
+function fmtDuration(seconds) {
+  if (seconds == null) return "—";
+  const s = Math.round(seconds);
+  if (s < 60)   return `${s} сек`;
+  if (s < 3600) { const m = Math.floor(s / 60), r = s % 60; return r ? `${m} мин ${r} сек` : `${m} мин`; }
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  if (s < 86400) return m ? `${h} ч ${m} мин` : `${h} ч`;
+  const d = Math.floor(s / 86400), rh = Math.floor((s % 86400) / 3600);
+  return rh ? `${d} д ${rh} ч` : `${d} д`;
+}
+
+function StatCard({ label, value, sub }) {
   return (
     <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-4">
       <div className="text-xs text-[#6b7280] mb-2">{label}</div>
       <div className="flex items-end justify-between gap-2">
         <div className="text-2xl font-semibold text-[#f1f1f5] tabular-nums leading-none">{value}</div>
-        {delta && (
-          <div className={"text-[11px] font-medium tabular-nums " + (deltaPositive ? "text-[#22c55e]" : "text-[#ef4444]")}>
-            {deltaPositive ? "+" : ""}{delta}
-          </div>
-        )}
+        {sub && <div className="text-[11px] text-[#6b7280]">{sub}</div>}
       </div>
     </div>
   );
@@ -37,7 +44,6 @@ function LineChart({ data, days = 14 }) {
   const path = pts.map(([x, y], i) => (i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`)).join(" ");
   const area = path + ` L ${w} ${h} L 0 ${h} Z`;
 
-  // Generate date labels: evenly spaced across the data range
   const today = new Date();
   const labelCount = 7;
   const step = Math.floor((data.length - 1) / (labelCount - 1));
@@ -88,13 +94,14 @@ function LineChart({ data, days = 14 }) {
 
 function HeatmapChart({ data }) {
   const max = data && data.length ? Math.max(...data) : 1;
+  const peakHour = data && data.length ? data.indexOf(Math.max(...data)) : 0;
   return (
     <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5">
       <div className="text-sm font-medium text-[#f1f1f5] mb-1">Обращения по часам</div>
-      <div className="text-xs text-[#6b7280] mb-4">средние значения за 14 дней · пик в 15:00</div>
+      <div className="text-xs text-[#6b7280] mb-4">средние значения за 14 дней · пик в {peakHour}:00</div>
       <div className="grid grid-cols-24 gap-[3px] h-[120px]" style={{ gridTemplateColumns: "repeat(24, 1fr)" }}>
-        {data.map((v, i) => {
-          const intensity = v / max;
+        {(data || Array(24).fill(0)).map((v, i) => {
+          const intensity = v / (max || 1);
           const h = Math.max(8, intensity * 100);
           return (
             <div key={i} className="flex flex-col justify-end group relative">
@@ -160,14 +167,15 @@ function OperatorsTable({ operators }) {
     <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
       <div className="px-5 py-4 border-b border-[#2a2a3a]/60">
         <div className="text-sm font-medium text-[#f1f1f5]">Операторы</div>
-        <div className="text-xs text-[#6b7280]">эффективность за сегодня</div>
+        <div className="text-xs text-[#6b7280]">{operators.filter((o) => o.online).length} онлайн</div>
       </div>
       <table className="w-full text-sm">
         <thead>
           <tr className="text-[10px] uppercase tracking-wider text-[#6b7280]">
             <th className="text-left px-5 py-2 font-medium">Имя</th>
-            <th className="text-right px-3 py-2 font-medium">Закрыто</th>
-            <th className="text-right px-3 py-2 font-medium">Ср. время</th>
+            <th className="text-right px-3 py-2 font-medium">Диалогов</th>
+            <th className="text-right px-3 py-2 font-medium">Первый ответ</th>
+            <th className="text-right px-3 py-2 font-medium">Ср. ответ</th>
             <th className="text-right px-5 py-2 font-medium">Статус</th>
           </tr>
         </thead>
@@ -185,8 +193,9 @@ function OperatorsTable({ operators }) {
                   </div>
                 </div>
               </td>
-              <td className="px-3 py-3 text-right tabular-nums text-[#f1f1f5]">{op.closed}</td>
-              <td className="px-3 py-3 text-right tabular-nums text-[#f1f1f5]">{op.avgTime}</td>
+              <td className="px-3 py-3 text-right tabular-nums text-[#f1f1f5]">{op.dialogs_count ?? 0}</td>
+              <td className="px-3 py-3 text-right tabular-nums text-[#f1f1f5]">{fmtDuration(op.first_response_avg)}</td>
+              <td className="px-3 py-3 text-right tabular-nums text-[#f1f1f5]">{fmtDuration(op.next_response_avg)}</td>
               <td className="px-5 py-3 text-right">
                 <span className="inline-flex items-center gap-1.5 text-xs">
                   <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
@@ -203,20 +212,40 @@ function OperatorsTable({ operators }) {
   );
 }
 
-function StatisticsScreen({ dailyConversations: dc, hourly: hv, operators: ops, topQuestions: tq, todayTotal, todayClosed, aiPct }) {
-  const dailyConversations = dc || [];
-  const hourly = hv || [];
-  const operators = ops || [];
-  const topQuestions = tq || [];
-  const [range, setRange] = useStateS("14d");
-  const ranges = [
-    { id: "today", label: "Сегодня" },
-    { id: "7d", label: "7 дней" },
-    { id: "14d", label: "14 дней" },
-    { id: "30d", label: "30 дней" },
-  ];
+function StatisticsScreen() {
+  const [range,  setRange]  = useStateS("14d");
+  const [stats,  setStats]  = useStateS(null);
+  const [times,  setTimes]  = useStateS(null);
 
   const days = range === "today" ? 1 : range === "7d" ? 7 : range === "14d" ? 14 : 30;
+
+  useEffectS(() => {
+    setStats(null);
+    setTimes(null);
+    let stale = false;
+    Promise.all([
+      window.apiFetch("GET", `/api/stats?days=${days}`),
+      window.apiFetch("GET", `/api/stats/times?days=${days}`),
+    ]).then(([s, t]) => { if (!stale) { setStats(s); setTimes(t); } }).catch(() => {});
+    return () => { stale = true; };
+  }, [days]);
+
+  const ranges = [
+    { id: "today", label: "Сегодня" },
+    { id: "7d",   label: "7 дней"  },
+    { id: "14d",  label: "14 дней" },
+    { id: "30d",  label: "30 дней" },
+  ];
+
+  const team = times?.team || {};
+
+  // Merge operator time stats into base operators list from /api/stats
+  const operators = useMemoS(() => {
+    const base = stats?.operators || [];
+    const timeOps = times?.operators || [];
+    const timeMap = Object.fromEntries(timeOps.map((o) => [o.id, o]));
+    return base.map((op) => ({ ...op, ...(timeMap[op.id] || {}) }));
+  }, [stats, times]);
 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin bg-[#0d0d12]">
@@ -225,7 +254,7 @@ function StatisticsScreen({ dailyConversations: dc, hourly: hv, operators: ops, 
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-semibold text-[#f1f1f5]">Статистика</h1>
-            <div className="text-xs text-[#6b7280] mt-0.5">данные за сегодня</div>
+            <div className="text-xs text-[#6b7280] mt-0.5">данные за выбранный период</div>
           </div>
           <div className="flex items-center gap-3">
             <div className="bg-[#13131a] border border-[#2a2a3a] rounded-lg p-1 flex gap-0.5">
@@ -247,18 +276,26 @@ function StatisticsScreen({ dailyConversations: dc, hourly: hv, operators: ops, 
 
         {/* KPI row */}
         <div className="grid grid-cols-4 gap-4">
-          <StatCard label="Обращений сегодня" value={todayTotal != null ? String(todayTotal) : "—"} />
-          <StatCard label="Среднее время ответа" value="—" />
-          <StatCard label="Закрыто диалогов" value={todayClosed != null ? String(todayClosed) : "—"} />
-          <StatCard label="ИИ решил без оператора" value={aiPct != null ? aiPct + "%" : "—"} />
+          <StatCard label="Обращений сегодня" value={stats ? String(stats.today_total) : "—"} />
+          <StatCard label="Первый ответ (команда)" value={fmtDuration(team.first_response_avg)} />
+          <StatCard label="Закрыто диалогов" value={stats ? String(stats.today_closed) : "—"} />
+          <StatCard label="Ср. ответ (команда)" value={fmtDuration(team.next_response_avg)} />
         </div>
+
+        {/* Close time banner */}
+        {team.close_time_avg != null && (
+          <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl px-5 py-3 flex items-center justify-between">
+            <div className="text-xs text-[#6b7280]">Среднее время закрытия тикета</div>
+            <div className="text-sm font-semibold text-[#f1f1f5] tabular-nums">{fmtDuration(team.close_time_avg)}</div>
+          </div>
+        )}
 
         {/* Charts row */}
         <div className="grid grid-cols-3 gap-4">
           <div className="col-span-2">
-            <LineChart data={dailyConversations} days={days} />
+            <LineChart data={stats?.daily || []} days={days} />
           </div>
-          <HeatmapChart data={hourly} />
+          <HeatmapChart data={stats?.hourly || Array(24).fill(0)} />
         </div>
 
         {/* Bottom row */}
@@ -266,7 +303,7 @@ function StatisticsScreen({ dailyConversations: dc, hourly: hv, operators: ops, 
           <div className="col-span-2">
             <OperatorsTable operators={operators} />
           </div>
-          <TopQuestionsChart data={topQuestions} />
+          <TopQuestionsChart data={stats?.top_questions || []} />
         </div>
       </div>
     </div>
