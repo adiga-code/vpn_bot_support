@@ -69,35 +69,47 @@ def _make_slug(title: str, existing: set[str]) -> str:
 
 async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
     """Call the configured chat LLM to split the document into KB chunks."""
-    try:
-        response = await chat_client.client.chat.completions.create(
-            model=chat_client.model,
-            messages=[
-                {"role": "system", "content": _CHUNKING_PROMPT},
-                {"role": "user",   "content": text},
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-        raw = response.choices[0].message.content
+    MAX_INPUT_LENGTH = 15000  # Limit input length to avoid too long responses
+    input_text = text if len(text) <= MAX_INPUT_LENGTH else text[:MAX_INPUT_LENGTH]
+    attempt = 0
+    max_attempts = 3
+    while attempt < max_attempts:
         try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as e:
-            # Log the error and raw response for debugging
-            print(f"[chunk_document] JSON decode error: {e}")
-            print(f"[chunk_document] Raw response: {raw}")
-            # Attempt to fix common JSON issues, e.g., replace single quotes with double quotes
-            fixed_raw = raw.replace("'", '"')
+            response = await chat_client.client.chat.completions.create(
+                model=chat_client.model,
+                messages=[
+                    {"role": "system", "content": _CHUNKING_PROMPT},
+                    {"role": "user",   "content": input_text},
+                ],
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+            raw = response.choices[0].message.content
             try:
-                parsed = json.loads(fixed_raw)
-            except Exception:
-                # If still fails, raise original error
-                raise e
-        chunks = parsed if isinstance(parsed, list) else parsed.get("chunks", list(parsed.values())[0])
-    except Exception as e:
-        print(f"[chunk_document] Error during chunking: {e}")
-        return []
-    
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as e:
+                # Log the error and raw response for debugging
+                print(f"[chunk_document] JSON decode error: {e}")
+                print(f"[chunk_document] Raw response: {raw}")
+                # Attempt to fix common JSON issues, e.g., replace single quotes with double quotes
+                fixed_raw = raw.replace("'", '"')
+                # Additional fix: try to close unterminated strings by adding a quote at the end if missing
+                if fixed_raw.count('"') % 2 != 0:
+                    fixed_raw += '"'
+                try:
+                    parsed = json.loads(fixed_raw)
+                except Exception:
+                    # If still fails, raise original error
+                    raise e
+            chunks = parsed if isinstance(parsed, list) else parsed.get("chunks", list(parsed.values())[0])
+            break
+        except Exception as e:
+            print(f"[chunk_document] Error during chunking attempt {attempt+1}: {e}")
+            attempt += 1
+            if attempt == max_attempts:
+                print("[chunk_document] Max attempts reached, returning empty list.")
+                return []
+            # Optionally, modify input_text or prompt here for retry
     seen: set[str] = set()
     result = []
     for c in chunks:
