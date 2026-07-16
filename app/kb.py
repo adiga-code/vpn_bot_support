@@ -183,6 +183,9 @@ async def process_document(text: str, chat_client: "ChatClient", openai_key: str
     """Full pipeline: text → chunks (via chat LLM) → embeddings (OpenAI) → Qdrant."""
     print(f"[KB] Chunking document ({len(text)} chars) via {chat_client.model}...")
     chunks = await chunk_document(text, chat_client)
+    if not chunks:
+        print("[KB] No chunks created, skipping embedding and upsert.")
+        return []
     print(f"[KB] Created {len(chunks)} chunks, embedding...")
     chunks = await embed_chunks(chunks, openai_key)
     await ensure_collection(qdrant_url)
