@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from typing import TYPE_CHECKING
 
 from openai import AsyncOpenAI
@@ -60,8 +61,21 @@ Split the document into chunks following this logic:
 - Return ONLY valid JSON. No markdown, no explanation, no preamble."""
 
 
+_TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+
+def _translit(text: str) -> str:
+    return "".join(_TRANSLIT.get(ch, ch) for ch in text.lower())
+
+
 def _make_slug(title: str, existing: set[str]) -> str:
-    base = re.sub(r"[^a-z0-9]+", "-", title.lower().strip())[:60].strip("-") or "chunk"
+    base = re.sub(r"[^a-z0-9]+", "-", _translit(title).strip())[:60].strip("-") or "chunk"
     slug = base
     i = 2
     while slug in existing:
@@ -69,6 +83,59 @@ def _make_slug(title: str, existing: set[str]) -> str:
         i += 1
     existing.add(slug)
     return slug
+
+
+def _guess_category(title: str, keywords: list[str]) -> str:
+    text = (title + " " + " ".join(keywords)).lower()
+    if any(w in text for w in ("оператор", "ручная проверка", "handoff")):
+        return "escalation"
+    if any(w in text for w in ("не работает", "не подключ", "не открыва", "не грузит",
+                               "ошибк", "timeout", "диагностик", "отключа", "сломал")):
+        return "troubleshooting"
+    if any(w in text for w in ("подключить", "подключение", "установить", "скачать",
+                               "роутер", "телевизор", "приставк", "устройство", "клиент")):
+        return "setup"
+    if any(w in text for w in ("оплат", "покупк", "продлен", "возврат",
+                               "промокод", "тариф", "списание")):
+        return "payment"
+    return "faq"
+
+
+def parse_markdown_sections(text: str) -> list[dict] | None:
+    """Deterministically split a structured markdown document into KB chunks.
+
+    Expects sections delimited by "## " headers, optionally with a
+    "Запросы: ..." line of user search phrases that becomes the keywords.
+    Returns None when the document has fewer than two sections, so the
+    caller can fall back to LLM chunking for unstructured documents.
+    """
+    parts = re.split(r"(?m)^##\s+", text)
+    if len(parts) < 3:  # parts[0] is the preamble before the first header
+        return None
+    seen: set[str] = set()
+    chunks = []
+    for part in parts[1:]:
+        header, _, body = part.partition("\n")
+        header = header.strip()
+        num_match = re.match(r"^(\d+)[.)]?\s*", header)
+        title = header[num_match.end():].strip() if num_match else header
+        body = re.sub(r"\n-{3,}\s*$", "", body.strip())
+        if len(body) < 20:
+            continue
+        keywords = []
+        kw_match = re.search(r"(?m)^Запросы:\s*(.+)$", body)
+        if kw_match:
+            keywords = [k.strip(" .") for k in kw_match.group(1).split(";") if k.strip(" .")]
+        prefix = f"{num_match.group(1)}-" if num_match else ""
+        slug = _make_slug(prefix + title, seen)
+        chunks.append({
+            "id":       slug,
+            "title":    title,
+            "category": _guess_category(title, keywords),
+            "keywords": keywords,
+            "content":  f"{title}\n\n{body}",
+        })
+    return chunks or None
 
 
 async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
@@ -138,10 +205,17 @@ async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
     return result
 
 
+def _embed_text(chunk: dict) -> str:
+    """Text sent to the embedding model: title and keywords are included so
+    user queries match the exact phrases from the «Запросы:» lines."""
+    parts = [chunk.get("title", ""), "; ".join(chunk.get("keywords", [])), chunk["content"]]
+    return "\n".join(p for p in parts if p)
+
+
 async def embed_chunks(chunks: list[dict], openai_key: str) -> list[dict]:
     """Embed chunks using OpenAI text-embedding-3-small (always OpenAI)."""
     client = AsyncOpenAI(api_key=openai_key)
-    texts = [c["content"] for c in chunks]
+    texts = [_embed_text(c) for c in chunks]
     embeddings = []
     for i in range(0, len(texts), _BATCH_SIZE):
         batch = texts[i: i + _BATCH_SIZE]
@@ -153,7 +227,8 @@ async def embed_chunks(chunks: list[dict], openai_key: str) -> list[dict]:
 
 
 async def ensure_collection(qdrant_url: str):
-    """Create Qdrant collection if it doesn't exist."""
+    """Create Qdrant collection and payload index if they don't exist."""
+    from qdrant_client.models import PayloadSchemaType
     client = AsyncQdrantClient(url=qdrant_url)
     try:
         await client.get_collection(_COLLECTION)
@@ -162,7 +237,21 @@ async def ensure_collection(qdrant_url: str):
             _COLLECTION,
             vectors_config=VectorParams(size=_EMBED_DIMS, distance=Distance.COSINE),
         )
+    try:
+        await client.create_payload_index(
+            _COLLECTION,
+            field_name="metadata.article_id",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+    except Exception:
+        pass
     await client.close()
+
+
+def _point_id(article_id: str) -> str:
+    # Deterministic: re-uploading the same document overwrites its points
+    # instead of accumulating duplicates.
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"kb:{article_id}"))
 
 
 async def upsert_to_qdrant(chunks: list[dict], qdrant_url: str):
@@ -170,11 +259,12 @@ async def upsert_to_qdrant(chunks: list[dict], qdrant_url: str):
     client = AsyncQdrantClient(url=qdrant_url)
     points = [
         PointStruct(
-            id=abs(hash(c["id"])) % (2**63),
+            id=_point_id(c["id"]),
             vector=c["embedding"],
             payload={
-                "pageContent": c["content"],
-                "content":     c["content"],
+                # "content"/"metadata" are the payload keys the n8n Qdrant
+                # Vector Store node reads by default.
+                "content": c["content"],
                 "metadata": {
                     "article_id": c["id"],
                     "title":      c["title"],
@@ -197,7 +287,7 @@ async def delete_from_qdrant(article_id: str, qdrant_url: str):
         await client.delete(
             collection_name=_COLLECTION,
             points_selector=Filter(
-                must=[FieldCondition(key="article_id", match=MatchValue(value=article_id))]
+                must=[FieldCondition(key="metadata.article_id", match=MatchValue(value=article_id))]
             ),
         )
     except Exception:
@@ -206,10 +296,18 @@ async def delete_from_qdrant(article_id: str, qdrant_url: str):
 
 
 async def process_document(text: str, chat_client: "ChatClient", openai_key: str, qdrant_url: str) -> list[dict]:
-    """Full pipeline: text → chunks (via chat LLM) → embeddings (OpenAI) → Qdrant."""
+    """Full pipeline: text → chunks → embeddings (OpenAI) → Qdrant.
+
+    Structured markdown ("## " sections) is split deterministically; the
+    chat LLM is only a fallback for unstructured documents.
+    """
     try:
-        print(f"[KB] Chunking document ({len(text)} chars) via {chat_client.model}...")
-        chunks = await chunk_document(text, chat_client)
+        chunks = parse_markdown_sections(text)
+        if chunks:
+            print(f"[KB] Parsed {len(chunks)} markdown sections deterministically")
+        else:
+            print(f"[KB] No markdown structure found, chunking ({len(text)} chars) via {chat_client.model}...")
+            chunks = await chunk_document(text, chat_client)
         if not chunks:
             print("[KB] No chunks created, skipping embedding and upsert.")
             return []
