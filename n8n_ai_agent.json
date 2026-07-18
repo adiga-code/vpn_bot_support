@@ -131,14 +131,14 @@
     {
       "parameters": {
         "mode": "retrieve-as-tool",
-        "toolDescription": "Search VPN support knowledge base. Use for setup instructions, troubleshooting, payment, FAQ. Input: user's question in Russian or English.",
+        "toolDescription": "Поиск по базе знаний поддержки GruVPN: инструкции подключения, диагностика проблем, белые списки, оплата и продление, FAQ. Вызывай перед каждым ответом на вопрос пользователя. Query: проблема формулировкой пользователя, на русском (например: «YouTube не работает на iPhone»).",
         "qdrantCollection": {
           "__rl": true,
           "value": "kb",
           "mode": "list",
           "cachedResultName": "kb"
         },
-        "topK": 3,
+        "topK": 5,
         "options": {}
       },
       "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
@@ -158,6 +158,7 @@
     },
     {
       "parameters": {
+        "model": "text-embedding-3-small",
         "options": {}
       },
       "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
