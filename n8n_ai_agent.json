@@ -32,99 +32,51 @@
       "name": "AI",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "position": [
-        -448,
-        96
+        -2432,
+        1776
       ]
     },
     {
       "parameters": {
         "promptType": "define",
-        "text": "={{ $('Приведение к 1 формату').item.json.prompt }}",
-        "needsFallback": true,
+        "text": "={{ $('Приведение к 1 формату').first().json.prompt }}",
         "options": {
-          "systemMessage": "={{ $json.ai_prompt }}"
+          "systemMessage": "={{ $('Code in JavaScript').first().json.ai_prompt }}\n\nИстория диалога (для контекста, не источник фактов):\n{{ $('Форматировать историю1').first().json.historyText }}"
         }
       },
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 3.1,
       "position": [
-        1200,
-        0
+        608,
+        1968
       ],
-      "id": "8e741028-f5a9-45a4-a139-0fe8806c84d8",
+      "id": "38ac3ed8-e040-4b2a-86a2-20ede94896ea",
       "name": "AI Agent"
     },
     {
       "parameters": {
         "model": {
           "__rl": true,
-          "value": "={{ $json.ai_model }}",
+          "value": "={{ $('Code in JavaScript').first().json.ai_model }}",
           "mode": "id"
         },
         "responsesApiEnabled": false,
         "options": {
-          "temperature": "={{ $json.ai_temperature }}"
+          "temperature": "={{ $('Code in JavaScript').first().json.ai_temperature }}"
         }
       },
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1.3,
       "position": [
-        1072,
-        224
+        480,
+        2192
       ],
-      "id": "6bd49100-1841-470c-89a9-6b84f936e07f",
+      "id": "762e6d02-0c72-44e6-a86a-403165fcb068",
       "name": "OpenAI Chat Model",
       "credentials": {
         "openAiApi": {
           "id": "0tL4zzqsCd2g3p0a",
           "name": "OpenAI account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "model": {
-          "__rl": true,
-          "value": "gpt-4.1-mini",
-          "mode": "list",
-          "cachedResultName": "gpt-4.1-mini"
-        },
-        "builtInTools": {},
-        "options": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
-      "typeVersion": 1.3,
-      "position": [
-        1200,
-        224
-      ],
-      "id": "be3c0648-0707-4100-8fe6-b3786cea5f19",
-      "name": "OpenAI Chat Model1",
-      "credentials": {
-        "openAiApi": {
-          "id": "0tL4zzqsCd2g3p0a",
-          "name": "OpenAI account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "sessionIdType": "customKey",
-        "sessionKey": "={{ $('AI').item.json.dialog_id }}",
-        "contextWindowLength": 10
-      },
-      "type": "@n8n/n8n-nodes-langchain.memoryRedisChat",
-      "typeVersion": 1.5,
-      "position": [
-        1328,
-        224
-      ],
-      "id": "bc0336ef-3fd2-4c6a-b12e-b79f60bdfb6f",
-      "name": "Redis Chat Memory",
-      "credentials": {
-        "redis": {
-          "id": "hit3nIMoTAWeW4Gi",
-          "name": "Redis account"
         }
       }
     },
@@ -144,11 +96,12 @@
       "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
       "typeVersion": 1.3,
       "position": [
-        1456,
-        224
+        864,
+        2192
       ],
-      "id": "f0b24847-241c-4a8d-ba15-244a46d773f9",
+      "id": "a97dadae-f594-491a-8c38-3ea670714b64",
       "name": "Qdrant Vector Store2",
+      "rewireOutputLogTo": "ai_tool",
       "credentials": {
         "qdrantApi": {
           "id": "Q4QxrSlzWGuaPIrG",
@@ -158,16 +111,15 @@
     },
     {
       "parameters": {
-        "model": "text-embedding-3-small",
         "options": {}
       },
       "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
       "typeVersion": 1.2,
       "position": [
-        1536,
-        432
+        944,
+        2400
       ],
-      "id": "ca7a5754-cf6f-47d3-9fb0-726ff6868fa1",
+      "id": "4327dfa1-19d7-4ec3-a745-f6e470d69fcc",
       "name": "Embeddings OpenAI2",
       "credentials": {
         "openAiApi": {
@@ -186,10 +138,10 @@
       "type": "n8n-nodes-base.redis",
       "typeVersion": 1,
       "position": [
-        816,
-        80
+        -544,
+        1776
       ],
-      "id": "a331263d-f671-4f72-9e07-b630e5c7b05a",
+      "id": "4db6159d-34ec-4262-a577-79ebc20240e5",
       "name": "Redis1",
       "credentials": {
         "redis": {
@@ -200,15 +152,15 @@
     },
     {
       "parameters": {
-        "jsCode": "const raw = $json.ai_settings;\n\nconst settings = raw ? JSON.parse(raw) : {};\n\nreturn [{\n  json: {\n    ...$json,\n    ai_enabled: settings.enabled ?? false,\n    ai_model: settings.model ?? 'gpt-4o-mini',\n    ai_temperature: settings.temperature ?? 0.7,\n    ai_prompt: settings.prompt ?? ''\n  }\n}];"
+        "jsCode": "const raw = $json.ai_settings;\n\nconst settings = raw ? JSON.parse(raw) : {};\n\nreturn [{\n  json: {\n    ...$json,\n    ai_enabled: settings.enabled ?? false,\n    ai_model: settings.model ?? 'gpt-4o-mini',\n    ai_temperature: settings.temperature ?? 0.7,\n    ai_prompt: settings.prompt ?? '',\n    ai_handoff_prompt: settings.handoff_prompt ?? ''\n  }\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        960,
-        80
+        -320,
+        1776
       ],
-      "id": "50a90a4e-c830-49b6-bf05-8b7a2c3ae17a",
+      "id": "4c4c0da8-c33a-44bf-9b4e-ff229fd1b509",
       "name": "Code in JavaScript"
     },
     {
@@ -295,10 +247,10 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.4,
       "position": [
-        -224,
-        96
+        -2112,
+        1760
       ],
-      "id": "d64e739a-f7ee-4336-a9cb-2cbacc44b6a9",
+      "id": "5786b79f-ba0d-47ec-9130-b0d69f30c6c3",
       "name": "Switch"
     },
     {
@@ -315,10 +267,10 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        0,
-        240
+        -1888,
+        1968
       ],
-      "id": "b9de0615-9d14-4c3a-82e1-87a8b6fae13f",
+      "id": "7e8f9006-9624-4c8d-b8b1-783ebf77098f",
       "name": "HTTP Request"
     },
     {
@@ -335,10 +287,10 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        0,
-        0
+        -1888,
+        1584
       ],
-      "id": "4550f1a5-5637-48ca-8574-40758cc7a8e5",
+      "id": "689c7825-ca6b-4b5a-89f5-352049718929",
       "name": "HTTP Request1"
     },
     {
@@ -357,10 +309,10 @@
       "type": "@n8n/n8n-nodes-langchain.openAi",
       "typeVersion": 2.3,
       "position": [
-        208,
-        240
+        -1664,
+        1968
       ],
-      "id": "3b4c066f-0b58-4d3d-93a5-2f3b3c6be3ef",
+      "id": "f36a5cff-41ce-4abe-848e-d191312b37ce",
       "name": "Analyze image",
       "credentials": {
         "openAiApi": {
@@ -378,10 +330,10 @@
       "type": "@n8n/n8n-nodes-langchain.openAi",
       "typeVersion": 2.3,
       "position": [
-        176,
-        0
+        -1664,
+        1584
       ],
-      "id": "3c3cf9cd-d7e4-4560-8c87-ae970244044d",
+      "id": "1c2a4f79-9bc2-49ee-8cf6-d3391cd86568",
       "name": "Transcribe a recording",
       "credentials": {
         "openAiApi": {
@@ -413,10 +365,10 @@
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [
-        384,
-        0
+        -1440,
+        1584
       ],
-      "id": "3c25a250-0609-42e8-bca9-f75f03972b2e",
+      "id": "fa30cddf-555c-4616-8515-21477c20f73b",
       "name": "Тип аудио"
     },
     {
@@ -442,10 +394,10 @@
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [
-        416,
-        240
+        -1440,
+        1968
       ],
-      "id": "894751ac-44b4-4a40-b0f6-8519c8c17573",
+      "id": "aac0e03c-a65c-410e-9cf1-892fb6f4a8c6",
       "name": "Тип фото"
     },
     {
@@ -465,10 +417,10 @@
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [
-        272,
-        128
+        -1440,
+        1776
       ],
-      "id": "8d1b766e-2f62-4b82-8553-697b7df32dbf",
+      "id": "47aa7cd9-f844-4d34-98f7-cf9dfb2fcc03",
       "name": "Тип текст"
     },
     {
@@ -488,11 +440,95 @@
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [
-        624,
-        128
+        -1216,
+        1776
       ],
-      "id": "19e74c91-a30a-47f1-a3bf-3a2dce1559e7",
+      "id": "ce59290f-4b9d-4e99-aae5-5d290aa704e3",
       "name": "Приведение к 1 формату"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Приведение к 1 формату').first().json.prompt }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "={{ $('Code in JavaScript').first().json.ai_handoff_prompt }}\n\nСчётчик наборов шагов, уже выданных ботом по текущей проблеме: {{ $('Форматировать историю1').first().json.stepListCount }}\n\nИСТОРИЯ ДИАЛОГА:\n{{ $('Форматировать историю1').first().json.historyText }}"
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        -96,
+        1776
+      ],
+      "id": "7f48016c-5de1-40e4-85af-acd61d3f63ea",
+      "name": "Гейт"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4.1-mini"
+        },
+        "builtInTools": {},
+        "options": {
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -80,
+        2000
+      ],
+      "id": "f982f0c9-62ee-482d-ad6c-548089b33ed4",
+      "name": "Gate Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "0tL4zzqsCd2g3p0a",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a9b8c7d6-0001-4000-9000-000000000001",
+              "name": "output",
+              "value": "[HANDOFF] Передаю ваше обращение оператору для ручной проверки. Пожалуйста, ожидайте ответа в этом чате.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        752,
+        1568
+      ],
+      "id": "00928e69-b6a6-4552-a443-070d2e3c0f49",
+      "name": "Ответ хендофф"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1232,
+        1776
+      ],
+      "id": "18d5bcb5-a61d-4095-a922-79391d564ce7",
+      "name": "Собрать ответ"
     },
     {
       "parameters": {
@@ -506,8 +542,8 @@
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
-            "message": "={{ ($('AI Agent').item.json.output || '').replace('[HANDOFF]', '').trim() }}",
-            "chat_id": "={{ $('AI').item.json.chat_id }}"
+            "message": "={{ ($('Собрать ответ').first().json.output || '').replace('[HANDOFF]', '').trim() }}",
+            "chat_id": "={{ $('AI').first().json.chat_id }}"
           },
           "matchingColumns": [],
           "schema": [
@@ -560,26 +596,26 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [
-        2048,
-        0
+        1680,
+        1680
       ],
-      "id": "6fe78889-3c12-4001-bc3e-c7196e8dc67b",
+      "id": "19f44a27-163e-4c66-b362-b565833217b4",
       "name": "Call 'Main Output'"
     },
     {
       "parameters": {
         "queue": "vpn_bot.incoming",
         "sendInputData": false,
-        "message": "={{ JSON.stringify({\n  \"type\": \"ai_response\",\n  \"dialog_id\": $('AI').item.json.dialog_id,\n  \"chat_id\": $('AI').item.json.chat_id,\n  \"message\": $json.output,\n  \"ai_enabled\": $('AI').item.json.ai_enabled\n}) }}",
+        "message": "={{ JSON.stringify({\n  \"type\": \"ai_response\",\n  \"dialog_id\": $('AI').first().json.dialog_id,\n  \"chat_id\": $('AI').first().json.chat_id,\n  \"message\": $('Собрать ответ').first().json.output,\n  \"ai_enabled\": $('AI').first().json.ai_enabled\n}) }}",
         "options": {}
       },
       "type": "n8n-nodes-base.rabbitmq",
       "typeVersion": 1,
       "position": [
-        1824,
-        16
+        1456,
+        1680
       ],
-      "id": "b1748062-16de-4e45-9533-55c38677da9f",
+      "id": "901b4693-bb3b-4304-94da-d7d8eb56fd56",
       "name": "RabbitMQ1",
       "credentials": {
         "rabbitmq": {
@@ -587,6 +623,132 @@
           "name": "RabbitMQ account"
         }
       }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "history",
+        "key": "=chat_history:{{ $('AI').item.json.dialog_id }}",
+        "keyType": "list",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        -992,
+        1776
+      ],
+      "id": "c99aa9e1-21af-44ca-8fa6-637a1240053a",
+      "name": "Redis: История1",
+      "credentials": {
+        "redis": {
+          "id": "hit3nIMoTAWeW4Gi",
+          "name": "Redis account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "push",
+        "list": "=chat_history:{{ $('AI').first().json.dialog_id }}",
+        "messageData": "={{ JSON.stringify({ role: \"user\", content: $('Приведение к 1 формату').first().json.prompt }) }}",
+        "tail": true
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1456,
+        1872
+      ],
+      "id": "fb43fc8b-d03b-47be-b6ae-4326b9bc9bf8",
+      "name": "Redis: Сохранить сообщение пользователя1",
+      "credentials": {
+        "redis": {
+          "id": "hit3nIMoTAWeW4Gi",
+          "name": "Redis account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "push",
+        "list": "=chat_history:{{ $('AI').first().json.dialog_id }}",
+        "messageData": "={{ JSON.stringify({ role: \"assistant\", content: ($('Собрать ответ').first().json.output || '').replace('[HANDOFF]', '').trim() }) }}",
+        "tail": true
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1680,
+        1872
+      ],
+      "id": "4fbcf59d-ba55-44ef-8e22-f1869e1071bc",
+      "name": "Redis: Сохранить ответ ассистента1",
+      "credentials": {
+        "redis": {
+          "id": "hit3nIMoTAWeW4Gi",
+          "name": "Redis account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d1e2f3a4-0001-4000-9000-000000000001",
+              "leftValue": "={{ $('Форматировать историю1').first().json.stepListCount }}",
+              "rightValue": 2,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "d1e2f3a4-0002-4000-9000-000000000002",
+              "leftValue": "={{ $json.text }}",
+              "rightValue": "HANDOFF",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        304,
+        1744
+      ],
+      "id": "3d5ca1b8-2398-402c-809d-e6575243da54",
+      "name": "Маршрут гейта2"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.history || [];\nconst list = Array.isArray(raw) ? raw : [raw];\nconst parsed = list.map((e) => {\n  try { return typeof e === \"string\" ? JSON.parse(e) : e; }\n  catch (err) { return { role: \"user\", content: String(e) }; }\n});\nconst recent = parsed.slice(-10);\n// Убираем фигурные скобки: историю подставляем в шаблон промпта гейта,\n// где { } трактуются как переменные шаблона и могут сломать разбор.\nconst clean = (s) => String(s || \"\").replace(/[{}]/g, \"\");\nconst lines = recent.map((o) => (o.role === \"assistant\" ? \"Ассистент: \" : \"Пользователь: \") + clean(o.content));\n// «Набор шагов» = ответ ассистента с двумя и более нумерованными строками,\n// исключая вступительную анкету (она содержит вопрос про приложение).\nconst isStepList = (o) =>\n  o.role === \"assistant\" &&\n  ((o.content || \"\").match(/(^|\\n)\\s*\\d+[.)]/g) || []).length >= 2 &&\n  !(o.content || \"\").includes(\"Через какое приложение\");\nconst stepListCount = parsed.filter(isStepList).length;\nreturn [{ json: { ...$json, historyText: lines.join(\"\\n\"), stepListCount } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -768,
+        1776
+      ],
+      "id": "5dc5657a-69db-407b-a7df-5f45cc8de057",
+      "name": "Форматировать историю1"
     }
   ],
   "connections": {
@@ -605,7 +767,7 @@
       "main": [
         [
           {
-            "node": "RabbitMQ1",
+            "node": "Собрать ответ",
             "type": "main",
             "index": 0
           }
@@ -618,28 +780,6 @@
           {
             "node": "AI Agent",
             "type": "ai_languageModel",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "OpenAI Chat Model1": {
-      "ai_languageModel": [
-        [
-          {
-            "node": "AI Agent",
-            "type": "ai_languageModel",
-            "index": 1
-          }
-        ]
-      ]
-    },
-    "Redis Chat Memory": {
-      "ai_memory": [
-        [
-          {
-            "node": "AI Agent",
-            "type": "ai_memory",
             "index": 0
           }
         ]
@@ -682,7 +822,7 @@
       "main": [
         [
           {
-            "node": "AI Agent",
+            "node": "Гейт",
             "type": "main",
             "index": 0
           }
@@ -795,7 +935,56 @@
       "main": [
         [
           {
-            "node": "Redis1",
+            "node": "Redis: История1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Гейт": {
+      "main": [
+        [
+          {
+            "node": "Маршрут гейта2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Гейт",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ответ хендофф": {
+      "main": [
+        [
+          {
+            "node": "Собрать ответ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Собрать ответ": {
+      "main": [
+        [
+          {
+            "node": "RabbitMQ1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Redis: Сохранить сообщение пользователя1",
             "type": "main",
             "index": 0
           }
@@ -812,6 +1001,61 @@
           }
         ]
       ]
+    },
+    "Redis: История1": {
+      "main": [
+        [
+          {
+            "node": "Форматировать историю1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis: Сохранить сообщение пользователя1": {
+      "main": [
+        [
+          {
+            "node": "Redis: Сохранить ответ ассистента1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Маршрут гейта2": {
+      "main": [
+        [
+          {
+            "node": "Ответ хендофф",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Форматировать историю1": {
+      "main": [
+        [
+          {
+            "node": "Redis1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "9dffad8a498b707a550807b62d36e78c238fa5edde5be37f9c3b19f4c0784011"
   }
 }

@@ -760,14 +760,14 @@ function AutomationSection({ showToast }) {
           </div>
           {s.auto_handoff_enabled && (
             <div className="mt-3">
-              <label className="block text-xs text-[#6b7280] mb-2">Инструкция для ИИ при автопередаче</label>
+              <label className="block text-xs text-[#6b7280] mb-2">Промпт авто-передачи (гейт)</label>
               <textarea
                 value={s.handoff_instruction_text ?? ""}
                 onChange={e => set("handoff_instruction_text", e.target.value)}
                 rows={5}
                 className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
               />
-              <div className="text-xs text-[#6b7280] mt-1.5">Дописывается к системному промпту, когда включён авто-вызов. Обязательно требуйте маркер [HANDOFF] в начале ответа — по нему система понимает, что ИИ передаёт диалог. Следите, чтобы остальной промпт не запрещал служебные маркеры. Пустое поле = стандартный текст. Сохраняется кнопкой «Сохранить»</div>
+              <div className="text-xs text-[#6b7280] mt-1.5">Отдельный промпт модуля-маршрутизатора (гейта): он решает, передать диалог оператору или продолжать. К основному промпту НЕ приклеивается — хранится отдельно и подставляется в гейт. Гейт должен возвращать одно слово: HANDOFF или CONTINUE (тег [HANDOFF] внутри писать не нужно). Счётчик шагов и историю диалога дописывает сам сценарий. Не используйте одиночные символы {'{'} и {'}'}. Пустое поле = стандартный текст. Сохраняется кнопкой «Сохранить»</div>
             </div>
           )}
         </div>
