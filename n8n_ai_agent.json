@@ -585,7 +585,7 @@
       "parameters": {
         "conditions": {
           "options": {
-            "caseSensitive": true,
+            "caseSensitive": false,
             "leftValue": "",
             "typeValidation": "loose",
             "version": 2
@@ -593,16 +593,24 @@
           "conditions": [
             {
               "id": "d1e2f3a4-0001-4000-9000-000000000001",
-              "leftValue": "={{ $('Форматировать историю+счётчик').item.json.stepListCount >= 2 || /HANDOFF/i.test($json.text) }}",
-              "rightValue": "",
+              "leftValue": "={{ $('Форматировать историю+счётчик').item.json.stepListCount }}",
+              "rightValue": 2,
               "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "d1e2f3a4-0002-4000-9000-000000000002",
+              "leftValue": "={{ $json.text }}",
+              "rightValue": "HANDOFF",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
               }
             }
           ],
-          "combinator": "and"
+          "combinator": "or"
         },
         "looseTypeValidation": true,
         "options": {}
