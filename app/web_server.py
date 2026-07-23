@@ -43,27 +43,10 @@ _AI_DEFAULTS = {
     "classification_enabled": False,
 }
 
-# Sentinel marking the auto-appended escalation instruction inside the prompt
-# that gets published to n8n. Rebuilt from scratch on every sync (strip
-# everything from the marker onward, then conditionally re-add exactly one
-# copy) so the handoff toggle is authoritative regardless of what was there
-# before — a stale or duplicated copy left by a previous bug or a manual
-# edit can never survive a save.
-_HANDOFF_MARKER = "### AUTO-HANDOFF INSTRUCTION — do not edit below this line ###"
-
-
-def _strip_handoff_instruction(prompt: str) -> str:
-    return (prompt or "").split(_HANDOFF_MARKER, 1)[0].rstrip()
-
-
-def _build_n8n_prompt(prompt: str, handoff_enabled: bool, instruction_text: str = "") -> str:
-    base = _strip_handoff_instruction(prompt)
-    if not handoff_enabled:
-        return base
-    # An emptied-out instruction would silently kill auto-handoff — fall back
-    # to the default text instead.
-    text = (instruction_text or "").strip() or _AUTOMATION_DEFAULTS["handoff_instruction_text"]
-    return base + "\n\n" + _HANDOFF_MARKER + "\n" + text
+# The gate/handoff instruction is no longer concatenated onto the responder
+# prompt. It is published to n8n as its own field
+# (vpn_bot:ai_settings.handoff_prompt) that the gate node reads directly — see
+# _sync_ai_settings_to_redis.
 
 
 _SCHEDULE_DEFAULTS = {
@@ -669,19 +652,18 @@ def build_app(
         return {**_AI_DEFAULTS, **stored}
 
     async def _sync_ai_settings_to_redis(ai: dict):
-        """Push AI settings to the Redis copy the n8n agent reads, rebuilding
-        the escalation instruction from scratch every time (strip, then
-        conditionally re-add exactly one copy). EVERY endpoint that rewrites
-        vpn_bot:ai_settings must go through here — writing the raw prompt
-        silently kills auto-handoff (the model stops being told how to
-        escalate), and appending without stripping first can leave a stale
-        copy behind when the toggle is switched off."""
+        """Push AI settings to the Redis copy the n8n agent reads. The responder
+        prompt goes out raw; the gate/handoff instruction is published as a
+        separate `handoff_prompt` field the n8n gate node reads on its own — no
+        concatenation. An emptied-out instruction falls back to the default so
+        the gate never loses its routing criteria. EVERY endpoint that rewrites
+        vpn_bot:ai_settings must go through here."""
         automation = await db.get_setting_json("automation", None) or {}
         n8n_data = dict(ai)
-        n8n_data["prompt"] = _build_n8n_prompt(
-            ai.get("prompt"),
-            bool(ai.get("handoff_enabled")),
-            automation.get("handoff_instruction_text") or "",
+        n8n_data["prompt"] = ai.get("prompt") or ""
+        n8n_data["handoff_prompt"] = (
+            (automation.get("handoff_instruction_text") or "").strip()
+            or _AUTOMATION_DEFAULTS["handoff_instruction_text"]
         )
         await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
 
