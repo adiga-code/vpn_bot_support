@@ -1,6 +1,11 @@
 # VPN Bot Support — Helpdesk Panel
 
-Веб-панель оператора поддержки для VPN-сервиса. Работает в связке с Telegram-ботом через n8n: n8n принимает сообщения от пользователей и передаёт их в панель через Redis, операторы отвечают через веб-интерфейс, n8n доставляет ответы обратно в Telegram.
+Веб-панель оператора поддержки для VPN-сервисов. Работает в связке с Telegram-ботами через n8n: n8n принимает сообщения от пользователей и передаёт их в панель через Redis, операторы отвечают через веб-интерфейс, n8n доставляет ответы обратно в Telegram.
+
+Панель обслуживает **несколько ВПН-брендов сразу**: у каждого свой бот, своя база знаний,
+свой промпт ИИ и свои диалоги, а оператор переключается между ними вкладками наверху и
+видит только те бренды, к которым ему выдан доступ. Подробности —
+в разделе [Мультисервисность](#мультисервисность-несколько-впн-в-одной-панели).
 
 ---
 
@@ -14,6 +19,7 @@
   - [Воркфлоу 2: AI Agent](#воркфлоу-2-ai-agent)
   - [Воркфлоу 3: Output (Отправка пользователю)](#воркфлоу-3-output-отправка-пользователю)
 - [Redis-протокол](#redis-протокол)
+- [Мультисервисность (несколько ВПН в одной панели)](#мультисервисность-несколько-впн-в-одной-панели)
 - [Что нужно настроить в n8n](#что-нужно-настроить-в-n8n)
 - [Переменные окружения](#переменные-окружения)
 - [Развёртывание](#развёртывание)
@@ -56,18 +62,19 @@
 │           ▼                      ▼                      │           │
 │  ┌──────────────────────────────────────────┐           │           │
 │  │              PostgreSQL                  │           │           │
+│  │  services | operator_services |          │           │           │
 │  │  dialogs | messages | operators |        │           │           │
-│  │  settings | kb_articles                  │           │           │
+│  │  service_settings | kb_articles          │           │           │
 │  └──────────────────────────────────────────┘           │           │
 │                                                          │           │
 │  ┌─────────────────────┐   ┌────────────────────────┐  │           │
 │  │       Qdrant        │   │   Redis (очереди)      │◀─┘           │
-│  │  (knowledge base)   │   │  vpn_bot:incoming      │              │
-│  └─────────────────────┘   │  vpn_bot:messages      │              │
-│                             │  vpn_bot:notifications  │              │
-│                             │  vpn_bot:ai_toggled     │              │
-│                             │  vpn_bot:dialog_closed  │              │
-│                             │  vpn_bot:billing        │              │
+│  │  kb_{slug} на бренд │   │  vpn_bot:incoming      │              │
+│  └─────────────────────┘   │  vpn_bot:messages:{slug}│              │
+│                             │  vpn_bot:notifications: │              │
+│                             │  vpn_bot:ai_toggled:    │              │
+│                             │  vpn_bot:dialog_closed: │              │
+│                             │  vpn_bot:billing:{slug} │              │
 │                             └────────────────────────┘              │
 └─────────────────────────────────────────────────────────────────────┘
                              │
@@ -87,8 +94,8 @@
 | **Веб-сервер** | FastAPI + Uvicorn | REST API + WebSocket |
 | **Redis Consumer** | asyncio + redis-py | Слушает очередь `vpn_bot:incoming` от n8n |
 | **n8n Client** | redis-py PUBLISH | Пушит команды оператора в n8n |
-| **База данных** | PostgreSQL 16 | Диалоги, сообщения, операторы, настройки |
-| **Векторная БД** | Qdrant | База знаний для AI-агента |
+| **База данных** | PostgreSQL 16 | Сервисы, диалоги, сообщения, операторы, настройки |
+| **Векторная БД** | Qdrant | База знаний AI-агента, отдельная коллекция на каждый ВПН |
 | **Очередь** | Redis 7 | Двунаправленный обмен с n8n |
 | **Хранилище файлов** | Диск / S3 | Загрузка медиафайлов от операторов |
 | **AI-классификация** | OpenAI / Gemini | Категоризация сообщений |
@@ -105,12 +112,12 @@
 2. n8n: Telegram Trigger получает webhook
 3. n8n: создаёт/находит диалог в n8n_dialogs (PostgreSQL)
 4. n8n: если есть медиа — скачивает файл и загружает на наш сервер POST /api/n8n/upload
-5. n8n: LPUSH в Redis-очередь vpn_bot:incoming (JSON с типом user_message)
+5. n8n: LPUSH в Redis-очередь vpn_bot:incoming (JSON с типом user_message и полем service)
 6. Python: RedisConsumer читает сообщение из очереди
 7. Python: upsert диалога и сохранение сообщения в БД
-8. Python: WebSocket broadcast — все операторы видят новое сообщение
+8. Python: WebSocket broadcast — сообщение видят операторы, имеющие доступ к этому сервису
 9. Python: фоновая задача — классификация сообщения по категории
-10. Python: если новый диалог — PUBLISH в vpn_bot:notifications (уведомление операторов)
+10. Python: если новый диалог — PUBLISH в vpn_bot:notifications:{slug} (уведомление операторов бренда)
 11. Если ai_status=true для диалога → n8n вызывает AI Agent воркфлоу
 ```
 
@@ -119,7 +126,7 @@
 ```
 1. Оператор пишет ответ в веб-панели
 2. Python: сохраняет сообщение оператора в БД
-3. Python: n8n_client.send_manager_message() → PUBLISH в vpn_bot:messages
+3. Python: n8n_client.send_manager_message() → PUBLISH в vpn_bot:messages:{slug}
 4. n8n: Redis Trigger "Сообщение от менеджера" получает событие
 5. n8n: парсит JSON, находит диалог, вызывает Output воркфлоу
 6. Output воркфлоу: отправляет текст/фото/голос в Telegram пользователю
@@ -394,7 +401,7 @@ Switch: тип файла (voice | photo | text)
 Приведение к 1 формату: prompt = analyzed
     │
     ▼
-Redis1: GET vpn_bot:ai_settings
+Redis1: GET vpn_bot:ai_settings:{slug}
     │  Читает настройки AI из Redis (JSON):
     │  ai_model, ai_temperature, ai_prompt
     │
@@ -411,7 +418,7 @@ AI Agent (LangChain Agent)
     │  ├── OpenAI Chat Model (модель из ai_settings, температура из ai_settings)
     │  ├── OpenAI Chat Model1 (gpt-4.1-mini — fallback модель)
     │  ├── Redis Chat Memory (ключ=dialog_id, окно=10 сообщений)
-    │  └── Qdrant Vector Store (коллекция=support_docs, top-3)
+    │  └── Qdrant Vector Store (коллекция=kb_{slug}, top-3)
     │      Embeddings: OpenAI text-embedding-ada-002
     │      Описание инструмента: "Search VPN support knowledge base..."
     │
@@ -429,7 +436,7 @@ Redis LPUSH vpn_bot:incoming
 Call 'Output' воркфлоу (отправить AI-ответ в Telegram)
 ```
 
-**Настройки AI в Redis** (ключ `vpn_bot:ai_settings`, устанавливается из веб-панели):
+**Настройки AI в Redis** (ключ `vpn_bot:ai_settings:{slug}`, устанавливается из веб-панели):
 ```json
 {
   "enabled": true,
@@ -510,18 +517,26 @@ n8n делает **LPUSH**, Python читает через **BRPOP** (блоки
 
 ### Python → n8n (каналы PUBLISH)
 
+Каждый ВПН-бренд крутит свою копию воркфлоу, поэтому исходящие каналы имеют
+суффикс `:{slug}` — иначе каждая копия получала бы чужой трафик.
+
 | Канал Redis | Назначение |
 |------------|-----------|
-| `vpn_bot:messages` | Ответ оператора → пользователю |
-| `vpn_bot:notifications` | Уведомление операторов (new_dialog, operator_called, server_down) |
-| `vpn_bot:ai_toggled` | Включение/выключение AI для диалога |
-| `vpn_bot:dialog_closed` | Закрытие диалога |
-| `vpn_bot:billing` | Биллинговые действия (renew, buy_traffic, reset_key) |
+| `vpn_bot:messages:{slug}` | Ответ оператора → пользователю |
+| `vpn_bot:notifications:{slug}` | Уведомление операторов (new_dialog, operator_called, server_down) |
+| `vpn_bot:ai_toggled:{slug}` | Включение/выключение AI для диалога |
+| `vpn_bot:dialog_closed:{slug}` | Закрытие диалога |
+| `vpn_bot:billing:{slug}` | Биллинговые действия (renew, buy_traffic, reset_key) |
 
-**`vpn_bot:messages` — ответ оператора:**
+Пока `PUBLISH_LEGACY_CHANNELS=true`, события сервиса **по умолчанию** дублируются ещё и в
+старые имена без суффикса (`vpn_bot:messages` и т.д.) — так можно мигрировать воркфлоу
+по одному. После миграции выключите флаг, иначе будут дубли.
+
+**`vpn_bot:messages:{slug}` — ответ оператора:**
 ```json
 {
   "type": "manager_message",
+  "service": "nordflow",
   "dialog_id": "42",
   "chat_id": "123456789",
   "message": "Проверьте настройки подключения",
@@ -530,17 +545,124 @@ n8n делает **LPUSH**, Python читает через **BRPOP** (блоки
 }
 ```
 
+> **`dialog_id` наружу — всегда внешний id**, тот самый `n8n_dialogs.id`, который прислал n8n.
+> Внутри панель хранит диалоги под составным ключом `{slug}:{dialog_id}` (см. «Мультисервисность»),
+> но в Redis он никогда не попадает — n8n работает со своими id как и раньше.
+
 ### Ключи SET/GET в Redis
 
 | Ключ | Кто пишет | Кто читает | Содержимое |
 |------|-----------|-----------|-----------|
-| `vpn_bot:ai_settings` | Python (Settings API) | n8n AI Agent | JSON с настройками AI |
-| `vpn_bot:schedule` | Python (Settings API) | Python (n8n_client) | JSON с расписанием работы |
+| `vpn_bot:ai_settings:{slug}` | Python (Settings API) | n8n AI Agent | JSON с настройками AI этого сервиса |
+| `vpn_bot:schedule:{slug}` | Python (Settings API) | Python (n8n_client) | JSON с расписанием работы этого сервиса |
+| `vpn_bot:pending_notifications:{slug}` | Python | Python | Очередь уведомлений, накопленных в нерабочее время |
 | `vpn_bot:toggle:{dialog_id}` | n8n | Python | `{"ai_enabled": true/false}` |
 
 ---
 
+## Мультисервисность (несколько ВПН в одной панели)
+
+Одна панель обслуживает несколько ВПН-брендов. У каждого свои диалоги, база знаний,
+промпт ИИ, расписание и свой Telegram-бот. Оператор видит вкладки-пилюли только тех
+сервисов, к которым ему выдан доступ, а рядом с названием — счётчик обращений,
+требующих ответа (новые + непрочитанные).
+
+### Как сервис попадает в систему
+
+n8n добавляет в payload `vpn_bot:incoming` поле `service` со slug'ом бренда:
+
+```json
+{
+  "type": "user_message",
+  "service": "nordflow",
+  "dialog_id": "42",
+  "chat_id": "123456789",
+  "message": "Не работает VPN",
+  "ai_enabled": true
+}
+```
+
+Payload без `service` относится к сервису по умолчанию — старые воркфлоу продолжают
+работать без правок. Неизвестный slug логируется и отбрасывается: лучше потерять
+сообщение, чем подшить его не тому бренду.
+
+### Ключ диалога
+
+`n8n_dialogs.id` — это последовательность внутри конкретной базы n8n. Если инстансов n8n
+несколько, один и тот же id придёт от двух брендов и их переписки склеятся. Поэтому
+панель хранит диалоги под составным ключом:
+
+```
+dialogs.dialog_id  = "nordflow:42"   ← внутренний ключ панели (PK)
+dialogs.external_id = "42"           ← то, что знает n8n; уходит наружу в Redis
+```
+
+Наружу всегда уходит `external_id` + `service`, внутри (в БД, API, WebSocket, фронте)
+ходит составной ключ. Двоеточие безопасно как разделитель: slug ограничен
+`^[a-z0-9][a-z0-9_-]{1,31}$`.
+
+### Доступ операторов
+
+`role='admin'` даёт доступ ко всем сервисам автоматически. Агентам админ проставляет
+флаги в Настройки → Операторы (таблица `operator_services`). Проверка серверная:
+попытка прочитать или ответить в диалог чужого сервиса возвращает `403`, а WebSocket
+рассылает события только тем вкладкам, чей оператор имеет доступ к сервису диалога.
+
+### Изоляция данных
+
+| Что | Как разделено |
+|-----|--------------|
+| Диалоги и сообщения | `dialogs.service_id`, сообщения — через `dialog_id` |
+| История тикетов | Ищется в рамках сервиса: один `chat_id` может писать нескольким брендам |
+| База знаний | Своя коллекция Qdrant `kb_{slug}`, `kb_articles.service_id` |
+| Промпт ИИ, расписание | `service_settings (service_id, key)` |
+| Redis-каналы | Суффикс `:{slug}` |
+| Уведомления операторам | Свой канал на сервис + SQL-фильтр по `operator_services` |
+
+### Миграция существующей установки
+
+При первом запуске новой версии автоматически:
+
+1. Создаётся сервис по умолчанию из `DEFAULT_SERVICE_SLUG` / `DEFAULT_SERVICE_NAME`.
+2. Все существующие диалоги, статьи базы знаний и операторы привязываются к нему.
+3. Ключи диалогов и сообщений перевыпускаются в формат `{slug}:{external_id}`
+   (одной транзакцией, FK временно снимается и возвращается с `ON UPDATE CASCADE`).
+4. Глобальные `ai_settings` и `schedule` переносятся в `service_settings`.
+
+Разовые шаги защищены таблицей `schema_migrations` — повторный запуск ничего не трогает.
+**Перед обновлением снимите дамп БД:** шаг 3 переписывает первичные ключи.
+
+---
+
 ## Что нужно настроить в n8n
+
+### 0. На каждый новый ВПН
+
+Скопируйте воркфлоу Main и Output и поправьте в копии:
+
+1. **Telegram credential** — свой бот бренда.
+2. **Redis LPUSH `vpn_bot:incoming`** — добавьте в payload поле
+   `"service": "<slug>"` (тот же slug, что в Настройки → Сервисы).
+3. **Redis Trigger'ы** — переподпишите на каналы с суффиксом:
+   `vpn_bot:messages:<slug>`, `vpn_bot:ai_toggled:<slug>`,
+   `vpn_bot:dialog_closed:<slug>`, `vpn_bot:billing:<slug>`,
+   `vpn_bot:notifications:<slug>`.
+4. **AI Agent** — `Redis GET vpn_bot:ai_settings:<slug>`;
+   Qdrant Vector Store → коллекция `kb_<slug>`;
+   ключ Redis Chat Memory сделайте `<slug>:{dialog_id}`.
+5. **Ветка уведомлений**, узел «Получить операторов» — только операторы этого бренда
+   плюс все админы:
+   ```sql
+   SELECT o.tg_id FROM operators o
+     JOIN operator_services os ON os.operator_id = o.id
+     JOIN services s ON s.id = os.service_id
+    WHERE s.slug = '{{ $json.service }}' AND o.tg_id IS NOT NULL
+      AND (o.notif_prefs IS NULL OR o.notif_prefs::json->>'{{ $json.type }}' != 'false')
+   UNION
+   SELECT tg_id FROM operators WHERE role = 'admin' AND tg_id IS NOT NULL
+   ```
+
+Без шага 5 алерты одного бренда придут операторам всех остальных.
 
 ### 1. Credentials
 
@@ -590,9 +712,17 @@ URL загрузки: `POST https://yourdomain.com/api/n8n/upload`
 
 ### 5. Qdrant коллекция
 
-В AI Agent воркфлоу: `Qdrant Vector Store2` → Collection: `support_docs`
+В AI Agent воркфлоу: `Qdrant Vector Store2` → Collection: **`kb_<slug>`** (например `kb_nordflow`).
+Точное имя коллекции показано в панели: Настройки → Сервисы, колонка «База знаний».
 
-Коллекция создаётся автоматически при первой загрузке документа через веб-панель (Settings → Knowledge Base → Upload).
+Коллекция создаётся автоматически при первой загрузке документа
+(Настройки → База знаний → выбрать сервис → Загрузить документ).
+
+> **Важно, если вы обновляетесь со старой версии.** Раньше панель писала в коллекцию `kb`,
+> а этот узел читал `support_docs` — то есть база знаний до ИИ фактически не доходила.
+> Заодно проверьте модель эмбеддингов: панель использует `text-embedding-3-small`,
+> и узел Embeddings в n8n должен использовать её же (не `text-embedding-ada-002`),
+> иначе поиск вернёт шум. Документы после обновления нужно загрузить заново.
 
 ### 6. Включение Triggers
 
@@ -625,6 +755,19 @@ cp .env.example .env
 | `ADMIN_INIT_PASSWORD` | Пароль первого админа | `Admin123!` |
 
 Создаётся один раз при первом запуске. После создания можно оставить — повторно не создаётся если оператор уже существует.
+
+### Сервисы (ВПН-бренды)
+
+| Переменная | По умолчанию | Описание |
+|-----------|-------------|---------|
+| `DEFAULT_SERVICE_SLUG` | `default` | Идентификатор сервиса, к которому при первом запуске привязываются все существующие диалоги, статьи базы знаний и операторы |
+| `DEFAULT_SERVICE_NAME` | `Основной` | Отображаемое имя этого сервиса |
+| `PUBLISH_LEGACY_CHANNELS` | `true` | Пока включено, события сервиса по умолчанию дублируются в старые имена Redis-каналов без суффикса `:{slug}` — чтобы не переписывать все воркфлоу n8n разом |
+
+Slug должен подходить под `^[a-z0-9][a-z0-9_-]{1,31}$` — он попадает в имена Redis-каналов
+и коллекций Qdrant. Задавать его имеет смысл **до первого запуска**: потом он вшит в ключи
+диалогов и меняться не может. Остальные сервисы добавляются из панели
+(Настройки → Сервисы), env-переменные для них не нужны.
 
 ### Сеть и сервисы
 
@@ -785,11 +928,41 @@ WebSocket (`/ws`) проксируется автоматически благо
 
 ### Основные таблицы (Python-сторона)
 
+**`services`** — ВПН-бренды
+
+| Колонка | Тип | Описание |
+|---------|-----|---------|
+| `id` | SERIAL PK | — |
+| `slug` | TEXT UNIQUE | Идентификатор в Redis-каналах, коллекции Qdrant и ключах диалогов. Неизменяемый |
+| `name` | TEXT | Отображаемое имя |
+| `color` | TEXT | Цвет точки на пилюле |
+| `is_default` | BOOLEAN | Сервис, к которому привязались данные при миграции; дублирует события в легаси-каналы |
+| `is_active` | BOOLEAN | Выключенный сервис скрыт из панели, но данные сохраняются |
+
+**`operator_services`** — флаги доступа (тот самый «флаг для модера»)
+
+| Колонка | Тип | Описание |
+|---------|-----|---------|
+| `operator_id` | INTEGER FK | — |
+| `service_id` | INTEGER FK | PK — пара колонок. Админам записи не нужны: роль даёт доступ ко всему |
+
+**`service_settings`** — настройки на сервис
+
+| Колонка | Тип | Описание |
+|---------|-----|---------|
+| `service_id` | INTEGER FK | — |
+| `key` | TEXT | `ai_settings` или `schedule`; PK — пара колонок |
+| `value` | TEXT (JSON) | — |
+
+**`schema_migrations`** — отметки о применённых разовых миграциях данных
+
 **`dialogs`** — диалоги поддержки
 
 | Колонка | Тип | Описание |
 |---------|-----|---------|
-| `dialog_id` | TEXT PK | ID диалога (совпадает с id в n8n_dialogs) |
+| `dialog_id` | TEXT PK | Составной ключ `{slug}:{external_id}` |
+| `external_id` | TEXT | ID диалога в n8n (`n8n_dialogs.id`); уникален в паре с `service_id` |
+| `service_id` | INTEGER FK | Какому ВПН-бренду принадлежит диалог |
 | `chat_id` | TEXT | Telegram chat_id пользователя |
 | `status` | TEXT | `new` / `in_progress` / `closed` |
 | `ai_enabled` | BOOLEAN | AI активен для этого диалога |
@@ -837,12 +1010,16 @@ WebSocket (`/ws`) проксируется автоматически благо
 | `notif_prefs` | TEXT (JSON) | Настройки уведомлений по типам |
 | `password_hash` | TEXT | bcrypt хэш пароля |
 
-**`settings`** — конфигурация (key-value)
+**`kb_articles`** — чанки базы знаний
 
-| Ключ | Содержимое |
-|------|-----------|
-| `ai_settings` | JSON: prompt, model, temperature, auto_reply, handoff_enabled |
-| `schedule` | JSON: расписание по дням недели |
+| Колонка | Тип | Описание |
+|---------|-----|---------|
+| `id` | TEXT PK | `{slug}:{chunk-slug}` — чанки разных брендов не перетирают друг друга |
+| `service_id` | INTEGER FK | Какому бренду принадлежит чанк |
+| `title`, `category`, `keywords`, `content` | TEXT | — |
+
+**`settings`** — глобальная конфигурация (key-value). Настройки ИИ и расписание
+переехали в `service_settings`; таблица оставлена под действительно общие ключи.
 
 ### Таблицы n8n (общие с Python)
 
@@ -868,7 +1045,7 @@ vpn_bot_support/
 │   ├── config.py          # Все переменные окружения (Pydantic Settings)
 │   ├── database.py        # PostgreSQL: все запросы + автомиграции при старте
 │   ├── web_server.py      # FastAPI: REST API + WebSocket endpoint
-│   ├── ws_manager.py      # WebSocket broadcast + онлайн-статус операторов
+│   ├── ws_manager.py      # WebSocket broadcast (с фильтром по сервисам) + онлайн-статус
 │   ├── redis_consumer.py  # Слушает vpn_bot:incoming, обрабатывает сообщения
 │   ├── n8n_client.py      # PUBLISH событий в Redis → n8n
 │   ├── auth.py            # bcrypt хэширование + JWT (30 дней)
@@ -876,16 +1053,17 @@ vpn_bot_support/
 │   ├── servers.py         # Мониторинг VPN-серверов (TCP/HTTP/Stub)
 │   ├── ai_client.py       # OpenAI / Gemini wrapper
 │   ├── classifier.py      # AI-классификация категории сообщения
-│   ├── kb.py              # Knowledge base: chunking + embeddings → Qdrant
+│   ├── kb.py              # Knowledge base: chunking + embeddings → Qdrant (kb_{slug})
 │   ├── summarizer.py      # AI-сводка диалога при закрытии
 │   ├── storage.py         # Хранилище файлов (Local или S3)
 │   └── static/
 │       ├── index.html     # React SPA (Tailwind + Babel CDN, без сборки)
 │       ├── components.jsx # Avatar, Icon, Toast, Badge, StatusBadge
+│       ├── service_tabs.jsx # Вкладки-пилюли ВПН-сервисов + строка контекста
 │       ├── dialogs.jsx    # Основной экран: список диалогов + чат + детали
 │       ├── statistics.jsx # Статистика и аналитика
 │       ├── servers.jsx    # Мониторинг VPN-серверов
-│       └── settings.jsx   # Операторы, AI-настройки, расписание, KB
+│       └── settings.jsx   # Операторы и их доступы, сервисы, AI, расписание, KB
 ├── main.py                # Точка входа: asyncio.gather(web, redis_consumer, monitor)
 ├── requirements.txt       # Python-зависимости
 ├── Dockerfile             # python:3.11-slim
@@ -922,18 +1100,45 @@ vpn_bot_support/
 
 JWT токен передаётся в заголовке `Authorization: Bearer <token>` или через WebSocket query `?token=<token>`.
 
-### Диалоги
+### Сервисы
 
 | Метод | Путь | Описание |
 |-------|------|---------|
-| GET | `/api/dialogs` | Список всех диалогов |
+| GET | `/api/services` | Доступные мне бренды + счётчики `openCount` / `badgeCount` |
+| POST | `/api/services` | Создать бренд (admin) |
+| PUT | `/api/services/{id}` | Имя, цвет, вкл/выкл (admin). Slug неизменяем |
+| DELETE | `/api/services/{id}` | Удалить (admin). Запрещено, если есть диалоги или это сервис по умолчанию |
+| PUT | `/api/operators/{id}/services` | Проставить флаги доступа: `{"service_ids": [1,3]}` (admin) |
+
+### Диалоги
+
+`{id}` — составной ключ `{slug}:{external_id}`, например `nordflow:42`.
+Любой из этих запросов вернёт `403`, если у оператора нет флага на сервис диалога.
+
+| Метод | Путь | Описание |
+|-------|------|---------|
+| GET | `/api/dialogs?service={slug}` | Диалоги бренда; без параметра — все доступные |
 | GET | `/api/dialogs/{id}` | Диалог + история сообщений |
-| GET | `/api/dialogs/{id}/history` | Предыдущие тикеты от этого пользователя |
+| GET | `/api/dialogs/{id}/history` | Предыдущие тикеты этого пользователя **в этом же бренде** |
+| POST | `/api/dialogs/{id}/read` | Сбросить счётчик непрочитанных |
 | POST | `/api/dialogs/{id}/reply` | Ответить пользователю |
 | POST | `/api/dialogs/{id}/toggle_ai` | Вкл/выкл AI для диалога |
 | POST | `/api/dialogs/{id}/handoff` | Передать оператору (выкл AI) |
 | POST | `/api/dialogs/{id}/close` | Закрыть диалог |
 | POST | `/api/dialogs/{id}/billing/{action}` | `renew` / `buy_traffic` / `reset_key` |
+
+### Настройки и база знаний
+
+Параметр `service={slug}` обязателен — эти настройки хранятся на бренд.
+
+| Метод | Путь | Описание |
+|-------|------|---------|
+| GET/PUT | `/api/settings/ai?service={slug}` | Промпт и параметры ИИ (PUT — admin) |
+| GET/PUT | `/api/settings/schedule?service={slug}` | Расписание работы (PUT — admin) |
+| GET | `/api/kb?service={slug}` | Чанки базы знаний бренда |
+| POST | `/api/kb/upload?service={slug}` | Загрузить `.txt`/`.md` → чанки → `kb_{slug}` (admin) |
+| DELETE | `/api/kb/{article_id}` | Удалить чанк из БД и Qdrant (admin) |
+| GET | `/api/stats?days=14&service={slug}` | Статистика; без `service` — по всем доступным (admin) |
 
 ### Файлы
 
@@ -951,8 +1156,13 @@ WS /ws?token=<JWT>
 
 События приходящие с сервера:
 ```json
-{"type": "new_message",      "dialog_id": "42", "message": {...}}
-{"type": "dialog_updated",   "dialog_id": "42", "dialog": {...}}
+{"type": "new_message",      "dialog_id": "nordflow:42", "service_id": 1, "message": {...}}
+{"type": "dialog_updated",   "dialog": {...}}
 {"type": "new_dialog",       "dialog": {...}}
-{"type": "operator_status",  "operator_id": 1, "online": true}
+{"type": "operator_status",  "op_id": 1, "online": true}
 ```
+
+События по диалогам рассылаются **только** тем вкладкам, чей оператор имеет доступ к
+сервису диалога. Клиент переподключается с экспоненциальной задержкой и после
+переподключения перезапрашивает `/api/dialogs` — события, пришедшие во время обрыва,
+не восстанавливаются.
