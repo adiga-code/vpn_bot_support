@@ -60,6 +60,19 @@ class Settings(BaseSettings):
     # ── Qdrant ────────────────────────────────────────────────────────────────
     QDRANT_URL: str = "http://qdrant:6333"
 
+    # ── Services (VPN brands) ─────────────────────────────────────────────────
+    # On first startup a default service is created and every existing dialog,
+    # KB article and operator is attached to it. Slug must match
+    # ^[a-z0-9][a-z0-9_-]{1,31}$ — it is used in Redis channel and Qdrant
+    # collection names.
+    DEFAULT_SERVICE_SLUG: str = "default"
+    DEFAULT_SERVICE_NAME: str = "Основной"
+    # While true, events for the default service are also published to the old
+    # channel names without a :{slug} suffix, so existing n8n workflows keep
+    # working until they are migrated. Turn off once every workflow subscribes
+    # to the per-service channels.
+    PUBLISH_LEGACY_CHANNELS: bool = True
+
     # ── Billing API ───────────────────────────────────────────────────────────
     # Leave empty to fall back to StubBillingProvider
     BILLING_API_URL: str = ""

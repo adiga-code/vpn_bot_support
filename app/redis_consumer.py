@@ -5,7 +5,7 @@ import redis.asyncio as aioredis
 
 from app.ai_client import ChatClient
 from app.classifier import classify_message
-from app.database import DatabaseManager
+from app.database import DatabaseManager, make_dialog_key
 from app.n8n_client import N8NClient
 from app.web_server import _fmt_dialog, _fmt_message
 from app.ws_manager import WebSocketManager
@@ -48,10 +48,32 @@ class RedisConsumer:
                 print(f"Consumer error: {e}")
                 await asyncio.sleep(1)
 
+    # ── Service resolution ────────────────────────────────────────────────────
+
+    async def _resolve_service(self, data: dict) -> dict | None:
+        """Map the inbound `service` slug to a service row.
+
+        Payloads without the field come from workflows that predate
+        multi-service support — they belong to the default service. An unknown
+        slug is a misconfigured workflow: drop it rather than silently filing
+        the conversation under the wrong brand.
+        """
+        slug = data.get("service")
+        if not slug:
+            return await self.db.get_default_service()
+        service = await self.db.get_service_by_slug(slug)
+        if not service:
+            print(f"Unknown service slug: {slug!r} — message dropped")
+        return service
+
     # ── Handlers ──────────────────────────────────────────────────────────────
 
     async def _handle_user_message(self, data: dict):
-        dialog_id = data["dialog_id"]
+        service = await self._resolve_service(data)
+        if not service:
+            return
+        external_id = str(data["dialog_id"])
+        dialog_id = make_dialog_key(service["slug"], external_id)
         chat_id = str(data["chat_id"])
         text = data.get("message", "")
         file_id = data.get("file_id")
@@ -69,7 +91,9 @@ class RedisConsumer:
             "user_last_payment_amount", "user_last_payment_date",
         )}
 
-        dialog_row = await self.db.upsert_dialog(dialog_id, chat_id, ai_enabled, user_info)
+        dialog_row = await self.db.upsert_dialog(
+            dialog_id, chat_id, service["id"], external_id, ai_enabled, user_info,
+        )
         is_new = dialog_row["is_new_dialog"]
 
         msg_row = await self.db.save_message(
@@ -83,32 +107,36 @@ class RedisConsumer:
         await self.db.update_last_message(dialog_id, text or f"[{file_type}]")
 
         if text and file_type == "text":
-            asyncio.create_task(self._classify_later(msg_row["id"], text))
+            asyncio.create_task(self._classify_later(msg_row["id"], text, service["id"]))
 
         if operator_called:
             await self.db.update_operator_called(dialog_id, True)
 
         updated = await self.db.get_dialog(dialog_id)
-        username = updated.get("user_username") or dialog_id
+        username = updated.get("user_username") or external_id
+        sid = service["id"]
 
         await self.ws.broadcast({
             "type": "new_message",
             "dialog_id": dialog_id,
+            "service_id": sid,
             "message": _fmt_message(msg_row),
-        })
+        }, service_id=sid)
 
         if is_new:
-            await self.ws.broadcast({"type": "new_dialog", "dialog": _fmt_dialog(updated)})
-            await self.n8n.schedule_notify("new_dialog", {"dialog_id": dialog_id, "username": username})
+            await self.ws.broadcast({"type": "new_dialog", "dialog": _fmt_dialog(updated)}, service_id=sid)
+            await self.n8n.schedule_notify("new_dialog", service, {"dialog_id": external_id, "username": username})
         else:
-            await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+            await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)}, service_id=sid)
 
         if operator_called:
-            await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+            await self.n8n.schedule_notify(
+                "operator_called", service, {"dialog_id": external_id, "username": username}
+            )
 
-    async def _classify_later(self, msg_id: int, text: str):
+    async def _classify_later(self, msg_id: int, text: str, service_id: int):
         try:
-            ai_settings = await self.db.get_setting_json("ai_settings", {})
+            ai_settings = await self.db.get_service_setting_json(service_id, "ai_settings", {})
             if not ai_settings.get("classification_enabled") or not self.chat_client:
                 return
             category = await classify_message(text, self.chat_client)
@@ -119,8 +147,12 @@ class RedisConsumer:
             print(f"[classifier] background error: {e}")
 
     async def _handle_ai_response(self, data: dict):
-        dialog_id = data["dialog_id"]
+        service = await self._resolve_service(data)
+        if not service:
+            return
+        dialog_id = make_dialog_key(service["slug"], data["dialog_id"])
         text = data.get("message", "")
+        sid = service["id"]
 
         dialog = await self.db.get_dialog(dialog_id)
         if not dialog:
@@ -137,22 +169,29 @@ class RedisConsumer:
             await self.ws.broadcast({
                 "type": "new_message",
                 "dialog_id": dialog_id,
+                "service_id": sid,
                 "message": _fmt_message(msg_row),
-            })
-            await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+            }, service_id=sid)
+            await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)}, service_id=sid)
 
         if wants_handoff and not dialog.get("operator_called"):
-            ai_settings = await self.db.get_setting_json("ai_settings", {})
+            ai_settings = await self.db.get_service_setting_json(sid, "ai_settings", {})
             if ai_settings.get("handoff_enabled", True):
-                await self._auto_handoff(dialog_id, dialog)
+                await self._auto_handoff(dialog_id, service)
 
-    async def _auto_handoff(self, dialog_id: str, dialog: dict):
+    async def _auto_handoff(self, dialog_id: str, service: dict):
         print(f"[auto-handoff] dialog={dialog_id}")
+        sid = service["id"]
         sys_row = await self.db.save_message(dialog_id, "system", "ИИ передал диалог оператору")
         await self.db.update_status(dialog_id, "in_progress")
         await self.db.update_operator_called(dialog_id, True)
         updated = await self.db.get_dialog(dialog_id)
-        await self.ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(sys_row)})
-        await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        username = updated.get("user_username") or dialog_id
-        await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+        await self.ws.broadcast(
+            {"type": "new_message", "dialog_id": dialog_id, "service_id": sid,
+             "message": _fmt_message(sys_row)}, service_id=sid,
+        )
+        await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)}, service_id=sid)
+        username = updated.get("user_username") or updated["external_id"]
+        await self.n8n.schedule_notify(
+            "operator_called", service, {"dialog_id": updated["external_id"], "username": username}
+        )

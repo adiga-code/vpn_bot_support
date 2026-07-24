@@ -9,16 +9,21 @@ class ChatClient:
     model: str
 
 
-def make_chat_client(provider: str, openai_key: str, gemini_key: str) -> ChatClient:
+def make_chat_client(provider: str, openai_key: str, gemini_key: str) -> ChatClient | None:
     """Build a chat-completion client for the configured provider.
 
     provider: "openai" (default) or "gemini"
     Both providers expose an OpenAI-compatible API, so the same call
     signatures work without changes in classifier.py / kb.py.
+
+    Returns None when no key is configured. The LLM here only powers optional
+    extras (classification, summaries, KB chunking) and callers already guard
+    with `if chat_client`, so a missing key must not stop the app from booting.
     """
     if provider == "gemini":
         if not gemini_key:
-            raise ValueError("GEMINI_API_KEY is required when CHAT_PROVIDER=gemini")
+            print("[AI] CHAT_PROVIDER=gemini but GEMINI_API_KEY is empty — AI features disabled")
+            return None
         return ChatClient(
             client=AsyncOpenAI(
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -26,6 +31,10 @@ def make_chat_client(provider: str, openai_key: str, gemini_key: str) -> ChatCli
             ),
             model="gemini-2.0-flash",
         )
+
+    if not openai_key:
+        print("[AI] OPENAI_API_KEY is empty — classification, summaries and KB upload disabled")
+        return None
 
     return ChatClient(
         client=AsyncOpenAI(api_key=openai_key),

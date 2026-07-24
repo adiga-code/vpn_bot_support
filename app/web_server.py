@@ -14,7 +14,8 @@ from app.ai_client import make_chat_client
 from app.auth import create_token, decode_token, hash_password, verify_password
 from app.billing import BillingProvider
 from app.config import Settings
-from app.database import DatabaseManager, avatar_color, make_initials
+from app.database import SLUG_RE, DatabaseManager, avatar_color, make_initials
+from app.kb import collection_name as kb_collection_name
 from app.kb import delete_from_qdrant, process_document
 from app.storage import make_storage
 from app.summarizer import summarize_dialog
@@ -66,10 +67,15 @@ def _fmt_time(dt: datetime) -> str:
 
 def _fmt_dialog(row: dict, tickets: list = None) -> dict:
     did = row["dialog_id"]
-    name = row.get("user_name") or did
+    name = row.get("user_name") or row.get("external_id") or did
     username = row.get("user_username") or f"@{row['chat_id']}"
     return {
         "id": did,
+        "externalId": row.get("external_id"),
+        "serviceId": row.get("service_id"),
+        "serviceSlug": row.get("service_slug"),
+        "serviceName": row.get("service_name"),
+        "serviceColor": row.get("service_color") or "#4F8EF7",
         "chatId": row["chat_id"],
         "name": name,
         "username": username,
@@ -115,7 +121,7 @@ def _fmt_message(row: dict) -> dict:
     }
 
 
-def _fmt_operator(op: dict) -> dict:
+def _fmt_operator(op: dict, service_ids: list = None) -> dict:
     raw_prefs = op.get("notif_prefs")
     notif_prefs = json.loads(raw_prefs) if raw_prefs else _NOTIF_PREFS_DEFAULT
     return {
@@ -128,6 +134,24 @@ def _fmt_operator(op: dict) -> dict:
         "color": op.get("color") or "#4F8EF7",
         "online": op.get("online", False),
         "notifPrefs": notif_prefs,
+        # The access flags. Admins are not flagged per service — the role
+        # already grants every service.
+        "serviceIds": service_ids or [],
+    }
+
+
+def _fmt_service(row: dict, counters: dict = None) -> dict:
+    counts = (counters or {}).get(row["id"], {})
+    return {
+        "id": row["id"],
+        "slug": row["slug"],
+        "name": row["name"],
+        "color": row["color"],
+        "isDefault": row["is_default"],
+        "isActive": row["is_active"],
+        "kbCollection": kb_collection_name(row["slug"]),
+        "openCount": counts.get("open", 0),
+        "badgeCount": counts.get("badge", 0),
     }
 
 
@@ -161,6 +185,18 @@ class OperatorBody(BaseModel):
     tg_id: Optional[int] = None
     role: str = "agent"
     password: str = ""
+    # Which VPN services this operator may answer tickets for. Ignored for
+    # admins, who see everything by role.
+    service_ids: Optional[list[int]] = None
+
+class ServiceBody(BaseModel):
+    name: str
+    slug: str = ""
+    color: str = ""
+    is_active: bool = True
+
+class OperatorServicesBody(BaseModel):
+    service_ids: list[int] = []
 
 class AISettingsBody(BaseModel):
     prompt: str
@@ -217,12 +253,6 @@ def build_app(
         return response
 
     # Auth dependency — defined here for closure access to db and settings
-    async def require_auth(authorization: Optional[str] = Depends(
-        lambda authorization: authorization  # FastAPI Header injection below
-    )) -> dict:
-        raise NotImplementedError  # replaced below
-
-    # Proper Header-based dependency
     from fastapi import Header
 
     async def require_auth(authorization: Optional[str] = Header(None)) -> dict:
@@ -236,6 +266,36 @@ def build_app(
             raise HTTPException(401, "Operator not found")
         return op
 
+    # ── Service access ────────────────────────────────────────────────────────
+
+    async def allowed_service_ids(operator: dict) -> list[int]:
+        """Services this operator may work with — the 'flags' from the brief."""
+        if operator["role"] == "admin":
+            return [s["id"] for s in await db.get_services()]
+        return await db.get_operator_service_ids(operator["id"])
+
+    async def require_dialog(dialog_id: str, operator: dict) -> dict:
+        """Load a dialog, refusing it when the operator lacks the service flag."""
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404, "Dialog not found")
+        if dialog["service_id"] not in await allowed_service_ids(operator):
+            raise HTTPException(403, "Нет доступа к этому сервису")
+        return dialog
+
+    async def require_service(slug: str, operator: dict) -> dict:
+        """Resolve a ?service=slug parameter and check access."""
+        service = await db.get_service_by_slug(slug)
+        if not service:
+            raise HTTPException(404, f"Unknown service: {slug}")
+        if service["id"] not in await allowed_service_ids(operator):
+            raise HTTPException(403, "Нет доступа к этому сервису")
+        return service
+
+    def require_admin(operator: dict) -> None:
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+
     # ── Static / index ────────────────────────────────────────────────────────
 
     @app.get("/")
@@ -244,8 +304,12 @@ def build_app(
 
     @app.get("/api/files/{filename}")
     async def serve_file(filename: str):
-        path = uploads / filename
-        if not path.exists():
+        # Uploads are named with uuid4 hex + extension. Reject anything else:
+        # the path used to be joined raw, so "../" escaped the uploads dir.
+        if Path(filename).name != filename or filename in ("", ".", ".."):
+            raise HTTPException(400, "Invalid filename")
+        path = (uploads / filename).resolve()
+        if not path.is_relative_to(uploads.resolve()) or not path.is_file():
             raise HTTPException(404, "File not found")
         return FileResponse(path)
 
@@ -268,7 +332,7 @@ def build_app(
         op = await db.create_operator(body.name, body.tg, "admin")
         await db.set_password(op["id"], hash_password(body.password))
         token = create_token(op["id"], settings.SECRET_KEY)
-        return {"token": token, "operator": _fmt_operator(op)}
+        return {"token": token, "operator": _fmt_operator(op, await allowed_service_ids(op))}
 
     @app.post("/api/auth/login")
     async def login(body: LoginBody):
@@ -278,13 +342,13 @@ def build_app(
         if not verify_password(body.password, op["password_hash"]):
             raise HTTPException(401, "Неверный логин или пароль")
         token = create_token(op["id"], settings.SECRET_KEY)
-        return {"token": token, "operator": _fmt_operator(op)}
+        return {"token": token, "operator": _fmt_operator(op, await allowed_service_ids(op))}
 
     # ── Auth (protected) ──────────────────────────────────────────────────────
 
     @app.get("/api/auth/me")
     async def me(operator: dict = Depends(require_auth)):
-        return _fmt_operator(operator)
+        return _fmt_operator(operator, await allowed_service_ids(operator))
 
     @app.post("/api/auth/logout")
     async def logout(operator: dict = Depends(require_auth)):
@@ -302,58 +366,121 @@ def build_app(
         await db.set_password(operator["id"], hash_password(body.new_password))
         return {"ok": True}
 
+    # ── Services ──────────────────────────────────────────────────────────────
+
+    def _ticket(t: dict) -> dict:
+        return {
+            "id": f"T-{t['dialog_id'][-4:]}",
+            "dialogId": t["dialog_id"],
+            "title": t.get("summary") or t["last_message_text"] or "Диалог",
+            "date": _fmt_time(t["updated_at"]),
+            "solved": True,
+        }
+
+    @app.get("/api/services")
+    async def get_services(operator: dict = Depends(require_auth)):
+        allowed = set(await allowed_service_ids(operator))
+        counters = await db.get_service_counters()
+        return [
+            _fmt_service(s, counters)
+            for s in await db.get_services()
+            if s["id"] in allowed and (s["is_active"] or operator["role"] == "admin")
+        ]
+
+    @app.post("/api/services")
+    async def create_service(body: ServiceBody, operator: dict = Depends(require_auth)):
+        require_admin(operator)
+        slug = (body.slug or body.name).strip().lower().replace(" ", "-")
+        if not SLUG_RE.match(slug):
+            raise HTTPException(
+                400, "Идентификатор: 2–32 символа, латиница в нижнем регистре, цифры, - и _"
+            )
+        if await db.get_service_by_slug(slug):
+            raise HTTPException(400, f"Сервис «{slug}» уже существует")
+        service = await db.create_service(slug, body.name.strip(), body.color or None)
+        return _fmt_service(service)
+
+    @app.put("/api/services/{service_id}")
+    async def update_service(service_id: int, body: ServiceBody, operator: dict = Depends(require_auth)):
+        require_admin(operator)
+        # slug is immutable: it is baked into dialog keys, Redis channel names
+        # and the Qdrant collection, so renaming it would orphan live data.
+        service = await db.update_service(
+            service_id, body.name.strip(), body.color or "#4F8EF7", body.is_active
+        )
+        if not service:
+            raise HTTPException(404)
+        return _fmt_service(service)
+
+    @app.delete("/api/services/{service_id}")
+    async def delete_service(service_id: int, operator: dict = Depends(require_auth)):
+        require_admin(operator)
+        service = await db.get_service(service_id)
+        if not service:
+            raise HTTPException(404)
+        if service["is_default"]:
+            raise HTTPException(400, "Нельзя удалить сервис по умолчанию")
+        count = await db.count_service_dialogs(service_id)
+        if count:
+            raise HTTPException(
+                400,
+                f"У сервиса {count} диалог(ов). Отключите его вместо удаления, "
+                "чтобы не потерять переписку.",
+            )
+        await db.delete_service(service_id)
+        return {"ok": True}
+
     # ── Dialogs ───────────────────────────────────────────────────────────────
 
     @app.get("/api/dialogs")
-    async def get_dialogs(operator: dict = Depends(require_auth)):
-        rows = await db.get_all_dialogs()
+    async def get_dialogs(service: str = "", operator: dict = Depends(require_auth)):
+        if service:
+            service_ids = [(await require_service(service, operator))["id"]]
+        else:
+            service_ids = await allowed_service_ids(operator)
+        rows = await db.get_dialogs_for(service_ids)
         return [_fmt_dialog(r) for r in rows]
 
     @app.get("/api/dialogs/{dialog_id}")
     async def get_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
-        row = await db.get_dialog(dialog_id)
-        if not row:
-            raise HTTPException(404)
-        tickets = await db.get_dialog_history(row["chat_id"], dialog_id)
-        return _fmt_dialog(row, [
-            {
-                "id": f"T-{t['dialog_id'][-4:]}",
-                "dialogId": t["dialog_id"],
-                "title": t.get("summary") or t["last_message_text"] or "Диалог",
-                "date": _fmt_time(t["updated_at"]),
-                "solved": True,
-            }
-            for t in tickets
-        ])
+        row = await require_dialog(dialog_id, operator)
+        tickets = await db.get_dialog_history(row["chat_id"], row["service_id"], dialog_id)
+        return _fmt_dialog(row, [_ticket(t) for t in tickets])
 
     @app.get("/api/dialogs/{dialog_id}/history")
     async def get_dialog_history(dialog_id: str, operator: dict = Depends(require_auth)):
-        row = await db.get_dialog(dialog_id)
-        if not row:
-            raise HTTPException(404)
-        history = await db.get_dialog_history(row["chat_id"], dialog_id)
-        return [
-            {
-                "id": f"T-{t['dialog_id'][-4:]}",
-                "dialogId": t["dialog_id"],
-                "title": t.get("summary") or t["last_message_text"] or "Диалог",
-                "date": _fmt_time(t["updated_at"]),
-                "solved": True,
-            }
-            for t in history
-        ]
+        row = await require_dialog(dialog_id, operator)
+        history = await db.get_dialog_history(row["chat_id"], row["service_id"], dialog_id)
+        return [_ticket(t) for t in history]
 
     @app.get("/api/dialogs/{dialog_id}/messages")
     async def get_messages(dialog_id: str, operator: dict = Depends(require_auth)):
-        await db.clear_unread(dialog_id)
+        await require_dialog(dialog_id, operator)
         rows = await db.get_messages(dialog_id)
         return [_fmt_message(r) for r in rows]
 
+    @app.post("/api/dialogs/{dialog_id}/read")
+    async def mark_read(dialog_id: str, operator: dict = Depends(require_auth)):
+        """Clear the unread counter.
+
+        Split out of GET /messages: the client caches messages and never
+        re-fetches them, so the old side effect only ever fired the first time
+        a dialog was opened and the service badges drifted out of sync.
+        """
+        dialog = await require_dialog(dialog_id, operator)
+        if not dialog["unread_count"]:
+            return {"ok": True}
+        await db.clear_unread(dialog_id)
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast(
+            {"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+            service_id=dialog["service_id"],
+        )
+        return {"ok": True}
+
     @app.post("/api/dialogs/{dialog_id}/reply")
     async def reply(dialog_id: str, body: ReplyBody, operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        dialog = await require_dialog(dialog_id, operator)
 
         # Use authenticated operator's name if body doesn't override it
         op_name = body.operator_name or operator["name"]
@@ -369,56 +496,70 @@ def build_app(
         if dialog["status"] == "new":
             await db.update_status(dialog_id, "in_progress")
 
+        sid = dialog["service_id"]
         await n8n.send_manager_message(
-            dialog_id, dialog["chat_id"], body.text,
+            dialog["external_id"], dialog["chat_id"], dialog["service_slug"], body.text,
             file_url=body.file_url, file_type=body.file_type,
         )
 
         updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        await ws.broadcast(
+            {"type": "new_message", "dialog_id": dialog_id, "service_id": sid,
+             "message": _fmt_message(msg_row)}, service_id=sid,
+        )
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)}, service_id=sid)
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/toggle_ai")
     async def toggle_ai(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        dialog = await require_dialog(dialog_id, operator)
+        sid = dialog["service_id"]
         new_value = not dialog["ai_enabled"]
         await db.update_ai_enabled(dialog_id, new_value)
-        await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], new_value)
+        await n8n.notify_ai_toggled(
+            dialog["external_id"], dialog["chat_id"], dialog["service_slug"], new_value
+        )
         updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)}, service_id=sid)
         return {"ai_enabled": new_value}
 
     @app.post("/api/dialogs/{dialog_id}/handoff")
     async def handoff(dialog_id: str, body: HandoffBody = HandoffBody(), operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        dialog = await require_dialog(dialog_id, operator)
+        sid = dialog["service_id"]
         op_name = body.operator_name or operator["name"]
         msg_row = await db.save_message(dialog_id, "system", f"Диалог передан оператору {op_name}")
         await db.update_status(dialog_id, "in_progress")
         await db.update_operator_called(dialog_id, True)
         updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        username = updated.get("user_username") or dialog_id
-        await n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+        await ws.broadcast(
+            {"type": "new_message", "dialog_id": dialog_id, "service_id": sid,
+             "message": _fmt_message(msg_row)}, service_id=sid,
+        )
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)}, service_id=sid)
+        username = updated.get("user_username") or dialog["external_id"]
+        service = await db.get_service(sid)
+        await n8n.schedule_notify(
+            "operator_called", service, {"dialog_id": dialog["external_id"], "username": username}
+        )
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/close")
     async def close_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        dialog = await require_dialog(dialog_id, operator)
+        sid = dialog["service_id"]
         msg_row = await db.save_message(dialog_id, "system", "Диалог закрыт оператором")
         await db.update_status(dialog_id, "closed")
         await db.update_operator_called(dialog_id, False)
         updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
-        await n8n.notify_dialog_closed(dialog_id, dialog["chat_id"], operator["name"])
+        await ws.broadcast(
+            {"type": "new_message", "dialog_id": dialog_id, "service_id": sid,
+             "message": _fmt_message(msg_row)}, service_id=sid,
+        )
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)}, service_id=sid)
+        await n8n.notify_dialog_closed(
+            dialog["external_id"], dialog["chat_id"], dialog["service_slug"], operator["name"]
+        )
         if chat_client:
             asyncio.create_task(_summarize_dialog_bg(dialog_id))
         return {"ok": True}
@@ -437,10 +578,12 @@ def build_app(
     async def billing_action(dialog_id: str, action: str, body: dict = Body(default={}), operator: dict = Depends(require_auth)):
         if action not in ("renew", "buy_traffic", "reset_key"):
             raise HTTPException(400, f"Unknown action: {action}")
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
-        result = await billing.execute(action, dialog["chat_id"], dialog_id, params=body)
+        dialog = await require_dialog(dialog_id, operator)
+        # The billing API lives outside the panel and knows dialogs by the id
+        # n8n assigned them, not by our composite key.
+        result = await billing.execute(
+            action, dialog["chat_id"], dialog["external_id"], params=body
+        )
         if not result.ok:
             raise HTTPException(502, result.message)
         return {"ok": True, "message": result.message}
@@ -480,16 +623,20 @@ def build_app(
     # ── Statistics ────────────────────────────────────────────────────────────
 
     @app.get("/api/stats")
-    async def get_stats(days: int = 14, operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
-        return await db.get_stats(days)
+    async def get_stats(days: int = 14, service: str = "", operator: dict = Depends(require_auth)):
+        require_admin(operator)
+        if service:
+            service_ids = [(await require_service(service, operator))["id"]]
+        else:
+            service_ids = await allowed_service_ids(operator)
+        return await db.get_stats(days, service_ids)
 
     # ── Operators ─────────────────────────────────────────────────────────────
 
     @app.get("/api/operators")
     async def get_operators(operator: dict = Depends(require_auth)):
-        return [_fmt_operator(op) for op in await db.get_operators()]
+        by_op = await db.get_service_ids_by_operator()
+        return [_fmt_operator(op, by_op.get(op["id"], [])) for op in await db.get_operators()]
 
     @app.get("/api/operators/me/notifications")
     async def get_my_notif_prefs(operator: dict = Depends(require_auth)):
@@ -502,28 +649,45 @@ def build_app(
 
     @app.post("/api/operators")
     async def create_operator(body: OperatorBody, operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
+        require_admin(operator)
         op = await db.create_operator(body.name, body.tg, body.role, tg_id=body.tg_id)
         if body.password:
             if len(body.password) < 6:
                 raise HTTPException(400, "Password must be at least 6 characters")
             await db.set_password(op["id"], hash_password(body.password))
-        return _fmt_operator(op)
+        if body.service_ids is not None:
+            await db.set_operator_services(op["id"], body.service_ids)
+        return _fmt_operator(op, await db.get_operator_service_ids(op["id"]))
 
     @app.put("/api/operators/{op_id}")
     async def update_operator(op_id: int, body: OperatorBody, operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
+        require_admin(operator)
         result = await db.update_operator(op_id, body.name, body.tg, body.role, tg_id=body.tg_id)
         if not result:
             raise HTTPException(404)
-        return _fmt_operator(result)
+        if body.service_ids is not None:
+            await db.set_operator_services(op_id, body.service_ids)
+        return _fmt_operator(result, await db.get_operator_service_ids(op_id))
+
+    @app.put("/api/operators/{op_id}/services")
+    async def set_operator_services(
+        op_id: int, body: OperatorServicesBody, operator: dict = Depends(require_auth),
+    ):
+        """Assign the VPN services this operator is allowed to answer for."""
+        require_admin(operator)
+        target = await db.get_operator(op_id)
+        if not target:
+            raise HTTPException(404)
+        known = {s["id"] for s in await db.get_services()}
+        unknown = [sid for sid in body.service_ids if sid not in known]
+        if unknown:
+            raise HTTPException(400, f"Unknown service ids: {unknown}")
+        await db.set_operator_services(op_id, body.service_ids)
+        return _fmt_operator(target, await db.get_operator_service_ids(op_id))
 
     @app.delete("/api/operators/{op_id}")
     async def delete_operator(op_id: int, operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
+        require_admin(operator)
         if op_id == operator["id"]:
             raise HTTPException(400, "Cannot delete yourself")
         ok = await db.delete_operator(op_id)
@@ -534,15 +698,16 @@ def build_app(
     # ── Settings: AI ──────────────────────────────────────────────────────────
 
     @app.get("/api/settings/ai")
-    async def get_ai_settings(operator: dict = Depends(require_auth)):
-        return await db.get_setting_json("ai_settings", _AI_DEFAULTS)
+    async def get_ai_settings(service: str, operator: dict = Depends(require_auth)):
+        svc = await require_service(service, operator)
+        return await db.get_service_setting_json(svc["id"], "ai_settings", _AI_DEFAULTS)
 
     @app.put("/api/settings/ai")
-    async def save_ai_settings(body: AISettingsBody, operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
+    async def save_ai_settings(body: AISettingsBody, service: str, operator: dict = Depends(require_auth)):
+        require_admin(operator)
+        svc = await require_service(service, operator)
         data = body.model_dump()
-        await db.set_setting_json("ai_settings", data)
+        await db.set_service_setting_json(svc["id"], "ai_settings", data)
         # For n8n: append [HANDOFF] instruction when handoff is enabled
         n8n_data = dict(data)
         if data.get("handoff_enabled"):
@@ -552,28 +717,30 @@ def build_app(
                 "Пример: «[HANDOFF] Передаю вас оператору, он скоро ответит.» "
                 "Без [HANDOFF] — отвечай самостоятельно."
             )
-        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
+        await n8n.push_ai_settings(svc["slug"], n8n_data)
         return {"ok": True}
 
     # ── Settings: Schedule ────────────────────────────────────────────────────
 
     @app.get("/api/settings/schedule")
-    async def get_schedule(operator: dict = Depends(require_auth)):
-        return await db.get_setting_json("schedule", _SCHEDULE_DEFAULTS)
+    async def get_schedule(service: str, operator: dict = Depends(require_auth)):
+        svc = await require_service(service, operator)
+        return await db.get_service_setting_json(svc["id"], "schedule", _SCHEDULE_DEFAULTS)
 
     @app.put("/api/settings/schedule")
-    async def save_schedule(body: ScheduleBody, operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
-        await db.set_setting_json("schedule", body.schedule)
-        await n8n.redis.set("vpn_bot:schedule", json.dumps(body.schedule, ensure_ascii=False))
+    async def save_schedule(body: ScheduleBody, service: str, operator: dict = Depends(require_auth)):
+        require_admin(operator)
+        svc = await require_service(service, operator)
+        await db.set_service_setting_json(svc["id"], "schedule", body.schedule)
+        await n8n.push_schedule(svc["slug"], body.schedule)
         return {"ok": True}
 
     # ── Knowledge Base ────────────────────────────────────────────────────────
 
     @app.get("/api/kb")
-    async def get_kb(operator: dict = Depends(require_auth)):
-        articles = await db.get_kb_articles()
+    async def get_kb(service: str, operator: dict = Depends(require_auth)):
+        svc = await require_service(service, operator)
+        articles = await db.get_kb_articles(svc["id"])
         for a in articles:
             try:
                 a["keywords"] = json.loads(a["keywords"])
@@ -582,33 +749,41 @@ def build_app(
         return articles
 
     @app.post("/api/kb/upload")
-    async def upload_kb(file: UploadFile = File(...), operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
+    async def upload_kb(service: str, file: UploadFile = File(...), operator: dict = Depends(require_auth)):
+        require_admin(operator)
+        svc = await require_service(service, operator)
         if not settings.OPENAI_API_KEY:
             raise HTTPException(400, "OPENAI_API_KEY is required for embeddings")
+        if not chat_client:
+            raise HTTPException(400, "AI-провайдер не настроен — загрузка базы знаний недоступна")
         if not file.filename.endswith((".txt", ".md")):
             raise HTTPException(400, "Only .txt and .md files are supported")
         text = (await file.read()).decode("utf-8", errors="ignore")
         if not text.strip():
             raise HTTPException(400, "File is empty")
-        chunks = await process_document(text, chat_client, settings.OPENAI_API_KEY, settings.QDRANT_URL)
+        chunks = await process_document(
+            text, chat_client, settings.OPENAI_API_KEY, settings.QDRANT_URL, svc["slug"],
+        )
         for c in chunks:
             await db.save_kb_article(
                 c["id"], c["title"], c["category"],
                 json.dumps(c["keywords"], ensure_ascii=False),
-                c["content"],
+                c["content"], svc["id"],
             )
         return {"chunks_created": len(chunks), "ids": [c["id"] for c in chunks]}
 
-    @app.delete("/api/kb/{article_id}")
+    @app.delete("/api/kb/{article_id:path}")
     async def delete_kb_article(article_id: str, operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
-        ok = await db.delete_kb_article(article_id)
-        if not ok:
+        require_admin(operator)
+        article = await db.get_kb_article(article_id)
+        if not article:
             raise HTTPException(404)
-        await delete_from_qdrant(article_id, settings.QDRANT_URL)
+        svc = await db.get_service(article["service_id"])
+        await db.delete_kb_article(article_id)
+        if svc:
+            await delete_from_qdrant(
+                article_id, settings.QDRANT_URL, kb_collection_name(svc["slug"])
+            )
         return {"ok": True}
 
     # ── WebSocket ─────────────────────────────────────────────────────────────
@@ -619,7 +794,11 @@ def build_app(
         if not op_id:
             await websocket.close(code=4001)
             return
-        went_online = await ws.connect(websocket, op_id)
+        operator = await db.get_operator(op_id)
+        if not operator:
+            await websocket.close(code=4001)
+            return
+        went_online = await ws.connect(websocket, op_id, await allowed_service_ids(operator))
         if went_online:
             await db.set_operator_online(op_id, True)
             await ws.broadcast({"type": "operator_status", "op_id": op_id, "online": True})

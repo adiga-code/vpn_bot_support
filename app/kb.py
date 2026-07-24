@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from typing import TYPE_CHECKING
 
 from openai import AsyncOpenAI
@@ -11,10 +12,30 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 if TYPE_CHECKING:
     from app.ai_client import ChatClient
 
-_COLLECTION = "kb"
 _EMBED_MODEL = "text-embedding-3-small"
 _EMBED_DIMS  = 1536
 _BATCH_SIZE  = 400
+
+
+def collection_name(service_slug: str) -> str:
+    """One Qdrant collection per VPN brand.
+
+    The n8n AI Agent must point its Vector Store at the same name and use the
+    same embedding model as _EMBED_MODEL, otherwise retrieval returns noise.
+    """
+    return f"kb_{service_slug}"
+
+
+def article_id(service_slug: str, chunk_slug: str) -> str:
+    """KB article ids are shared across services in one table — scope them."""
+    return f"{service_slug}:{chunk_slug}"
+
+
+def _point_id(article: str) -> str:
+    # uuid5, not hash(): Python salts string hashing per process, so the same
+    # chunk re-uploaded from a restarted worker used to land on a new point and
+    # leave a duplicate behind.
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, article))
 
 _CHUNKING_PROMPT = """You are a knowledge base indexing assistant. Your task is to parse the provided support documentation and split it into semantically meaningful, self-contained chunks suitable for vector search.
 
@@ -110,48 +131,51 @@ async def embed_chunks(chunks: list[dict], openai_key: str) -> list[dict]:
     return chunks
 
 
-async def ensure_collection(qdrant_url: str):
+async def ensure_collection(qdrant_url: str, collection: str):
     """Create Qdrant collection if it doesn't exist."""
     client = AsyncQdrantClient(url=qdrant_url)
     try:
-        await client.get_collection(_COLLECTION)
+        await client.get_collection(collection)
     except Exception:
         await client.create_collection(
-            _COLLECTION,
+            collection,
             vectors_config=VectorParams(size=_EMBED_DIMS, distance=Distance.COSINE),
         )
     await client.close()
 
 
-async def upsert_to_qdrant(chunks: list[dict], qdrant_url: str):
+async def upsert_to_qdrant(chunks: list[dict], qdrant_url: str, collection: str):
     """Upsert embedded chunks into Qdrant."""
     client = AsyncQdrantClient(url=qdrant_url)
     points = [
         PointStruct(
-            id=abs(hash(c["id"])) % (2**63),
+            id=_point_id(c["id"]),
             vector=c["embedding"],
             payload={
                 "article_id": c["id"],
                 "title":      c["title"],
                 "category":   c["category"],
                 "keywords":   c["keywords"],
+                # n8n's Vector Store returns the payload, not the vector —
+                # without the text the AI Agent has nothing to quote.
+                "content":    c["content"],
             },
         )
         for c in chunks
     ]
-    await client.upsert(collection_name=_COLLECTION, points=points)
+    await client.upsert(collection_name=collection, points=points)
     await client.close()
 
 
-async def delete_from_qdrant(article_id: str, qdrant_url: str):
+async def delete_from_qdrant(article: str, qdrant_url: str, collection: str):
     """Delete a point by article_id payload filter."""
     from qdrant_client.models import Filter, FieldCondition, MatchValue
     client = AsyncQdrantClient(url=qdrant_url)
     try:
         await client.delete(
-            collection_name=_COLLECTION,
+            collection_name=collection,
             points_selector=Filter(
-                must=[FieldCondition(key="article_id", match=MatchValue(value=article_id))]
+                must=[FieldCondition(key="article_id", match=MatchValue(value=article))]
             ),
         )
     except Exception:
@@ -159,15 +183,20 @@ async def delete_from_qdrant(article_id: str, qdrant_url: str):
     await client.close()
 
 
-async def process_document(text: str, chat_client: "ChatClient", openai_key: str, qdrant_url: str) -> list[dict]:
+async def process_document(
+    text: str, chat_client: "ChatClient", openai_key: str, qdrant_url: str, service_slug: str,
+) -> list[dict]:
     """Full pipeline: text → chunks (via chat LLM) → embeddings (OpenAI) → Qdrant."""
+    collection = collection_name(service_slug)
     print(f"[KB] Chunking document ({len(text)} chars) via {chat_client.model}...")
     chunks = await chunk_document(text, chat_client)
+    for c in chunks:
+        c["id"] = article_id(service_slug, c["id"])
     print(f"[KB] Created {len(chunks)} chunks, embedding...")
     chunks = await embed_chunks(chunks, openai_key)
-    await ensure_collection(qdrant_url)
-    await upsert_to_qdrant(chunks, qdrant_url)
-    print(f"[KB] Upserted {len(chunks)} vectors to Qdrant")
+    await ensure_collection(qdrant_url, collection)
+    await upsert_to_qdrant(chunks, qdrant_url, collection)
+    print(f"[KB] Upserted {len(chunks)} vectors into {collection}")
     for c in chunks:
         c.pop("embedding", None)
     return chunks

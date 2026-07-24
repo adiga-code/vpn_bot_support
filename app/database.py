@@ -1,4 +1,6 @@
 import json
+import re
+import zlib
 from datetime import date, timedelta
 from typing import Optional
 
@@ -8,11 +10,31 @@ from app.config import Settings
 
 _AVATAR_COLORS = ["#4F8EF7", "#A855F7", "#22c55e", "#eab308", "#ef4444", "#06b6d4", "#f97316"]
 
+# Slugs end up in Redis channel names and Qdrant collection names, and ":" is
+# the separator inside a dialog key — keep them boring.
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
+
+SERVICE_COLORS = ["#4F8EF7", "#A855F7", "#22c55e", "#f97316", "#ec4899", "#06b6d4", "#eab308", "#ef4444"]
+
+# Dialogs always travel with their service so the API and the WebSocket router
+# never have to look it up separately.
+_DIALOG_SELECT = """
+    SELECT d.*, s.slug AS service_slug, s.name AS service_name, s.color AS service_color
+    FROM dialogs d JOIN services s ON s.id = d.service_id
+"""
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def avatar_color(dialog_id: str) -> str:
-    return _AVATAR_COLORS[hash(dialog_id) % len(_AVATAR_COLORS)]
+    # crc32 rather than hash(): Python salts string hashing per process, which
+    # would give the same user a different colour after every restart.
+    return _AVATAR_COLORS[zlib.crc32(dialog_id.encode()) % len(_AVATAR_COLORS)]
+
+
+def make_dialog_key(slug: str, external_id) -> str:
+    """Internal primary key of a dialog. n8n only ever sees external_id."""
+    return f"{slug}:{external_id}"
 
 
 def make_initials(name: str) -> str:
@@ -213,21 +235,292 @@ class DatabaseManager:
                 f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {typedef}"
             )
 
+        await self._migrate_services(conn)
+
+    # ── Services migration ────────────────────────────────────────────────────
+
+    async def _already_applied(self, conn, migration_id: str) -> bool:
+        return bool(await conn.fetchval(
+            "SELECT COUNT(*) FROM schema_migrations WHERE id = $1", migration_id
+        ))
+
+    async def _mark_applied(self, conn, migration_id: str):
+        await conn.execute(
+            "INSERT INTO schema_migrations (id) VALUES ($1) ON CONFLICT DO NOTHING",
+            migration_id,
+        )
+
+    async def _migrate_services(self, conn):
+        """Introduce the service (VPN brand) dimension.
+
+        Unlike the ADD COLUMN block above this needs one-shot data migrations
+        (rewriting primary keys), so they are gated on schema_migrations.
+        """
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                id         TEXT PRIMARY KEY,
+                applied_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS services (
+                id         SERIAL PRIMARY KEY,
+                slug       TEXT UNIQUE NOT NULL,
+                name       TEXT NOT NULL,
+                color      TEXT NOT NULL DEFAULT '#4F8EF7',
+                is_default BOOLEAN NOT NULL DEFAULT FALSE,
+                is_active  BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS operator_services (
+                operator_id INTEGER NOT NULL REFERENCES operators(id) ON DELETE CASCADE,
+                service_id  INTEGER NOT NULL REFERENCES services(id)  ON DELETE CASCADE,
+                PRIMARY KEY (operator_id, service_id)
+            )
+        """)
+        # Separate table rather than a column on `settings`: that table's PK is
+        # `key`, and ADD COLUMN IF NOT EXISTS cannot widen a primary key.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS service_settings (
+                service_id INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+                key        TEXT NOT NULL,
+                value      TEXT NOT NULL,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (service_id, key)
+            )
+        """)
+
+        # ── Default service ───────────────────────────────────────────────────
+        default_id = await conn.fetchval(
+            "SELECT id FROM services WHERE is_default ORDER BY id LIMIT 1"
+        )
+        if default_id is None:
+            slug = self.settings.DEFAULT_SERVICE_SLUG
+            if not SLUG_RE.match(slug):
+                raise ValueError(
+                    f"DEFAULT_SERVICE_SLUG={slug!r} must match {SLUG_RE.pattern}"
+                )
+            default_id = await conn.fetchval(
+                """INSERT INTO services (slug, name, color, is_default)
+                   VALUES ($1, $2, $3, TRUE)
+                   ON CONFLICT (slug) DO UPDATE SET is_default = TRUE
+                   RETURNING id""",
+                slug, self.settings.DEFAULT_SERVICE_NAME, SERVICE_COLORS[0],
+            )
+            print(f"Default service: {slug} (id={default_id})")
+
+        # ── Attach existing rows to the default service ───────────────────────
+        await conn.execute("ALTER TABLE dialogs ADD COLUMN IF NOT EXISTS service_id INTEGER")
+        await conn.execute("ALTER TABLE dialogs ADD COLUMN IF NOT EXISTS external_id TEXT")
+        await conn.execute("ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS service_id INTEGER")
+        await conn.execute(
+            "UPDATE dialogs SET service_id = $1, external_id = COALESCE(external_id, dialog_id) "
+            "WHERE service_id IS NULL",
+            default_id,
+        )
+        await conn.execute(
+            "UPDATE kb_articles SET service_id = $1 WHERE service_id IS NULL", default_id
+        )
+
+        # ── One-shot: re-key dialogs to {slug}:{external_id} ──────────────────
+        # n8n dialog ids are per-database sequences; with more than one n8n
+        # instance the same id can arrive from two brands and silently merge
+        # their conversations.
+        if not await self._already_applied(conn, "001_composite_dialog_keys"):
+            async with conn.transaction():
+                fkeys = await conn.fetch(
+                    "SELECT conname FROM pg_constraint "
+                    "WHERE conrelid = 'messages'::regclass AND contype = 'f'"
+                )
+                for fk in fkeys:
+                    await conn.execute(
+                        f'ALTER TABLE messages DROP CONSTRAINT "{fk["conname"]}"'
+                    )
+                # messages first, while dialogs still holds the old keys
+                await conn.execute("""
+                    UPDATE messages m SET dialog_id = s.slug || ':' || m.dialog_id
+                    FROM dialogs d JOIN services s ON s.id = d.service_id
+                    WHERE d.dialog_id = m.dialog_id AND m.dialog_id NOT LIKE '%:%'
+                """)
+                await conn.execute("""
+                    UPDATE dialogs d SET dialog_id = s.slug || ':' || d.external_id
+                    FROM services s
+                    WHERE s.id = d.service_id AND d.dialog_id NOT LIKE '%:%'
+                """)
+                await conn.execute("""
+                    ALTER TABLE messages ADD CONSTRAINT messages_dialog_id_fkey
+                    FOREIGN KEY (dialog_id) REFERENCES dialogs(dialog_id)
+                    ON DELETE CASCADE ON UPDATE CASCADE
+                """)
+                await self._mark_applied(conn, "001_composite_dialog_keys")
+            print("Migration 001_composite_dialog_keys applied")
+
+        # ── One-shot: move global ai_settings/schedule onto the default service
+        if not await self._already_applied(conn, "002_service_settings"):
+            await conn.execute(
+                """INSERT INTO service_settings (service_id, key, value)
+                   SELECT $1, key, value FROM settings WHERE key IN ('ai_settings', 'schedule')
+                   ON CONFLICT DO NOTHING""",
+                default_id,
+            )
+            await self._mark_applied(conn, "002_service_settings")
+
+        # ── One-shot: grant every existing operator the default service ───────
+        if not await self._already_applied(conn, "003_operator_default_service"):
+            await conn.execute(
+                """INSERT INTO operator_services (operator_id, service_id)
+                   SELECT id, $1 FROM operators ON CONFLICT DO NOTHING""",
+                default_id,
+            )
+            await self._mark_applied(conn, "003_operator_default_service")
+
+        # ── Constraints and indexes ───────────────────────────────────────────
+        await conn.execute("ALTER TABLE dialogs ALTER COLUMN service_id SET NOT NULL")
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS dialogs_service_external_idx "
+            "ON dialogs (service_id, external_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS dialogs_service_updated_idx "
+            "ON dialogs (service_id, updated_at DESC)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS dialogs_service_status_idx "
+            "ON dialogs (service_id, status)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS kb_articles_service_idx ON kb_articles (service_id)"
+        )
+
+    # ── Services ──────────────────────────────────────────────────────────────
+
+    async def get_services(self) -> list[dict]:
+        rows = await self.pool.fetch("SELECT * FROM services ORDER BY id")
+        return [dict(r) for r in rows]
+
+    async def get_service(self, service_id: int) -> Optional[dict]:
+        row = await self.pool.fetchrow("SELECT * FROM services WHERE id = $1", service_id)
+        return dict(row) if row else None
+
+    async def get_service_by_slug(self, slug: str) -> Optional[dict]:
+        row = await self.pool.fetchrow("SELECT * FROM services WHERE slug = $1", slug)
+        return dict(row) if row else None
+
+    async def get_default_service(self) -> Optional[dict]:
+        row = await self.pool.fetchrow(
+            "SELECT * FROM services WHERE is_default ORDER BY id LIMIT 1"
+        )
+        return dict(row) if row else None
+
+    async def create_service(self, slug: str, name: str, color: str = None) -> dict:
+        if color is None:
+            count = await self.pool.fetchval("SELECT COUNT(*) FROM services")
+            color = SERVICE_COLORS[count % len(SERVICE_COLORS)]
+        row = await self.pool.fetchrow(
+            "INSERT INTO services (slug, name, color) VALUES ($1,$2,$3) RETURNING *",
+            slug, name, color,
+        )
+        return dict(row)
+
+    async def update_service(self, service_id: int, name: str, color: str, is_active: bool) -> Optional[dict]:
+        row = await self.pool.fetchrow(
+            "UPDATE services SET name=$1, color=$2, is_active=$3 WHERE id=$4 RETURNING *",
+            name, color, is_active, service_id,
+        )
+        return dict(row) if row else None
+
+    async def delete_service(self, service_id: int) -> bool:
+        result = await self.pool.execute("DELETE FROM services WHERE id=$1", service_id)
+        return result == "DELETE 1"
+
+    async def count_service_dialogs(self, service_id: int) -> int:
+        return await self.pool.fetchval(
+            "SELECT COUNT(*) FROM dialogs WHERE service_id=$1", service_id
+        ) or 0
+
+    async def get_service_counters(self) -> dict[int, dict]:
+        """Per-service dialog counters, keyed by service_id.
+
+        `badge` is what the UI shows next to the service name: anything that
+        still needs attention — a brand-new dialog or one with unread messages.
+        """
+        rows = await self.pool.fetch("""
+            SELECT service_id,
+                   COUNT(*) FILTER (WHERE status <> 'closed') AS open_count,
+                   COUNT(*) FILTER (WHERE status <> 'closed'
+                                      AND (status = 'new' OR unread_count > 0)) AS badge_count
+            FROM dialogs GROUP BY service_id
+        """)
+        return {
+            r["service_id"]: {"open": int(r["open_count"]), "badge": int(r["badge_count"])}
+            for r in rows
+        }
+
+    # ── Operator ↔ service access ─────────────────────────────────────────────
+
+    async def get_operator_service_ids(self, op_id: int) -> list[int]:
+        rows = await self.pool.fetch(
+            "SELECT service_id FROM operator_services WHERE operator_id=$1 ORDER BY service_id",
+            op_id,
+        )
+        return [r["service_id"] for r in rows]
+
+    async def get_service_ids_by_operator(self) -> dict[int, list[int]]:
+        """All access flags at once — avoids N+1 when listing operators."""
+        rows = await self.pool.fetch(
+            "SELECT operator_id, service_id FROM operator_services ORDER BY service_id"
+        )
+        out: dict[int, list[int]] = {}
+        for r in rows:
+            out.setdefault(r["operator_id"], []).append(r["service_id"])
+        return out
+
+    async def set_operator_services(self, op_id: int, service_ids: list[int]):
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM operator_services WHERE operator_id=$1", op_id
+                )
+                if service_ids:
+                    await conn.executemany(
+                        "INSERT INTO operator_services (operator_id, service_id) "
+                        "VALUES ($1,$2) ON CONFLICT DO NOTHING",
+                        [(op_id, sid) for sid in service_ids],
+                    )
+
+    # ── Per-service settings ──────────────────────────────────────────────────
+
+    async def get_service_setting_json(self, service_id: int, key: str, default=None):
+        val = await self.pool.fetchval(
+            "SELECT value FROM service_settings WHERE service_id=$1 AND key=$2",
+            service_id, key,
+        )
+        return json.loads(val) if val else default
+
+    async def set_service_setting_json(self, service_id: int, key: str, value):
+        await self.pool.execute(
+            "INSERT INTO service_settings (service_id, key, value) VALUES ($1,$2,$3) "
+            "ON CONFLICT (service_id, key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()",
+            service_id, key, json.dumps(value, ensure_ascii=False),
+        )
+
     # ── Dialogs ───────────────────────────────────────────────────────────────
 
     async def upsert_dialog(
-        self, dialog_id: str, chat_id: str,
+        self, dialog_id: str, chat_id: str, service_id: int, external_id: str,
         ai_enabled: bool = True, user_info: dict = None,
     ) -> dict:
         ui = user_info or {}
         row = await self.pool.fetchrow(
             """
             INSERT INTO dialogs (
-                dialog_id, chat_id, ai_enabled,
+                dialog_id, chat_id, service_id, external_id, ai_enabled,
                 user_name, user_username, user_plan, user_sub_status,
                 user_next_payment, user_traffic_used, user_traffic_total,
                 last_payment_amount, last_payment_date, unread_count
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, 1)
+            ) VALUES ($1,$2,$13,$14,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, 1)
             ON CONFLICT (dialog_id) DO UPDATE SET
                 ai_enabled          = EXCLUDED.ai_enabled,
                 user_name           = COALESCE(EXCLUDED.user_name,          dialogs.user_name),
@@ -250,23 +543,37 @@ class DatabaseManager:
             float(ui.get("user_traffic_used") or 0),
             float(ui.get("user_traffic_total") or 100),
             ui.get("user_last_payment_amount"), ui.get("user_last_payment_date"),
+            service_id, str(external_id),
         )
         return dict(row)
 
-    async def get_all_dialogs(self) -> list[dict]:
-        rows = await self.pool.fetch("SELECT * FROM dialogs ORDER BY updated_at DESC")
+    async def get_dialogs_for(self, service_ids: list[int]) -> list[dict]:
+        """Dialogs of the given services, newest first. Empty list → no access."""
+        if not service_ids:
+            return []
+        rows = await self.pool.fetch(
+            _DIALOG_SELECT + " WHERE d.service_id = ANY($1::int[]) ORDER BY d.updated_at DESC",
+            service_ids,
+        )
         return [dict(r) for r in rows]
 
     async def get_dialog(self, dialog_id: str) -> Optional[dict]:
-        row = await self.pool.fetchrow("SELECT * FROM dialogs WHERE dialog_id = $1", dialog_id)
+        row = await self.pool.fetchrow(
+            _DIALOG_SELECT + " WHERE d.dialog_id = $1", dialog_id
+        )
         return dict(row) if row else None
 
-    async def get_dialog_history(self, chat_id: str, exclude_dialog_id: str = "") -> list[dict]:
+    async def get_dialog_history(
+        self, chat_id: str, service_id: int, exclude_dialog_id: str = "",
+    ) -> list[dict]:
+        # Scoped to the service: the same Telegram chat_id can talk to several
+        # brands, and one brand's operators must not see another's history.
         rows = await self.pool.fetch(
             """SELECT dialog_id, last_message_text, summary, status, updated_at
-               FROM dialogs WHERE chat_id=$1 AND status='closed' AND dialog_id!=$2
+               FROM dialogs
+               WHERE chat_id=$1 AND service_id=$2 AND status='closed' AND dialog_id!=$3
                ORDER BY updated_at DESC LIMIT 10""",
-            chat_id, exclude_dialog_id,
+            chat_id, service_id, exclude_dialog_id,
         )
         return [dict(r) for r in rows]
 
@@ -411,25 +718,32 @@ class DatabaseManager:
 
     # ── Stats ─────────────────────────────────────────────────────────────────
 
-    async def get_stats(self, days: int = 14) -> dict:
+    async def get_stats(self, days: int = 14, service_ids: list[int] = None) -> dict:
+        # `svc` narrows every query to the services the caller may see; passing
+        # None (admin, no filter chosen) keeps the old global behaviour.
+        svc = "AND service_id = ANY($1::int[])" if service_ids is not None else ""
+        args = [service_ids] if service_ids is not None else []
+
         today_total = await self.pool.fetchval(
-            "SELECT COUNT(*) FROM dialogs WHERE created_at::date = CURRENT_DATE"
+            f"SELECT COUNT(*) FROM dialogs WHERE created_at::date = CURRENT_DATE {svc}", *args
         ) or 0
         today_closed = await self.pool.fetchval(
-            "SELECT COUNT(*) FROM dialogs WHERE status='closed' AND updated_at::date = CURRENT_DATE"
+            "SELECT COUNT(*) FROM dialogs WHERE status='closed' "
+            f"AND updated_at::date = CURRENT_DATE {svc}", *args
         ) or 0
         ai_resolved = await self.pool.fetchval(
-            "SELECT COUNT(*) FROM dialogs "
-            "WHERE status='closed' AND operator_called=FALSE AND updated_at::date = CURRENT_DATE"
+            "SELECT COUNT(*) FROM dialogs WHERE status='closed' AND operator_called=FALSE "
+            f"AND updated_at::date = CURRENT_DATE {svc}", *args
         ) or 0
         ai_pct = int(ai_resolved / today_closed * 100) if today_closed else 0
 
         # Daily counts for last N days (missing days filled with 0)
+        daily_svc = "AND service_id = ANY($2::int[])" if service_ids is not None else ""
         daily_rows = await self.pool.fetch(
-            """SELECT created_at::date as d, COUNT(*) as cnt
-               FROM dialogs WHERE created_at >= NOW() - ($1 || ' days')::interval
-               GROUP BY d ORDER BY d""",
-            str(days),
+            f"""SELECT created_at::date as d, COUNT(*) as cnt
+                FROM dialogs WHERE created_at >= NOW() - ($1 || ' days')::interval {daily_svc}
+                GROUP BY d ORDER BY d""",
+            str(days), *args,
         )
         daily_map = {str(r["d"]): r["cnt"] for r in daily_rows}
         today = date.today()
@@ -440,26 +754,38 @@ class DatabaseManager:
 
         # Hourly distribution over the last 14 days
         hourly_rows = await self.pool.fetch(
-            """SELECT EXTRACT(HOUR FROM created_at)::int as h, COUNT(*) as cnt
-               FROM dialogs WHERE created_at >= NOW() - '14 days'::interval
-               GROUP BY h ORDER BY h"""
+            f"""SELECT EXTRACT(HOUR FROM created_at)::int as h, COUNT(*) as cnt
+                FROM dialogs WHERE created_at >= NOW() - '14 days'::interval {svc}
+                GROUP BY h ORDER BY h""",
+            *args,
         )
         hourly_map = {r["h"]: r["cnt"] for r in hourly_rows}
         hourly = [int(hourly_map.get(h, 0)) for h in range(24)]
 
-        # Operator performance
+        # Operator performance — attributed via the operator who wrote the last
+        # reply in the dialog. Previously every operator got the same global
+        # count, which made the column meaningless.
+        closed_svc = "AND d.service_id = ANY($1::int[])" if service_ids is not None else ""
+        closed_rows = await self.pool.fetch(
+            f"""SELECT m.operator_name AS name, COUNT(DISTINCT d.dialog_id) AS cnt
+                FROM dialogs d JOIN messages m ON m.dialog_id = d.dialog_id
+                WHERE d.status='closed' AND d.updated_at::date = CURRENT_DATE
+                  AND m.kind='operator' AND m.operator_name IS NOT NULL {closed_svc}
+                GROUP BY m.operator_name""",
+            *args,
+        )
+        closed_by_name = {r["name"]: int(r["cnt"]) for r in closed_rows}
+
         op_rows = await self.pool.fetch("SELECT * FROM operators ORDER BY id")
-        operators = []
-        for op in op_rows:
-            closed = await self.pool.fetchval(
-                "SELECT COUNT(*) FROM dialogs WHERE status='closed' AND updated_at::date = CURRENT_DATE"
-            ) or 0
-            operators.append({
+        operators = [
+            {
                 "id": op["id"], "name": op["name"], "tg": op["tg"],
                 "role": op["role"], "online": op["online"],
                 "initials": op["initials"], "color": op["color"],
-                "closed": closed, "avgTime": "—",
-            })
+                "closed": closed_by_name.get(op["name"], 0), "avgTime": "—",
+            }
+            for op in op_rows
+        ]
 
         return {
             "today_total": today_total,
@@ -468,34 +794,47 @@ class DatabaseManager:
             "daily": daily,
             "hourly": hourly,
             "operators": operators,
-            "top_questions": await self._get_top_questions(),
+            "top_questions": await self._get_top_questions(service_ids),
         }
 
-    async def _get_top_questions(self) -> list[dict]:
+    async def _get_top_questions(self, service_ids: list[int] = None) -> list[dict]:
+        svc = "AND d.service_id = ANY($1::int[])" if service_ids is not None else ""
+        args = [service_ids] if service_ids is not None else []
         rows = await self.pool.fetch(
-            """SELECT category AS q, COUNT(*) AS count
-               FROM messages
-               WHERE kind='user' AND category IS NOT NULL
-                 AND created_at >= NOW() - '30 days'::interval
-               GROUP BY category ORDER BY count DESC LIMIT 10"""
+            f"""SELECT m.category AS q, COUNT(*) AS count
+                FROM messages m JOIN dialogs d ON d.dialog_id = m.dialog_id
+                WHERE m.kind='user' AND m.category IS NOT NULL
+                  AND m.created_at >= NOW() - '30 days'::interval {svc}
+                GROUP BY m.category ORDER BY count DESC LIMIT 10""",
+            *args,
         )
         return [{"q": r["q"], "count": r["count"]} for r in rows]
 
     # ── Knowledge Base ────────────────────────────────────────────────────────
 
-    async def save_kb_article(self, id: str, title: str, category: str, keywords: str, content: str):
+    async def save_kb_article(
+        self, id: str, title: str, category: str, keywords: str, content: str, service_id: int,
+    ):
         await self.pool.execute(
-            """INSERT INTO kb_articles (id, title, category, keywords, content)
-               VALUES ($1,$2,$3,$4,$5)
+            """INSERT INTO kb_articles (id, title, category, keywords, content, service_id)
+               VALUES ($1,$2,$3,$4,$5,$6)
                ON CONFLICT (id) DO UPDATE SET
                  title=EXCLUDED.title, category=EXCLUDED.category,
-                 keywords=EXCLUDED.keywords, content=EXCLUDED.content""",
-            id, title, category, keywords, content,
+                 keywords=EXCLUDED.keywords, content=EXCLUDED.content,
+                 service_id=EXCLUDED.service_id""",
+            id, title, category, keywords, content, service_id,
         )
 
-    async def get_kb_articles(self) -> list[dict]:
-        rows = await self.pool.fetch("SELECT * FROM kb_articles ORDER BY created_at DESC")
+    async def get_kb_articles(self, service_id: int) -> list[dict]:
+        rows = await self.pool.fetch(
+            "SELECT * FROM kb_articles WHERE service_id=$1 ORDER BY created_at DESC",
+            service_id,
+        )
         return [dict(r) for r in rows]
+
+    async def get_kb_article(self, article_id: str) -> Optional[dict]:
+        row = await self.pool.fetchrow("SELECT * FROM kb_articles WHERE id=$1", article_id)
+        return dict(row) if row else None
 
     async def delete_kb_article(self, article_id: str) -> bool:
         result = await self.pool.execute("DELETE FROM kb_articles WHERE id=$1", article_id)

@@ -61,7 +61,13 @@ async def main():
 
     # ── Server-down notification callback ─────────────────────────────────────
     async def on_server_down(name: str, location: str):
-        await n8n_client.schedule_notify("server_down", {"server_name": name, "location": location})
+        # VPN nodes are shared infrastructure, not per-brand, so every service's
+        # operators are alerted through their own notification channel.
+        for service in await db.get_services():
+            if service["is_active"]:
+                await n8n_client.schedule_notify(
+                    "server_down", service, {"server_name": name, "location": location}
+                )
         print(f"[NOTIF] server_down: {name} ({location})")
 
     server_monitor = make_server_monitor(
