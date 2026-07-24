@@ -1,6 +1,6 @@
 // Statistics screen
 
-const { useState: useStateS, useMemo: useMemoS } = React;
+const { useState: useStateS, useMemo: useMemoS, useEffect: useEffectS } = React;
 
 function StatCard({ label, value, delta, deltaPositive }) {
   return (
@@ -203,12 +203,29 @@ function OperatorsTable({ operators }) {
   );
 }
 
-function StatisticsScreen({ dailyConversations: dc, hourly: hv, operators: ops, topQuestions: tq, todayTotal, todayClosed, aiPct }) {
-  const dailyConversations = dc || [];
-  const hourly = hv || [];
-  const operators = ops || [];
-  const topQuestions = tq || [];
+function StatisticsScreen({ stats: initialStats, operators: ops, services }) {
   const [range, setRange] = useStateS("14d");
+  const [service, setService] = useStateS("");
+  const [stats, setStats] = useStateS(initialStats);
+
+  const days = range === "today" ? 1 : range === "7d" ? 7 : range === "14d" ? 14 : 30;
+
+  // The range selector used to be cosmetic — stats were fetched once at boot
+  // with the default period. Refetch on both dimensions instead.
+  useEffectS(() => {
+    const q = new URLSearchParams({ days: String(days) });
+    if (service) q.set("service", service);
+    window.apiFetch("GET", `/api/stats?${q}`).then(setStats).catch(() => {});
+  }, [days, service]);
+
+  const dailyConversations = stats?.daily || [];
+  const hourly = stats?.hourly || [];
+  const operators = ops || [];
+  const topQuestions = stats?.top_questions || [];
+  const todayTotal = stats?.today_total ?? null;
+  const todayClosed = stats?.today_closed ?? null;
+  const aiPct = stats?.ai_pct ?? null;
+
   const ranges = [
     { id: "today", label: "Сегодня" },
     { id: "7d", label: "7 дней" },
@@ -216,18 +233,33 @@ function StatisticsScreen({ dailyConversations: dc, hourly: hv, operators: ops, 
     { id: "30d", label: "30 дней" },
   ];
 
-  const days = range === "today" ? 1 : range === "7d" ? 7 : range === "14d" ? 14 : 30;
-
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin bg-[#0d0d12]">
       <div className="max-w-[1400px] mx-auto p-6 space-y-5">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
             <h1 className="text-xl font-semibold text-[#f1f1f5]">Статистика</h1>
             <div className="text-xs text-[#6b7280] mt-0.5">данные за сегодня</div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            {services && services.length > 1 && (
+              <div className="bg-[#13131a] border border-[#2a2a3a] rounded-lg p-1 flex gap-0.5 flex-wrap">
+                <button onClick={() => setService("")}
+                  className={"px-3 py-1.5 rounded-md text-xs font-medium transition " +
+                    (service === "" ? "bg-[#4F8EF7] text-white" : "text-[#6b7280] hover:text-[#f1f1f5]")}>
+                  Все
+                </button>
+                {services.map((s) => (
+                  <button key={s.slug} onClick={() => setService(s.slug)}
+                    className={"px-3 py-1.5 rounded-md text-xs font-medium transition flex items-center gap-1.5 " +
+                      (service === s.slug ? "bg-[#4F8EF7] text-white" : "text-[#6b7280] hover:text-[#f1f1f5]")}>
+                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: s.color }}></span>
+                    {s.name}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="bg-[#13131a] border border-[#2a2a3a] rounded-lg p-1 flex gap-0.5">
               {ranges.map((r) => (
                 <button

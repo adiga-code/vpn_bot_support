@@ -36,13 +36,14 @@
   <div id="root"></div>
 
   <script type="text/babel" src="/static/components.jsx"></script>
+  <script type="text/babel" src="/static/service_tabs.jsx"></script>
   <script type="text/babel" src="/static/dialogs.jsx"></script>
   <script type="text/babel" src="/static/statistics.jsx"></script>
   <script type="text/babel" src="/static/settings.jsx"></script>
   <script type="text/babel" src="/static/servers.jsx"></script>
 
   <script type="text/babel">
-    const { useState, useEffect, useRef } = React;
+    const { useState, useEffect, useRef, useMemo } = React;
 
     // ── Auth token ────────────────────────────────────────────────────────────
 
@@ -366,9 +367,17 @@
       const [profileOpen,     setProfileOpen]     = useState(false);
       const [toast,           setToast]           = useState(null);
 
+      const [services,      setServices]      = useState([]);
+      const [activeService, setActiveServiceRaw] = useState(
+        () => localStorage.getItem("activeService") || ALL_SERVICES
+      );
+      const [activePrompt,  setActivePrompt]  = useState("");
+      const setActiveService = (s) => { localStorage.setItem("activeService", s); setActiveServiceRaw(s); };
+
       const loadedRef        = useRef(new Set());
       const ticketsLoadedRef = useRef(new Set());
       const wsRef            = useRef(null);
+      const reconnectRef     = useRef({ attempt: 0, timer: null, closed: false });
 
       function showToast(msg) {
         setToast(msg);
@@ -412,34 +421,63 @@
 
       // ── Load app data once authenticated ──────────────────────────────────
 
+      // Reloads dialogs + services. Also used after a WebSocket reconnect,
+      // since events that arrived while the socket was down are lost.
+      async function refreshData({ spinner = false } = {}) {
+        if (spinner) setDataLoading(true);
+        try {
+          const [dialogs, svcs] = await Promise.all([
+            apiGet("/api/dialogs"),
+            apiGet("/api/services").catch(() => []),
+          ]);
+          setServices(svcs || []);
+          setConversations((prev) => {
+            const byId = new Map(prev.map((c) => [c.id, c]));
+            return dialogs.map((d) => {
+              const old = byId.get(d.id);
+              return { ...d, messages: old ? old.messages : [], tickets: old ? old.tickets : [] };
+            });
+          });
+          return dialogs;
+        } finally {
+          if (spinner) setDataLoading(false);
+        }
+      }
+
       useEffect(() => {
         if (authState !== "app") return;
         setDataLoading(true);
         Promise.all([
-          apiGet("/api/dialogs"),
+          refreshData(),
           apiGet("/api/operators").catch(() => []),
           apiGet("/api/stats").catch(() => null),
         ]).then(([dialogs, operators, statsData]) => {
-          const withMessages = dialogs.map((d) => ({ ...d, messages: [], tickets: [] }));
-          setConversations(withMessages);
-          if (withMessages.length > 0) setActiveId(withMessages[0].id);
+          if (dialogs.length > 0) setActiveId(dialogs[0].id);
           setOpsState(operators || []);
           setStats(statsData);
         }).catch((e) => console.error("Failed to load initial data:", e))
           .finally(() => setDataLoading(false));
       }, [authState]);
 
+      // The context bar shows which prompt an answer would be generated under.
+      useEffect(() => {
+        if (authState !== "app" || activeService === ALL_SERVICES) {
+          setActivePrompt("");
+          return;
+        }
+        apiGet(`/api/settings/ai?service=${encodeURIComponent(activeService)}`)
+          .then((s) => setActivePrompt(s?.prompt || ""))
+          .catch(() => setActivePrompt(""));
+      }, [authState, activeService]);
+
       // ── WebSocket ─────────────────────────────────────────────────────────
 
       useEffect(() => {
         if (authState !== "app") return;
+        const state = reconnectRef.current;
+        state.closed = false;
 
-        const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-        const ws = new WebSocket(`${protocol}//${location.host}/ws?token=${_token}`);
-        wsRef.current = ws;
-
-        ws.onmessage = (event) => {
-          const data = JSON.parse(event.data);
+        function handleEvent(data) {
           if (data.type === "new_message") {
             setConversations((prev) =>
               prev.map((c) =>
@@ -473,16 +511,46 @@
               prev.map((o) => o.id === data.op_id ? { ...o, online: data.online } : o)
             );
           }
-        };
+        }
 
-        ws.onerror = (e) => console.warn("WebSocket error", e);
-        return () => ws.close();
+        function connect() {
+          const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+          const ws = new WebSocket(`${protocol}//${location.host}/ws?token=${_token}`);
+          wsRef.current = ws;
+
+          ws.onopen = () => {
+            // Events emitted while the socket was down are gone for good, so
+            // resynchronise instead of trusting the local copy.
+            if (state.attempt > 0) refreshData().catch(() => {});
+            state.attempt = 0;
+          };
+          ws.onmessage = (event) => handleEvent(JSON.parse(event.data));
+          ws.onerror = () => { /* onclose always follows; retry happens there */ };
+          ws.onclose = (e) => {
+            // 4001 means the token was rejected — retrying cannot fix that.
+            if (state.closed || e.code === 4001) return;
+            const delay = Math.min(30000, 1000 * Math.pow(2, state.attempt));
+            state.attempt += 1;
+            console.warn(`WebSocket closed, reconnecting in ${delay}ms`);
+            state.timer = setTimeout(connect, delay);
+          };
+        }
+
+        connect();
+        return () => {
+          state.closed = true;
+          clearTimeout(state.timer);
+          if (wsRef.current) wsRef.current.close();
+        };
       }, [authState]);
 
       // ── Lazy-load messages + history ──────────────────────────────────────
 
       useEffect(() => {
         if (!activeId) return;
+        // Runs on every selection, unlike the message fetch below which is
+        // cached — otherwise re-opening a dialog would leave it marked unread.
+        apiPost(`/api/dialogs/${encodeURIComponent(activeId)}/read`).catch(() => {});
         if (!loadedRef.current.has(activeId)) {
           loadedRef.current.add(activeId);
           apiGet(`/api/dialogs/${activeId}/messages`)
@@ -504,6 +572,27 @@
             .catch(() => {});
         }
       }, [activeId]);
+
+      // ── Keep the selection inside the active service ──────────────────────
+
+      useEffect(() => {
+        if (authState !== "app") return;
+        // A remembered service the operator no longer has access to would
+        // leave the panel showing an empty list with no way back.
+        if (activeService !== ALL_SERVICES && services.length > 0 &&
+            !services.some((s) => s.slug === activeService)) {
+          setActiveService(ALL_SERVICES);
+          return;
+        }
+        const visible = activeService === ALL_SERVICES
+          ? conversations
+          : conversations.filter((c) => c.serviceSlug === activeService);
+        if (visible.length === 0) {
+          if (activeId !== null) setActiveId(null);
+        } else if (!visible.some((c) => c.id === activeId)) {
+          setActiveId(visible[0].id);
+        }
+      }, [authState, activeService, services, conversations]);
 
       // ── Auth actions ──────────────────────────────────────────────────────
 
@@ -527,6 +616,7 @@
         setCurrentOperator(null);
         setConversations([]);
         setActiveId(null);
+        setServices([]);
         loadedRef.current = new Set();
         ticketsLoadedRef.current = new Set();
         if (wsRef.current) wsRef.current.close();
@@ -605,8 +695,11 @@
         return <LoginScreen onLogin={handleLogin} />;
       }
 
-      const active     = conversations.find((c) => c.id === activeId);
-      const notifCount = conversations.filter((c) => c.operatorCalled && c.status !== "closed").length;
+      const visibleConversations = activeService === ALL_SERVICES
+        ? conversations
+        : conversations.filter((c) => c.serviceSlug === activeService);
+      const active     = visibleConversations.find((c) => c.id === activeId);
+      const notifCount = visibleConversations.filter((c) => c.operatorCalled && c.status !== "closed").length;
 
       if (dataLoading) {
         return (
@@ -631,10 +724,26 @@
             currentOperator={currentOperator}
             onLogout={handleLogout}
           />
+          {screen === "dialogs" && (
+            <>
+              <ServiceTabs
+                services={services}
+                activeService={activeService}
+                setActiveService={setActiveService}
+                conversations={conversations}
+              />
+              <ServiceContextBar
+                services={services}
+                activeService={activeService}
+                conversations={conversations}
+                aiPrompt={activePrompt}
+              />
+            </>
+          )}
           <main className="flex-1 min-h-0">
             {screen === "dialogs" && (
               <DialogsScreen
-                conversations={conversations}
+                conversations={visibleConversations}
                 setConversations={setConversations}
                 activeId={activeId}
                 setActiveId={setActiveId}
@@ -644,23 +753,23 @@
                 onClose={handleClose}
                 onHandoff={handleHandoff}
                 onBillingAction={handleBillingAction}
+                showServiceDot={activeService === ALL_SERVICES && services.length > 1}
                 servers={[]}
               />
             )}
             {screen === "stats" && (
-              <StatisticsScreen
-                dailyConversations={stats ? stats.daily : []}
-                hourly={stats ? stats.hourly : []}
-                operators={opsState}
-                topQuestions={stats ? stats.top_questions : []}
-                todayTotal={stats ? stats.today_total : null}
-                todayClosed={stats ? stats.today_closed : null}
-                aiPct={stats ? stats.ai_pct : null}
-              />
+              <StatisticsScreen stats={stats} operators={opsState} services={services} />
             )}
             {screen === "servers" && <ServersScreen />}
             {screen === "settings" && (
-              <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast} currentOperator={currentOperator} />
+              <SettingsScreen
+                operators={opsState}
+                setOperators={setOpsState}
+                showToast={showToast}
+                currentOperator={currentOperator}
+                services={services}
+                setServices={setServices}
+              />
             )}
           </main>
           <Toast msg={toast} />

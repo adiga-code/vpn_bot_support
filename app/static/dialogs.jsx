@@ -2,7 +2,7 @@
 
 const { useState: useStateD, useEffect: useEffectD, useRef: useRefD, useMemo: useMemoD } = React;
 
-function ConvCard({ conv, active, onClick }) {
+function ConvCard({ conv, active, onClick, showServiceDot }) {
   const statusDot = {
     new: "bg-[#4F8EF7]",
     in_progress: "bg-[#eab308]",
@@ -30,7 +30,17 @@ function ConvCard({ conv, active, onClick }) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2 mb-0.5">
-            <div className="text-sm font-medium text-[#f1f1f5] truncate">{conv.name}</div>
+            <div className="flex items-center gap-1.5 min-w-0">
+              {/* Only in the "all services" view — inside one brand it is noise. */}
+              {showServiceDot && conv.serviceColor && (
+                <span
+                  className="w-1.5 h-1.5 rounded-full shrink-0"
+                  style={{ background: conv.serviceColor }}
+                  title={conv.serviceName}
+                ></span>
+              )}
+              <div className="text-sm font-medium text-[#f1f1f5] truncate">{conv.name}</div>
+            </div>
             <div className="text-[10px] text-[#6b7280] shrink-0">{conv.time}</div>
           </div>
           <div className="text-xs text-[#6b7280] truncate mb-1.5">{conv.preview}</div>
@@ -162,7 +172,7 @@ function DialogsScreen({
   activeId, setActiveId,
   showToast,
   onReply, onToggleAI, onClose, onHandoff, onBillingAction,
-  servers,
+  showServiceDot, servers,
 }) {
   const [searchQ, setSearchQ] = useStateD("");
   const [filter, setFilter] = useStateD("all");
@@ -299,7 +309,13 @@ function DialogsScreen({
               <div className="text-center text-xs text-[#6b7280] py-8">Диалоги не найдены</div>
             )}
             {filtered.map((c) => (
-              <ConvCard key={c.id} conv={c} active={c.id === activeId} onClick={() => setActiveId(c.id)} />
+              <ConvCard
+                key={c.id}
+                conv={c}
+                active={c.id === activeId}
+                showServiceDot={showServiceDot}
+                onClick={() => setActiveId(c.id)}
+              />
             ))}
           </div>
         </aside>
@@ -316,6 +332,21 @@ function DialogsScreen({
                     <div className="flex items-center gap-2">
                       <div className="font-medium text-[#f1f1f5] truncate">{active.name}</div>
                       <StatusBadge status={active.status} />
+                      {/* Which brand this reply goes out as — the bot, prompt
+                          and knowledge base all differ per service. */}
+                      {active.serviceName && (
+                        <span
+                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border shrink-0"
+                          style={{
+                            color: active.serviceColor,
+                            borderColor: active.serviceColor + "4d",
+                            background: active.serviceColor + "1a",
+                          }}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ background: active.serviceColor }}></span>
+                          {active.serviceName}
+                        </span>
+                      )}
                     </div>
                     <div className="text-xs text-[#6b7280]">{active.username} · ID {active.tgId}</div>
                   </div>
