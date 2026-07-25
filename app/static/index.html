@@ -31,6 +31,7 @@
   <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@lottiefiles/lottie-player@2/dist/lottie-player.js" crossorigin="anonymous"></script>
 </head>
 <body>
   <div id="root"></div>
@@ -75,7 +76,11 @@
         if (_authExpiredCb) _authExpiredCb();
         throw Object.assign(new Error("Unauthorized"), { status: 401 });
       }
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      if (!res.ok) {
+        let errBody = null;
+        try { errBody = await res.json(); } catch {}
+        throw Object.assign(new Error(`${res.status} ${res.statusText}`), { status: res.status, ...(errBody || {}) });
+      }
       const text = await res.text();
       return text ? JSON.parse(text) : null;
     }
@@ -213,17 +218,15 @@
 
     // ── TopBar ────────────────────────────────────────────────────────────────
 
-    function TopBar({ screen, setScreen, activeName, notifCount, onNotifClick, notifOpen, onProfileClick, profileOpen, onCloseMenus, currentOperator, onLogout }) {
+    function TopBar({ screen, setScreen, activeName, notifCount, onNotifClick, notifOpen, onProfileClick, profileOpen, onCloseMenus, currentOperator, onLogout, onTogglePause, notifItems, onNotifItemClick, onDismissAll }) {
       const screens = [
         { id: "dialogs",  label: "Диалоги",    icon: "chat"     },
         { id: "stats",    label: "Статистика", icon: "chart"    },
-        { id: "servers",  label: "Серверы",    icon: "server"   },
         { id: "settings", label: "Настройки",  icon: "settings" },
       ];
       const breadcrumbMap = {
         dialogs:  ["Диалоги", activeName ? "@" + activeName : null],
         stats:    ["Статистика"],
-        servers:  ["Серверы VPN"],
         settings: ["Настройки"],
       };
       const crumbs = breadcrumbMap[screen].filter(Boolean);
@@ -288,13 +291,13 @@
             >
               <div className="relative">
                 <Avatar initials={opInitials} color={opColor} size={28} />
-                <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#22c55e] ring-2 ring-[#13131a]"></span>
+                <span className={"absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#13131a] " + (currentOperator?.paused ? "bg-[#eab308]" : "bg-[#22c55e]")}></span>
               </div>
               <div className="text-left">
                 <div className="text-xs font-medium text-[#f1f1f5] leading-tight">{opName}</div>
-                <div className="flex items-center gap-1 text-[10px] text-[#22c55e]">
-                  <span className="w-1 h-1 rounded-full bg-[#22c55e]"></span>
-                  Онлайн
+                <div className={"flex items-center gap-1 text-[10px] " + (currentOperator?.paused ? "text-[#eab308]" : "text-[#22c55e]")}>
+                  <span className={"w-1 h-1 rounded-full " + (currentOperator?.paused ? "bg-[#eab308]" : "bg-[#22c55e]")}></span>
+                  {currentOperator?.paused ? "На паузе" : "Онлайн"}
                 </div>
               </div>
               <Icon name="chevronDown" className="w-3.5 h-3.5 text-[#6b7280]" />
@@ -307,12 +310,24 @@
               <div className="absolute top-[52px] right-[80px] w-[340px] bg-[#13131a] border border-[#2a2a3a] rounded-xl shadow-2xl z-50 overflow-hidden">
                 <div className="px-4 py-3 border-b border-[#2a2a3a] flex items-center justify-between">
                   <div className="font-medium text-sm text-[#f1f1f5]">Уведомления</div>
-                  <button onClick={onCloseMenus} className="text-[10px] text-[#7BA8F9] hover:underline">Прочитать все</button>
+                  {(notifItems || []).length > 0 && (
+                    <button onClick={onDismissAll} className="text-[10px] text-[#7BA8F9] hover:underline">Прочитать все</button>
+                  )}
                 </div>
                 <div className="divide-y divide-[#2a2a3a]/60 max-h-[400px] overflow-y-auto scrollbar-thin">
-                  <div className="px-4 py-8 text-center text-[#6b7280] text-sm">
-                    Нет новых уведомлений
-                  </div>
+                  {(notifItems || []).length === 0 ? (
+                    <div className="px-4 py-8 text-center text-[#6b7280] text-sm">
+                      Нет новых уведомлений
+                    </div>
+                  ) : (notifItems || []).map(c => (
+                    <div key={c.id} onClick={() => onNotifItemClick && onNotifItemClick(c.id)} className="px-4 py-3 hover:bg-[#1a1a24] cursor-pointer flex items-start gap-3 transition">
+                      <span className="mt-0.5 text-[#ef4444] shrink-0"><Icon name="bellRing" className="w-4 h-4" /></span>
+                      <div className="min-w-0">
+                        <div className="text-sm text-[#f1f1f5] truncate">{c.name}</div>
+                        <div className="text-[11px] text-[#6b7280] truncate">{c.username} · вызвал оператора</div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             </>
@@ -334,6 +349,15 @@
                   <span className={"text-[10px] px-1.5 py-0.5 rounded font-medium " + (currentOperator?.role === "admin" ? "bg-[#4F8EF7]/20 text-[#7BA8F9]" : "bg-[#2a2a3a] text-[#6b7280]")}>
                     {currentOperator?.role === "admin" ? "Админ" : "Агент"}
                   </span>
+                </button>
+                <button
+                  onClick={() => { onCloseMenus(); onTogglePause && onTogglePause(); }}
+                  className={"w-full text-left px-4 py-2 text-sm flex items-center justify-between hover:bg-[#1a1a24] " + (currentOperator?.paused ? "text-[#eab308]" : "text-[#f1f1f5]")}
+                >
+                  <span>{currentOperator?.paused ? "Снять паузу" : "Поставить на паузу"}</span>
+                  {currentOperator?.paused && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#eab308]/20 text-[#eab308] font-medium">На паузе</span>
+                  )}
                 </button>
                 <button
                   onClick={() => { onCloseMenus(); onLogout(); }}
@@ -358,22 +382,40 @@
       const [screen, setScreenRaw] = useState(() => localStorage.getItem("screen") || "dialogs");
       const setScreen = (s) => { localStorage.setItem("screen", s); setScreenRaw(s); };
       const [conversations,   setConversations]   = useState([]);
-      const [activeId,        setActiveId]        = useState(null);
+      const [activeId,        setActiveIdRaw]     = useState(null);
+      const setActiveId = (id) => { id ? localStorage.setItem("hd_active", id) : localStorage.removeItem("hd_active"); setActiveIdRaw(id); };
       const [opsState,        setOpsState]        = useState([]);
-      const [stats,           setStats]           = useState(null);
       const [dataLoading,     setDataLoading]     = useState(false);
       const [notifOpen,       setNotifOpen]       = useState(false);
       const [profileOpen,     setProfileOpen]     = useState(false);
-      const [toast,           setToast]           = useState(null);
+      const [toast,           setToast]           = useState(null); // {msg, type}
+      const [soundsConfig,    setSoundsConfig]    = useState({});
+      const [soundEnabled,    setSoundEnabled]    = useState(true);
 
       const loadedRef        = useRef(new Set());
       const ticketsLoadedRef = useRef(new Set());
       const wsRef            = useRef(null);
+      const pendingDialogRef = useRef(null);
+      const soundsConfigRef  = useRef({});
+      const soundEnabledRef  = useRef(true);
 
-      function showToast(msg) {
-        setToast(msg);
+      function showToast(msg, type = "ok") {
+        setToast({ msg, type });
         setTimeout(() => setToast(null), 2500);
       }
+
+      function playSound(url) {
+        if (!url) return;
+        try { new Audio(url).play(); } catch {}
+      }
+
+      useEffect(() => { soundsConfigRef.current = soundsConfig; }, [soundsConfig]);
+      useEffect(() => { soundEnabledRef.current = soundEnabled; }, [soundEnabled]);
+      useEffect(() => {
+        window._setSoundEnabled = setSoundEnabled;
+        window._setSoundsConfig = setSoundsConfig;
+        return () => { window._setSoundEnabled = null; window._setSoundsConfig = null; };
+      }, []);
 
       // ── Auth expired callback ─────────────────────────────────────────────
 
@@ -393,6 +435,12 @@
             try {
               const op = await apiFetch("GET", "/api/auth/me");
               setCurrentOperator(op);
+              const urlParams = new URLSearchParams(window.location.search);
+              const sharedId = urlParams.get("dialog");
+              if (sharedId) {
+                pendingDialogRef.current = sharedId;
+                window.history.replaceState({}, '', window.location.pathname);
+              }
               setAuthState("app");
               return;
             } catch {
@@ -418,13 +466,44 @@
         Promise.all([
           apiGet("/api/dialogs"),
           apiGet("/api/operators").catch(() => []),
-          apiGet("/api/stats").catch(() => null),
-        ]).then(([dialogs, operators, statsData]) => {
+          apiGet("/api/settings/sounds").catch(() => ({})),
+          apiGet("/api/operators/me/notifications").catch(() => ({})),
+        ]).then(async ([dialogs, operators, sounds, notifPrefs]) => {
+          const sc = sounds || {};
+          const se = notifPrefs?.sound_enabled !== false;
+          setSoundsConfig(sc);
+          setSoundEnabled(se);
+          soundsConfigRef.current = sc;
+          soundEnabledRef.current = se;
           const withMessages = dialogs.map((d) => ({ ...d, messages: [], tickets: [] }));
           setConversations(withMessages);
-          if (withMessages.length > 0) setActiveId(withMessages[0].id);
+          const pendingId = pendingDialogRef.current;
+          const savedId   = localStorage.getItem("hd_active");
+          const targetId  = pendingId || savedId;
+          if (pendingId) pendingDialogRef.current = null;
+          if (targetId) {
+            const found = withMessages.find((d) => d.id === targetId);
+            if (found) {
+              setActiveIdRaw(found.id);
+            } else {
+              try {
+                const dialog = await apiGet(`/api/dialogs/${targetId}`);
+                if (dialog) {
+                  const enriched = { ...dialog, messages: [], tickets: [] };
+                  setConversations((prev) => {
+                    const exists = prev.some((c) => c.id === enriched.id);
+                    return exists ? prev : [enriched, ...prev];
+                  });
+                  setActiveIdRaw(enriched.id);
+                } else if (withMessages.length > 0) setActiveIdRaw(withMessages[0].id);
+              } catch {
+                if (withMessages.length > 0) setActiveIdRaw(withMessages[0].id);
+              }
+            }
+          } else if (withMessages.length > 0) {
+            setActiveIdRaw(withMessages[0].id);
+          }
           setOpsState(operators || []);
-          setStats(statsData);
         }).catch((e) => console.error("Failed to load initial data:", e))
           .finally(() => setDataLoading(false));
       }, [authState]);
@@ -434,49 +513,114 @@
       useEffect(() => {
         if (authState !== "app") return;
 
-        const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-        const ws = new WebSocket(`${protocol}//${location.host}/ws?token=${_token}`);
-        wsRef.current = ws;
+        let destroyed = false;
+        let reconnectTimer = null;
+        let pingInterval = null;
 
-        ws.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-          if (data.type === "new_message") {
-            setConversations((prev) =>
-              prev.map((c) =>
-                c.id === data.dialog_id
-                  ? { ...c, messages: [...c.messages, data.message] }
-                  : c
-              )
-            );
-          } else if (data.type === "dialog_updated") {
-            setConversations((prev) =>
-              prev.map((c) =>
-                c.id === data.dialog.id
-                  ? { ...data.dialog, messages: c.messages, tickets: c.tickets }
-                  : c
-              )
-            );
-          } else if (data.type === "new_dialog") {
-            setConversations((prev) => {
-              const exists = prev.some((c) => c.id === data.dialog.id);
-              if (exists) {
-                return prev.map((c) =>
-                  c.id === data.dialog.id
-                    ? { ...data.dialog, messages: c.messages, tickets: c.tickets }
-                    : c
-                );
+        function connect() {
+          if (destroyed) return;
+          const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+          const ws = new WebSocket(`${protocol}//${location.host}/ws?token=${_token}`);
+          wsRef.current = ws;
+          let pongPending = false;
+
+          ws.onopen = () => {
+            pongPending = false;
+            // The connect-time queue drain can reassign dialogs between the
+            // initial GET snapshot and this socket opening (a slow GET can
+            // even overwrite an already-received broadcast) — re-sync once,
+            // keeping locally loaded messages.
+            apiGet("/api/dialogs").then((fresh) => {
+              setConversations((prev) => fresh.map((d) => {
+                const old = prev.find((c) => c.id === d.id);
+                return { ...d, messages: old?.messages || [], tickets: old?.tickets || [] };
+              }));
+            }).catch(() => {});
+            pingInterval = setInterval(() => {
+              if (pongPending) {
+                ws.close();
+                return;
               }
-              return [{ ...data.dialog, messages: [], tickets: [] }, ...prev];
-            });
-          } else if (data.type === "operator_status") {
-            setOpsState((prev) =>
-              prev.map((o) => o.id === data.op_id ? { ...o, online: data.online } : o)
-            );
-          }
-        };
+              if (ws.readyState === WebSocket.OPEN) {
+                pongPending = true;
+                ws.send("ping");
+              }
+            }, 30000);
+          };
 
-        ws.onerror = (e) => console.warn("WebSocket error", e);
-        return () => ws.close();
+          ws.onmessage = (event) => {
+            if (event.data === "pong") { pongPending = false; return; }
+            const data = JSON.parse(event.data);
+            if (data.type === "new_message") {
+              setConversations((prev) =>
+                prev.map((c) => {
+                  if (c.id !== data.dialog_id) return c;
+                  if (data.message.kind === 'user' && soundEnabledRef.current && c.assignedOperator === currentOperator?.name) playSound(soundsConfigRef.current.new_message_url);
+                  return { ...c, messages: [...c.messages, data.message] };
+                })
+              );
+            } else if (data.type === "dialog_updated") {
+              setConversations((prev) =>
+                prev.map((c) => {
+                  if (c.id !== data.dialog.id) return c;
+                  if (!c.operatorCalled && data.dialog.operatorCalled && soundEnabledRef.current)
+                    playSound(soundsConfigRef.current.operator_called_url);
+                  return { ...data.dialog, messages: c.messages, tickets: c.tickets };
+                })
+              );
+            } else if (data.type === "new_dialog") {
+              setConversations((prev) => {
+                const exists = prev.some((c) => c.id === data.dialog.id);
+                if (exists) {
+                  return prev.map((c) =>
+                    c.id === data.dialog.id
+                      ? { ...data.dialog, messages: c.messages, tickets: c.tickets }
+                      : c
+                  );
+                }
+                return [{ ...data.dialog, messages: [], tickets: [] }, ...prev];
+              });
+            } else if (data.type === "message_status") {
+              setConversations((prev) => prev.map((c) => {
+                if (c.id !== data.dialog_id) return c;
+                return {
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === data.message_id
+                      ? { ...m, deliveryStatus: data.status, deliveryError: data.error }
+                      : m
+                  ),
+                };
+              }));
+            } else if (data.type === "operator_status") {
+              setOpsState((prev) =>
+                prev.map((o) => o.id === data.op_id ? { ...o, online: data.online, paused: data.paused ?? o.paused } : o)
+              );
+              setCurrentOperator((prev) =>
+                prev && prev.id === data.op_id ? { ...prev, paused: data.paused ?? prev.paused } : prev
+              );
+            }
+          };
+
+          ws.onerror = () => ws.close();
+
+          ws.onclose = () => {
+            clearInterval(pingInterval);
+            pingInterval = null;
+            if (!destroyed) {
+              reconnectTimer = setTimeout(connect, 3000);
+            }
+          };
+        }
+
+        connect();
+
+        return () => {
+          destroyed = true;
+          clearTimeout(reconnectTimer);
+          clearInterval(pingInterval);
+          if (wsRef.current) wsRef.current.close();
+        };
       }, [authState]);
 
       // ── Lazy-load messages + history ──────────────────────────────────────
@@ -526,7 +670,7 @@
         setToken("");
         setCurrentOperator(null);
         setConversations([]);
-        setActiveId(null);
+        setActiveIdRaw(null);
         loadedRef.current = new Set();
         ticketsLoadedRef.current = new Set();
         if (wsRef.current) wsRef.current.close();
@@ -537,11 +681,14 @@
 
       async function handleReply(dialog_id, text, fileArgs) {
         try {
-          await apiPost(`/api/dialogs/${dialog_id}/reply`, {
+          const res = await apiPost(`/api/dialogs/${dialog_id}/reply`, {
             text,
             operator_name: currentOperator?.name || "Оператор",
             ...(fileArgs || {}),
           });
+          if (res && res.delivered === false) {
+            showToast("⚠️ Сообщение сохранено, но не доставлено в Telegram", "warn");
+          }
         } catch (e) {
           console.error("Reply failed:", e);
           showToast("Ошибка отправки сообщения");
@@ -576,6 +723,33 @@
         }
       }
 
+      async function handleReopen(dialog_id) {
+        try {
+          await apiPost(`/api/dialogs/${dialog_id}/reopen`);
+        } catch (e) {
+          console.error("Reopen failed:", e);
+        }
+      }
+
+      async function handleWait(dialog_id) {
+        try {
+          await apiPost(`/api/dialogs/${dialog_id}/wait`);
+        } catch (e) {
+          console.error("Wait failed:", e);
+        }
+      }
+
+      async function handleTogglePause() {
+        const newPaused = !(currentOperator?.paused ?? false);
+        try {
+          await apiFetch("PATCH", "/api/operators/me/pause", { paused: newPaused });
+          setCurrentOperator(prev => prev ? { ...prev, paused: newPaused } : prev);
+          showToast(newPaused ? "Пауза включена — новые тикеты не поступают" : "Пауза снята — принимаете тикеты");
+        } catch {
+          showToast("Ошибка переключения паузы");
+        }
+      }
+
       async function handleBillingAction(dialog_id, action, params) {
         try {
           await apiPost(`/api/dialogs/${dialog_id}/billing/${action}`, params || {});
@@ -605,8 +779,24 @@
         return <LoginScreen onLogin={handleLogin} />;
       }
 
-      const active     = conversations.find((c) => c.id === activeId);
-      const notifCount = conversations.filter((c) => c.operatorCalled && c.status !== "closed").length;
+      const active      = conversations.find((c) => c.id === activeId);
+      const notifItems  = conversations.filter((c) => c.operatorCalled && c.status !== "closed");
+      const notifCount  = notifItems.length;
+
+      const handleNotifItemClick = (id) => {
+        setActiveId(id);
+        setScreen("dialogs");
+        setNotifOpen(false);
+        setProfileOpen(false);
+      };
+
+      const handleDismissAll = async () => {
+        for (const c of notifItems) {
+          await apiFetch("POST", `/api/dialogs/${c.id}/dismiss_called`);
+        }
+        setNotifOpen(false);
+        setProfileOpen(false);
+      };
 
       if (dataLoading) {
         return (
@@ -630,9 +820,13 @@
             onCloseMenus={() => { setNotifOpen(false); setProfileOpen(false); }}
             currentOperator={currentOperator}
             onLogout={handleLogout}
+            onTogglePause={handleTogglePause}
+            notifItems={notifItems}
+            onNotifItemClick={handleNotifItemClick}
+            onDismissAll={handleDismissAll}
           />
           <main className="flex-1 min-h-0">
-            {screen === "dialogs" && (
+            <div className={"h-full " + (screen !== "dialogs" ? "hidden" : "")}>
               <DialogsScreen
                 conversations={conversations}
                 setConversations={setConversations}
@@ -643,27 +837,22 @@
                 onToggleAI={handleToggleAI}
                 onClose={handleClose}
                 onHandoff={handleHandoff}
+                onReopen={handleReopen}
+                onWait={handleWait}
                 onBillingAction={handleBillingAction}
+                currentOperator={currentOperator}
+                operators={opsState}
                 servers={[]}
               />
-            )}
-            {screen === "stats" && (
-              <StatisticsScreen
-                dailyConversations={stats ? stats.daily : []}
-                hourly={stats ? stats.hourly : []}
-                operators={opsState}
-                topQuestions={stats ? stats.top_questions : []}
-                todayTotal={stats ? stats.today_total : null}
-                todayClosed={stats ? stats.today_closed : null}
-                aiPct={stats ? stats.ai_pct : null}
-              />
-            )}
-            {screen === "servers" && <ServersScreen />}
-            {screen === "settings" && (
+            </div>
+            <div className={"h-full " + (screen !== "stats" ? "hidden" : "")}>
+              <StatisticsScreen />
+            </div>
+            <div className={"h-full " + (screen !== "settings" ? "hidden" : "")}>
               <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast} currentOperator={currentOperator} />
-            )}
+            </div>
           </main>
-          <Toast msg={toast} />
+          <Toast msg={toast?.msg ?? toast} type={toast?.type} />
         </div>
       );
     }

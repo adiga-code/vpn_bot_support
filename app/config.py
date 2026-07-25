@@ -4,8 +4,21 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # ── Redis ─────────────────────────────────────────────────────────────────
+    # ── Redis (история/KV для n8n) ────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379"
+
+    # ── RabbitMQ (очереди сообщений) ──────────────────────────────────────────
+    RABBITMQ_URL: str = "amqp://guest:guest@localhost/"
+
+    # ── n8n webhook для исходящих событий ────────────────────────────────────
+    # Если задан — исходящие события (manager_message / send_to_user /
+    # operator_notify / billing_action) отправляются POST-ом на этот Webhook
+    # вместо очереди RabbitMQ vpn_bot.outgoing, например:
+    #   N8N_WEBHOOK_URL=https://n8n.example.com/webhook/vpn-bot-outgoing
+    # RabbitMQ остаётся резервным каналом: если вебхук недоступен после
+    # ретраев, сообщение публикуется в очередь как раньше.
+    # Запрос несёт заголовок X-API-Key: N8N_API_KEY (если N8N_API_KEY задан).
+    N8N_WEBHOOK_URL: str = ""
 
     # ── PostgreSQL ────────────────────────────────────────────────────────────
     POSTGRES_HOST: str = "postgres"

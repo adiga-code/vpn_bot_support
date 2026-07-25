@@ -1,4 +1,5 @@
 import aiohttp
+import aio_pika.abc
 import redis.asyncio as aioredis
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
@@ -11,13 +12,19 @@ from app.n8n_client import N8NClient
 class TelegramBot:
     """Telegram бот с минимальной локальной БД"""
 
-    def __init__(self, settings: Settings, db: DatabaseManager, redis: aioredis.Redis):
+    def __init__(
+        self,
+        settings: Settings,
+        db: DatabaseManager,
+        rmq: aio_pika.abc.AbstractRobustConnection,
+        redis: aioredis.Redis,
+    ):
         self.settings = settings
         self.db = db
         self.bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
         self.dp = Dispatcher()
-        self.n8n_client = N8NClient(settings, redis)
-        
+        self.n8n_client = N8NClient(settings, rmq, redis)
+
         self._register_handlers()
     
     def _register_handlers(self):

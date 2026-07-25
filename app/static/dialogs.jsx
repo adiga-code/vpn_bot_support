@@ -2,12 +2,63 @@
 
 const { useState: useStateD, useEffect: useEffectD, useRef: useRefD, useMemo: useMemoD } = React;
 
+function fmtClock(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  return d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtDayLabel(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const now = new Date();
+  const day      = new Date(d.getFullYear(),   d.getMonth(),   d.getDate());
+  const today    = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffDays = Math.round((today - day) / 86400000);
+  if (diffDays === 0) return "Сегодня";
+  if (diffDays === 1) return "Вчера";
+  const opts = { day: "numeric", month: "long" };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString("ru-RU", opts);
+}
+
+function msgTime(msg) {
+  return msg.createdAt ? fmtClock(msg.createdAt) : msg.time;
+}
+
+function DaySeparator({ label }) {
+  return (
+    <div className="flex justify-center my-2">
+      <span className="text-[10px] text-[#6b7280] bg-[#1a1a24] border border-[#2a2a3a] rounded-full px-3 py-1">{label}</span>
+    </div>
+  );
+}
+
+function DeliveryStatus({ status }) {
+  if (!status || status === "failed") return null;
+  const delivered = status === "delivered";
+  return (
+    <span className={"ml-1 font-bold " + (delivered ? "text-[#4F8EF7]" : "text-[#6b7280]")}>
+      {delivered ? "✓✓" : "✓"}
+    </span>
+  );
+}
+
+function StarRating({ rating, size = "sm" }) {
+  if (!rating) return null;
+  const sz = size === "lg" ? "text-base" : "text-[11px]";
+  return (
+    <span className={"inline-flex gap-0.5 " + sz}>
+      {[1,2,3,4,5].map(i => (
+        <span key={i} className={i <= rating ? "text-[#eab308]" : "text-[#3a3a4a]"}>★</span>
+      ))}
+    </span>
+  );
+}
+
 function ConvCard({ conv, active, onClick }) {
-  const statusDot = {
-    new: "bg-[#4F8EF7]",
-    in_progress: "bg-[#eab308]",
-    closed: "bg-zinc-500",
-  }[conv.status];
+  // escalated but not yet served — grabs attention in «ИИ»/«Очередь»
+  const calledUnserved = conv.operatorCalled && ["ai", "queue"].includes(conv.status);
   return (
     <button
       onClick={onClick}
@@ -15,15 +66,28 @@ function ConvCard({ conv, active, onClick }) {
         "w-full text-left p-3 rounded-lg transition relative group " +
         (active
           ? "bg-[#1a1a24] ring-1 ring-[#4F8EF7]/40"
+          : calledUnserved
+          ? "bg-[#1a0a0a] ring-1 ring-[#ef4444]/50 hover:bg-[#1a1a24]/60"
+          : conv.status === "in_progress" && conv.unread > 0
+          ? "bg-[#1a1a18] ring-1 ring-[#eab308]/30 hover:bg-[#1a1a24]/60"
           : "hover:bg-[#1a1a24]/60")
       }
     >
       {active && <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-[#4F8EF7] rounded-r"></div>}
+      {!active && calledUnserved && (
+        <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-[#ef4444] rounded-r animate-pulse"></div>
+      )}
+      {!active && conv.status === "in_progress" && conv.unread > 0 && (
+        <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-[#eab308] rounded-r"></div>
+      )}
       <div className="flex items-start gap-2.5">
         <div className="relative">
-          <Avatar initials={conv.initials} color={conv.avatarColor} size={36} />
+          <Avatar initials={conv.initials} color={conv.avatarColor} size={36} photoUrl={conv.photoUrl} />
           {conv.unread > 0 && (
-            <div className="absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-[#ef4444] text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-[#13131a]">
+            <div className={
+              "absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 rounded-full text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-[#13131a] " +
+              (conv.status === "in_progress" ? "bg-[#eab308] animate-pulse" : "bg-[#ef4444]")
+            }>
               {conv.unread}
             </div>
           )}
@@ -33,15 +97,28 @@ function ConvCard({ conv, active, onClick }) {
             <div className="text-sm font-medium text-[#f1f1f5] truncate">{conv.name}</div>
             <div className="text-[10px] text-[#6b7280] shrink-0">{conv.time}</div>
           </div>
+          <div className="text-[10px] text-[#6b7280]/70 truncate -mt-0.5 mb-0.5">{conv.username}</div>
           <div className="text-xs text-[#6b7280] truncate mb-1.5">{conv.preview}</div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <StatusBadge status={conv.status} />
+            {conv.status === "waiting" && <WaitingLabel reason={conv.waitingReason} />}
+            <SlaTimer slaSeconds={conv.slaSeconds} slaStartedAt={conv.slaStartedAt} />
             {conv.operatorCalled && (
-              <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-[#ef4444]/15 text-[#ef4444]" title="Вызван оператор">
+              <span
+                title="Вызван оператор"
+                className={"inline-flex items-center justify-center w-4 h-4 rounded-full text-[#ef4444] " +
+                  (calledUnserved ? "bg-[#ef4444]/25 animate-pulse" : "bg-[#ef4444]/15")}
+              >
                 <Icon name="bellRing" className="w-2.5 h-2.5" strokeWidth={2.5} />
               </span>
             )}
           </div>
+          {conv.assignedOperator && (
+            <div className="flex items-center gap-1 mt-1 text-[10px] text-[#6b7280]">
+              <Icon name="user" className="w-2.5 h-2.5 shrink-0" />
+              <span className="truncate">{conv.assignedOperator}</span>
+            </div>
+          )}
         </div>
       </div>
     </button>
@@ -52,7 +129,7 @@ function FileContent({ msg, side, onImageClick }) {
   const ft = msg.fileType;
   const url = msg.fileUrl;
   const tl = side === "left" ? "rounded-tl-md" : "rounded-tr-md";
-  if (ft === "photo" || ft === "sticker") {
+  if (ft === "photo") {
     if (url) {
       return (
         <button onClick={() => onImageClick(url)} className={"block overflow-hidden rounded-2xl " + tl + " hover:ring-2 hover:ring-[#4F8EF7]/40 transition"}>
@@ -63,6 +140,28 @@ function FileContent({ msg, side, onImageClick }) {
     return (
       <div className={"bg-[#1a1a24] rounded-2xl " + tl + " px-3.5 py-3 flex items-center gap-2 text-[#6b7280] text-sm"}>
         <Icon name="image" className="w-4 h-4" /> Фото
+      </div>
+    );
+  }
+  if (ft === "sticker") {
+    if (url) {
+      const isTgs = url.toLowerCase().endsWith(".tgs");
+      if (isTgs) {
+        return (
+          <div className={"overflow-hidden rounded-2xl " + tl}>
+            <lottie-player src={url} autoplay loop style={{width:"160px",height:"160px"}} />
+          </div>
+        );
+      }
+      return (
+        <button onClick={() => onImageClick(url)} className={"block overflow-hidden rounded-2xl " + tl + " hover:ring-2 hover:ring-[#4F8EF7]/40 transition"}>
+          <img src={url} alt="" className="max-w-[160px] max-h-[160px] object-contain" onError={(e) => { e.target.style.display="none"; }} />
+        </button>
+      );
+    }
+    return (
+      <div className={"bg-[#1a1a24] rounded-2xl " + tl + " px-3.5 py-3 flex items-center gap-2 text-[#6b7280] text-sm"}>
+        <Icon name="image" className="w-4 h-4" /> Стикер
       </div>
     );
   }
@@ -97,7 +196,7 @@ function MessageBubble({ msg, onImageClick }) {
     return (
       <div className="flex justify-center my-2">
         <div className="text-[11px] text-[#6b7280] bg-[#1a1a24]/60 px-3 py-1 rounded-full">
-          {msg.text} · {msg.time}
+          {msg.text} · {msgTime(msg)}
         </div>
       </div>
     );
@@ -114,7 +213,7 @@ function MessageBubble({ msg, onImageClick }) {
               </>
             : <div className="bg-[#1a1a24] text-[#f1f1f5] px-3.5 py-2.5 rounded-2xl rounded-tl-md text-sm leading-relaxed">{msg.text}</div>
           }
-          <div className="text-[10px] text-[#6b7280] mt-1 ml-2">{msg.time}</div>
+          <div className="text-[10px] text-[#6b7280] mt-1 ml-2">{msgTime(msg)}</div>
         </div>
       </div>
     );
@@ -130,25 +229,49 @@ function MessageBubble({ msg, onImageClick }) {
             </div>
             {msg.text}
           </div>
-          <div className="text-[10px] text-[#6b7280] mt-1 ml-2">{msg.time}</div>
+          <div className="text-[10px] text-[#6b7280] mt-1 ml-2">{msgTime(msg)}</div>
         </div>
       </div>
     );
   }
   if (msg.kind === "operator") {
     const hasFile = msg.fileType && msg.fileType !== "text";
+    const failed = msg.deliveryStatus === "failed";
+    const bubbleBorder = failed
+      ? "bg-[#A855F7]/15 border border-[#ef4444]/60 text-[#f1f1f5]"
+      : "bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5]";
     return (
       <div className="flex justify-end">
         <div className="max-w-[70%]">
           {hasFile
             ? <>
                 <FileContent msg={msg} side="right" onImageClick={onImageClick} />
-                {msg.text ? <div className="bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5] px-3.5 py-2 rounded-2xl rounded-tr-md text-sm leading-relaxed mt-1">{msg.text}</div> : null}
+                {msg.text ? <div className={bubbleBorder + " px-3.5 py-2 rounded-2xl rounded-tr-md text-sm leading-relaxed mt-1"}>{msg.text}</div> : null}
               </>
-            : <div className="bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5] px-3.5 py-2.5 rounded-2xl rounded-tr-md text-sm leading-relaxed">{msg.text}</div>
+            : <div className={bubbleBorder + " px-3.5 py-2.5 rounded-2xl rounded-tr-md text-sm leading-relaxed"}>{msg.text}</div>
           }
           <div className="text-[10px] text-[#6b7280] mt-1 mr-2 text-right">
-            {msg.operator} · {msg.time}
+            {msg.operator} · {msgTime(msg)}
+            <DeliveryStatus status={msg.deliveryStatus} />
+          </div>
+          {failed && msg.deliveryError && (
+            <div className="text-[10px] text-[#ef4444] mt-0.5 mr-2 text-right">✗ {msg.deliveryError}</div>
+          )}
+        </div>
+      </div>
+    );
+  }
+  if (msg.kind === "comment") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[70%]">
+          <div className="bg-[#eab308]/10 border border-[#eab308]/20 rounded-2xl rounded-tr-sm px-4 py-2.5">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <Icon name="edit" className="w-3 h-3 text-[#eab308]/60" />
+              <span className="text-[10px] text-[#eab308]/70 font-semibold uppercase tracking-wider">Комментарий</span>
+            </div>
+            <p className="text-sm text-[#f1f1f5]/90 leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+            <p className="text-[10px] text-[#6b7280] mt-1.5 text-right">{msg.operator} · {msgTime(msg)}</p>
           </div>
         </div>
       </div>
@@ -157,28 +280,139 @@ function MessageBubble({ msg, onImageClick }) {
   return null;
 }
 
+function TemplatePickerModal({ onSelect, onClose }) {
+  const [templates, setTemplates] = useStateD(null);
+  const [search, setSearch] = useStateD("");
+  const [group, setGroup] = useStateD("all");
+
+  useEffectD(() => {
+    window.apiFetch("GET", "/api/templates").then(setTemplates).catch(() => setTemplates([]));
+  }, []);
+
+  const groups = useMemoD(() => {
+    if (!templates) return [];
+    return [...new Set(templates.map(t => t.group_name))];
+  }, [templates]);
+
+  const filtered = useMemoD(() => {
+    if (!templates) return [];
+    let list = group === "all" ? templates : templates.filter(t => t.group_name === group);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(t => t.title.toLowerCase().includes(q) || t.text.toLowerCase().includes(q));
+    }
+    return list;
+  }, [templates, group, search]);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-2xl flex flex-col"
+           style={{ maxHeight: "70vh" }} onClick={e => e.stopPropagation()}>
+        {/* Search header */}
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-[#2a2a3a] shrink-0">
+          <Icon name="search" className="w-4 h-4 text-[#6b7280] shrink-0" />
+          <input autoFocus value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Поиск шаблонов..."
+            className="flex-1 bg-transparent text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none" />
+          <button onClick={onClose} className="text-[#6b7280] hover:text-[#f1f1f5]">
+            <Icon name="x" className="w-4 h-4" />
+          </button>
+        </div>
+        {/* Body */}
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {/* Template list */}
+          <div className="flex-1 overflow-y-auto py-1 scrollbar-thin">
+            {filtered.length === 0 ? (
+              <div className="px-4 py-10 text-center text-sm text-[#6b7280]">
+                {templates === null ? "Загрузка..." : "Шаблоны не найдены"}
+              </div>
+            ) : filtered.map(t => (
+              <button key={t.id} onClick={() => onSelect(t.text)}
+                className="w-full px-4 py-3 text-left hover:bg-[#1a1a24] transition group">
+                <div className="text-sm text-[#f1f1f5] font-medium group-hover:text-[#7BA8F9] transition">{t.title}</div>
+                <div className="text-xs text-[#6b7280] mt-0.5 line-clamp-2 leading-relaxed">{t.text}</div>
+              </button>
+            ))}
+          </div>
+          {/* Groups sidebar */}
+          <div className="w-44 shrink-0 border-l border-[#2a2a3a] overflow-y-auto py-1 scrollbar-thin">
+            {["all", ...groups].map(g => (
+              <button key={g} onClick={() => setGroup(g)}
+                className={"w-full px-4 py-2.5 text-left text-sm transition " +
+                  (group === g
+                    ? "text-[#7BA8F9] bg-[#4F8EF7]/10 font-medium"
+                    : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}>
+                {g === "all" ? "Все" : g}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TransferModal({ activeDialog, operators, currentOperator, onTransfer, onClose }) {
+  const candidates = (operators || []).filter(op => op.name !== activeDialog?.assignedOperator);
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
+          <div className="font-medium text-sm text-[#f1f1f5]">Передать тикет</div>
+          <button onClick={onClose} className="text-[#6b7280] hover:text-[#f1f1f5]"><Icon name="x" className="w-4 h-4" /></button>
+        </div>
+        <div className="divide-y divide-[#2a2a3a]/60 max-h-[360px] overflow-y-auto scrollbar-thin">
+          {candidates.length === 0 && (
+            <div className="px-5 py-8 text-center text-sm text-[#6b7280]">Нет доступных операторов</div>
+          )}
+          {candidates.map(op => (
+            <button key={op.id} onClick={() => onTransfer(op.name)}
+              className="w-full px-5 py-3 flex items-center gap-3 hover:bg-[#1a1a24] transition">
+              <Avatar initials={op.initials} color={op.color} size={32} />
+              <div className="flex-1 text-left min-w-0">
+                <div className="text-sm text-[#f1f1f5]">{op.name}</div>
+                <div className="text-xs text-[#6b7280]">{op.role === "admin" ? "Администратор" : "Агент"}</div>
+              </div>
+              <span className={"flex items-center gap-1 text-xs " + (op.online ? "text-[#22c55e]" : "text-zinc-500")}>
+                <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
+                {op.online ? "Онлайн" : "Офлайн"}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DialogsScreen({
   conversations, setConversations,
   activeId, setActiveId,
   showToast,
-  onReply, onToggleAI, onClose, onHandoff, onBillingAction,
+  onReply, onToggleAI, onClose, onHandoff, onReopen, onWait, onBillingAction,
+  currentOperator, operators,
   servers,
 }) {
   const [searchQ, setSearchQ] = useStateD("");
-  const [filter, setFilter] = useStateD("all");
+  const [view,   setView]   = useStateD("my");  // "my" | "all"
+  const [filter, setFilter] = useStateD("wip");
   const [draft, setDraft] = useStateD("");
+  const [mode, setMode] = useStateD("message"); // "message" | "comment"
   const [aiEnabled, setAiEnabled] = useStateD(true);
   const [lightboxUrl, setLightboxUrl] = useStateD(null);
   const [pendingFile, setPendingFile] = useStateD(null);
   const [confirmClose, setConfirmClose] = useStateD(false);
+  const [showTemplates, setShowTemplates] = useStateD(false);
+  const [showTransfer, setShowTransfer] = useStateD(false);
   const scrollRef = useRefD(null);
   const fileInputRef = useRefD(null);
 
   const active = conversations.find((c) => c.id === activeId) || conversations[0];
 
-  // Sync AI toggle state when active dialog changes
+  // Sync AI toggle state when active dialog changes; reset composer mode
   useEffectD(() => {
     if (active) setAiEnabled(active.aiEnabled ?? true);
+    setMode("message");
   }, [active?.id, active?.aiEnabled]);
 
   useEffectD(() => {
@@ -187,26 +421,70 @@ function DialogsScreen({
     }
   }, [active?.id, active?.messages?.length]);
 
+  // Sections per view: «Все» — the whole pipeline, «Мои» — only own tickets.
+  // «Все» shows 3 main tabs + an overflow menu («ещё») with ИИ and Закрытые.
+  const SECTION_STATUS = { ai: "ai", queue: "queue", wip: "in_progress", waiting: "waiting", closed: "closed" };
+  const SECTION_META = {
+    wip:     { label: "В работе", icon: "📁" },
+    waiting: { label: "Ожидание", icon: "⏸️" },
+    queue:   { label: "Очередь",  icon: "⌛" },
+    ai:      { label: "ИИ",       icon: "🤖" },
+    closed:  { label: "Закрытые", icon: "✅" },
+  };
+  const MY_SECTIONS  = ["wip", "waiting", "closed"];
+  const ALL_SECTIONS = ["wip", "waiting", "queue", "ai", "closed"];
+  const ALL_MAIN = ["wip", "waiting", "queue"];
+  const ALL_MORE = ["ai", "closed"];
+  const [moreOpen, setMoreOpen] = useStateD(false);
+
+  function switchView(v) {
+    setView(v);
+    setMoreOpen(false);
+    const valid = v === "my" ? MY_SECTIONS : ALL_SECTIONS;
+    if (!valid.includes(filter)) setFilter("wip");
+  }
+
+  const baseList = useMemoD(() =>
+    view === "my"
+      ? conversations.filter((c) => c.assignedOperator === currentOperator?.name)
+      : conversations,
+    [conversations, view, currentOperator]
+  );
+
   const filtered = useMemoD(() => {
-    let list = conversations;
-    if (filter === "open") list = list.filter((c) => c.status === "new");
-    if (filter === "wip") list = list.filter((c) => c.status === "in_progress");
-    if (filter === "closed") list = list.filter((c) => c.status === "closed");
+    let list = baseList.filter((c) => c.status === SECTION_STATUS[filter]);
     if (searchQ.trim()) {
       const q = searchQ.toLowerCase();
       list = list.filter(
-        (c) => c.name.toLowerCase().includes(q) || c.username.toLowerCase().includes(q) || c.preview.toLowerCase().includes(q)
+        (c) => c.name.toLowerCase().includes(q)
+          || c.username.toLowerCase().includes(q)
+          || c.preview.toLowerCase().includes(q)
+          || String(c.chatId || "").includes(q)
       );
     }
-    return list;
-  }, [conversations, filter, searchQ]);
+    return [...list].sort((a, b) => {
+      const ta = a.updatedAt || "";
+      const tb = b.updatedAt || "";
+      return tb.localeCompare(ta);
+    });
+  }, [baseList, filter, searchQ]);
 
-  const counts = useMemoD(() => ({
-    all: conversations.length,
-    open: conversations.filter((c) => c.status === "new").length,
-    wip: conversations.filter((c) => c.status === "in_progress").length,
-    closed: conversations.filter((c) => c.status === "closed").length,
-  }), [conversations]);
+  const counts = useMemoD(() => {
+    const res = {};
+    for (const id of ALL_SECTIONS) {
+      res[id] = baseList.filter((c) => c.status === SECTION_STATUS[id]).length;
+    }
+    return res;
+  }, [baseList]);
+
+  async function handleTransfer(operatorName) {
+    setShowTransfer(false);
+    if (!active) return;
+    try {
+      await window.apiFetch("POST", `/api/dialogs/${active.id}/transfer`, { operator_name: operatorName });
+      showToast(`Тикет передан: ${operatorName}`);
+    } catch { showToast("Ошибка передачи"); }
+  }
 
   async function handleFileSelect(e) {
     const file = e.target.files?.[0];
@@ -219,14 +497,29 @@ function DialogsScreen({
     } catch { showToast("Ошибка загрузки файла"); }
   }
 
-  function sendMessage() {
+  async function sendMessage() {
     const text = draft.trim();
-    if (!text && !pendingFile) return;
     if (!active) return;
+    if (mode === "comment") {
+      if (!text) return;
+      setDraft("");
+      try {
+        await window.apiFetch("POST", `/api/dialogs/${active.id}/comment`, { text });
+      } catch (e) {
+        console.error("Comment error", e);
+      }
+      return;
+    }
+    if (!text && !pendingFile) return;
     setDraft("");
     const fileArgs = pendingFile ? { file_url: pendingFile.url, file_type: pendingFile.type } : {};
     setPendingFile(null);
     if (onReply) onReply(active.id, text, fileArgs);
+  }
+
+  function pickTemplate(text) {
+    setDraft(prev => prev ? prev + "\n" + text : text);
+    setShowTemplates(false);
   }
 
   function handoffToOperator() {
@@ -235,12 +528,42 @@ function DialogsScreen({
     if (onHandoff) onHandoff(active.id);
   }
 
+  function reopenDialog() {
+    if (!active) return;
+    showToast("Диалог возвращён в очередь");
+    if (onReopen) onReopen(active.id);
+  }
+
+  function waitDialog() {
+    if (!active) return;
+    showToast("Тикет переведён в ожидание");
+    if (onWait) onWait(active.id);
+  }
+
   function closeDialog() {
     if (!active) return;
     setConfirmClose(false);
     showToast("Диалог закрыт");
     if (onClose) onClose(active.id);
   }
+
+  async function reopenClosed() {
+    if (!active) return;
+    try {
+      await window.apiFetch("POST", `/api/dialogs/${active.id}/reopen-closed`);
+      showToast("Диалог переоткрыт");
+    } catch (e) {
+      if (e?.status === 409 && e?.active_dialog_id) {
+        setActiveId(e.active_dialog_id);
+      } else {
+        showToast("Ошибка при переоткрытии");
+      }
+    }
+  }
+
+  const activeDialogForSameUser = active?.status === "closed"
+    ? conversations.find((c) => c.chatId === active.chatId && c.id !== active.id && c.status !== "closed")
+    : null;
 
   async function toggleAI() {
     if (!active) return;
@@ -254,12 +577,6 @@ function DialogsScreen({
     }
   }
 
-  const filterTabs = [
-    { id: "all", label: "Все", count: counts.all },
-    { id: "open", label: "Открытые", count: counts.open },
-    { id: "wip", label: "В работе", count: counts.wip },
-    { id: "closed", label: "Закрытые", count: counts.closed },
-  ];
 
   return (
     <>
@@ -267,6 +584,16 @@ function DialogsScreen({
         {/* Left: conversation list */}
         <aside className="w-[260px] shrink-0 bg-[#13131a] border-r border-[#2a2a3a] flex flex-col min-h-0">
           <div className="p-3 border-b border-[#2a2a3a] space-y-2.5">
+            {/* Мои / Все */}
+            <div className="flex bg-[#0d0d12] rounded-lg p-0.5 gap-0.5">
+              {[["my", "Мои"], ["all", "Все"]].map(([v, label]) => (
+                <button key={v} onClick={() => switchView(v)}
+                  className={"flex-1 py-1.5 rounded-md text-xs font-medium transition " +
+                    (view === v ? "bg-[#4F8EF7] text-white" : "text-[#6b7280] hover:text-[#f1f1f5]")}>
+                  {label}
+                </button>
+              ))}
+            </div>
             <div className="relative">
               <Icon name="search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#6b7280]" />
               <input
@@ -276,22 +603,68 @@ function DialogsScreen({
                 className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg pl-9 pr-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50"
               />
             </div>
-            <div className="flex gap-1 text-[11px]">
-              {filterTabs.map((t) => (
+            <div className="flex gap-1 text-[11px] relative">
+              {(view === "my" ? MY_SECTIONS : ALL_MAIN).map((id) => (
                 <button
-                  key={t.id}
-                  onClick={() => setFilter(t.id)}
+                  key={id}
+                  onClick={() => { setFilter(id); setMoreOpen(false); }}
                   className={
-                    "flex-1 px-1.5 py-1.5 rounded-md font-medium transition " +
-                    (filter === t.id
+                    "flex-1 px-1 py-1.5 rounded-md font-medium transition flex flex-col items-center gap-0.5 " +
+                    (filter === id
                       ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
                       : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
                   }
                 >
-                  {t.label}
-                  <span className="ml-1 opacity-60">{t.count}</span>
+                  <span className="text-sm leading-none">{SECTION_META[id].icon}</span>
+                  <span className="whitespace-nowrap">{SECTION_META[id].label}</span>
+                  <span className="opacity-60">{counts[id]}</span>
                 </button>
               ))}
+              {view === "all" && (
+                <>
+                  <button
+                    onClick={() => setMoreOpen((v) => !v)}
+                    title="Ещё разделы"
+                    className={
+                      "px-2 py-1.5 rounded-md font-medium transition flex flex-col items-center justify-center gap-0.5 " +
+                      (ALL_MORE.includes(filter)
+                        ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
+                        : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
+                    }
+                  >
+                    {ALL_MORE.includes(filter) ? (
+                      <>
+                        <span className="text-sm leading-none">{SECTION_META[filter].icon}</span>
+                        <span className="whitespace-nowrap">{SECTION_META[filter].label}</span>
+                        <span className="opacity-60">{counts[filter]}</span>
+                      </>
+                    ) : (
+                      <span className="text-base leading-none px-0.5">⋯</span>
+                    )}
+                  </button>
+                  {moreOpen && (
+                    <>
+                      <div className="fixed inset-0 z-10" onClick={() => setMoreOpen(false)}></div>
+                      <div className="absolute right-0 top-full mt-1 z-20 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg shadow-2xl py-1 min-w-[150px]">
+                        {ALL_MORE.map((id) => (
+                          <button
+                            key={id}
+                            onClick={() => { setFilter(id); setMoreOpen(false); }}
+                            className={
+                              "w-full text-left px-3 py-2 flex items-center gap-2 transition " +
+                              (filter === id ? "text-[#7BA8F9]" : "text-[#d1d1d8] hover:bg-[#2a2a3a]/50")
+                            }
+                          >
+                            <span>{SECTION_META[id].icon}</span>
+                            <span>{SECTION_META[id].label}</span>
+                            <span className="opacity-60 ml-auto">{counts[id]}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
             </div>
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1 scrollbar-thin">
@@ -311,22 +684,74 @@ function DialogsScreen({
               {/* Top bar */}
               <div className="h-[60px] px-5 border-b border-[#2a2a3a] flex items-center justify-between bg-[#13131a]/40">
                 <div className="flex items-center gap-3 min-w-0">
-                  <Avatar initials={active.initials} color={active.avatarColor} size={36} />
+                  <Avatar initials={active.initials} color={active.avatarColor} size={36} photoUrl={active.photoUrl} />
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <div className="font-medium text-[#f1f1f5] truncate">{active.name}</div>
                       <StatusBadge status={active.status} />
+                      {active.status === "waiting" && <WaitingLabel reason={active.waitingReason} />}
+                      <SlaTimer slaSeconds={active.slaSeconds} slaStartedAt={active.slaStartedAt} />
                     </div>
                     <div className="text-xs text-[#6b7280]">{active.username} · ID {active.tgId}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  {["ai", "queue"].includes(active.status) && (
+                    <button
+                      onClick={handoffToOperator}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#A855F7]/15 text-[#C084FC] border border-[#A855F7]/30 hover:bg-[#A855F7]/25 transition flex items-center gap-1.5"
+                    >
+                      <Icon name="user" className="w-3.5 h-3.5" />
+                      Взять в работу
+                    </button>
+                  )}
+                  {["in_progress", "waiting"].includes(active.status) && (
+                    <>
+                      {active.assignedOperator && (
+                        <span className="flex items-center gap-1.5 text-xs text-[#6b7280] px-2">
+                          <Icon name="user" className="w-3.5 h-3.5" />
+                          {active.assignedOperator}
+                        </span>
+                      )}
+                      <button
+                        onClick={reopenDialog}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
+                      >
+                        <Icon name="arrowLeft" className="w-3.5 h-3.5" />
+                        Вернуть в очередь
+                      </button>
+                    </>
+                  )}
+                  {active.status === "in_progress" && (
+                    <button
+                      onClick={waitDialog}
+                      title="Перевести в «Ожидание» (клиент ждёт ответ)"
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#ef4444]/10 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/20 transition flex items-center gap-1.5"
+                    >
+                      <Icon name="clock" className="w-3.5 h-3.5" />
+                      В ожидание
+                    </button>
+                  )}
+                  {active.status !== "closed" && (
+                    <button
+                      onClick={() => setShowTransfer(true)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
+                    >
+                      <Icon name="arrowRight" className="w-3.5 h-3.5" />
+                      Передать
+                    </button>
+                  )}
                   <button
-                    onClick={handoffToOperator}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#A855F7]/15 text-[#C084FC] border border-[#A855F7]/30 hover:bg-[#A855F7]/25 transition flex items-center gap-1.5"
+                    onClick={() => {
+                      const url = `${window.location.origin}${window.location.pathname}?dialog=${active.id}`;
+                      navigator.clipboard.writeText(url)
+                        .then(() => showToast("Ссылка скопирована"))
+                        .catch(() => showToast("Не удалось скопировать ссылку"));
+                    }}
+                    className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded-lg transition"
+                    title="Скопировать ссылку на диалог"
                   >
-                    <Icon name="user" className="w-3.5 h-3.5" />
-                    Передать оператору
+                    <Icon name="link" className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => setConfirmClose(true)}
@@ -338,83 +763,162 @@ function DialogsScreen({
                 </div>
               </div>
 
+              {/* Closed dialog banner */}
+              {active.status === "closed" && (
+                <div className="px-4 py-2.5 bg-[#1a1a18] border-b border-[#2a2a3a] flex items-center gap-3">
+                  {activeDialogForSameUser ? (
+                    <>
+                      <Icon name="bellRing" className="w-4 h-4 text-[#eab308] shrink-0" />
+                      <span className="text-xs text-[#d1a800] flex-1">Пользователь написал в новый чат</span>
+                      <button
+                        onClick={() => setActiveId(activeDialogForSameUser.id)}
+                        className="text-xs px-2.5 py-1 rounded-lg bg-[#eab308]/15 text-[#eab308] hover:bg-[#eab308]/25 transition font-medium shrink-0"
+                      >
+                        Перейти
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <Icon name="x" className="w-4 h-4 text-[#6b7280] shrink-0" />
+                      <span className="text-xs text-[#6b7280] flex-1">Диалог закрыт</span>
+                      <button
+                        onClick={reopenClosed}
+                        className="text-xs px-2.5 py-1 rounded-lg bg-[#4F8EF7]/15 text-[#7BA8F9] hover:bg-[#4F8EF7]/25 transition font-medium shrink-0"
+                      >
+                        Открыть снова
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
               {/* Messages */}
               <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-5 space-y-3 scrollbar-thin">
                 {(active.messages || []).length === 0 && (
                   <div className="text-center text-xs text-[#6b7280] py-8">Загрузка сообщений...</div>
                 )}
-                {(active.messages || []).map((m) => (
-                  <MessageBubble key={m.id} msg={m} onImageClick={(url) => setLightboxUrl(url)} />
-                ))}
+                {(() => {
+                  let lastDay = null;
+                  return (active.messages || []).map((m) => {
+                    let sep = null;
+                    if (m.createdAt) {
+                      const label = fmtDayLabel(m.createdAt);
+                      if (label && label !== lastDay) {
+                        lastDay = label;
+                        sep = <DaySeparator label={label} />;
+                      }
+                    }
+                    return (
+                      <React.Fragment key={m.id}>
+                        {sep}
+                        <MessageBubble msg={m} onImageClick={(url) => setLightboxUrl(url)} />
+                      </React.Fragment>
+                    );
+                  });
+                })()}
               </div>
 
               {/* Composer */}
-              <div className="border-t border-[#2a2a3a] p-3.5 bg-[#13131a]/40">
+              <div className="border-t border-[#2a2a3a] bg-[#13131a]/40">
                 <input ref={fileInputRef} type="file" className="hidden"
                   accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.zip,.txt"
                   onChange={handleFileSelect} />
-                {pendingFile && (
-                  <div className="mb-2 flex items-center gap-2 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg px-3 py-2">
-                    <Icon name="paperclip" className="w-4 h-4 text-[#4F8EF7] shrink-0" />
-                    <span className="text-xs text-[#f1f1f5] truncate flex-1">{pendingFile.name}</span>
-                    <button onClick={() => setPendingFile(null)} className="text-[#6b7280] hover:text-[#ef4444]"><Icon name="x" className="w-3.5 h-3.5" /></button>
-                  </div>
-                )}
-                <div className="bg-[#1a1a24] border border-[#2a2a3a] rounded-xl focus-within:border-[#4F8EF7]/50 transition">
-                  <textarea
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                        e.preventDefault();
-                        sendMessage();
-                      }
-                    }}
-                    placeholder={active.status === "closed" ? "Диалог закрыт" : "Написать сообщение..."}
-                    disabled={active.status === "closed"}
-                    rows={2}
-                    className="w-full bg-transparent px-3.5 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none resize-none disabled:opacity-50"
-                  />
-                  <div className="flex items-center justify-between px-2 py-2 border-t border-[#2a2a3a]/60">
-                    <div className="flex items-center gap-1">
-                      <button
-                        className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"
-                        disabled={active.status === "closed"}
-                        onClick={() => fileInputRef.current?.click()}
-                      >
-                        <Icon name="paperclip" />
-                      </button>
-                      <div className="w-px h-4 bg-[#2a2a3a] mx-1"></div>
-                      <label className="flex items-center gap-2 text-xs text-[#6b7280] cursor-pointer select-none px-2 py-1 hover:text-[#f1f1f5]">
-                        <span>ИИ отвечает</span>
-                        <button
-                          type="button"
-                          onClick={toggleAI}
-                          className={
-                            "relative w-8 h-[18px] rounded-full transition " +
-                            (aiEnabled ? "bg-[#4F8EF7]" : "bg-[#2a2a3a]")
-                          }
-                        >
-                          <span
-                            className={
-                              "absolute top-[2px] w-[14px] h-[14px] bg-white rounded-full transition-all " +
-                              (aiEnabled ? "left-[16px]" : "left-[2px]")
-                            }
-                          ></span>
-                        </button>
-                      </label>
-                    </div>
-                    <button
-                      onClick={sendMessage}
-                      disabled={(!draft.trim() && !pendingFile) || active.status === "closed"}
-                      className="px-4 py-1.5 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
-                    >
-                      <Icon name="send" className="w-3.5 h-3.5" />
-                      Отправить
+                {/* Mode tabs */}
+                <div className="flex border-b border-[#2a2a3a] px-3.5">
+                  {[["message", "Сообщение"], ["comment", "Комментарий"]].map(([m, label]) => (
+                    <button key={m} onClick={() => { setMode(m); if (m === "comment") setPendingFile(null); }}
+                      disabled={active.status === "closed"}
+                      className={"px-3 py-2 text-xs font-medium transition border-b-2 -mb-px disabled:opacity-40 " +
+                        (mode === m
+                          ? (m === "comment" ? "border-[#eab308] text-[#eab308]" : "border-[#4F8EF7] text-[#7BA8F9]")
+                          : "border-transparent text-[#6b7280] hover:text-[#f1f1f5]")}>
+                      {label}
                     </button>
-                  </div>
+                  ))}
                 </div>
-                <div className="text-[10px] text-[#6b7280] mt-1.5 ml-1">Cmd/Ctrl + Enter для отправки</div>
+                <div className="p-3.5">
+                  {pendingFile && mode === "message" && (
+                    <div className="mb-2 flex items-center gap-2 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg px-3 py-2">
+                      <Icon name="paperclip" className="w-4 h-4 text-[#4F8EF7] shrink-0" />
+                      <span className="text-xs text-[#f1f1f5] truncate flex-1">{pendingFile.name}</span>
+                      <button onClick={() => setPendingFile(null)} className="text-[#6b7280] hover:text-[#ef4444]"><Icon name="x" className="w-3.5 h-3.5" /></button>
+                    </div>
+                  )}
+                  <div className={"bg-[#1a1a24] border rounded-xl focus-within:border-[#4F8EF7]/50 transition " +
+                    (mode === "comment" ? "border-[#eab308]/30 focus-within:border-[#eab308]/50" : "border-[#2a2a3a]")}>
+                    <textarea
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                          e.preventDefault();
+                          sendMessage();
+                        }
+                      }}
+                      placeholder={
+                        active.status === "closed" ? "Диалог закрыт" :
+                        mode === "comment" ? "Комментарий виден только операторам..." :
+                        "Написать сообщение..."
+                      }
+                      disabled={active.status === "closed"}
+                      rows={2}
+                      className="w-full bg-transparent px-3.5 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none resize-none disabled:opacity-50"
+                    />
+                    <div className="flex items-center justify-between px-2 py-2 border-t border-[#2a2a3a]/60">
+                      <div className="flex items-center gap-1">
+                        {mode === "message" && (
+                          <>
+                            <button
+                              className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"
+                              disabled={active.status === "closed"}
+                              onClick={() => fileInputRef.current?.click()}
+                              title="Прикрепить файл"
+                            >
+                              <Icon name="paperclip" />
+                            </button>
+                            <button
+                              className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"
+                              disabled={active.status === "closed"}
+                              onClick={() => setShowTemplates(true)}
+                              title="Шаблоны сообщений"
+                            >
+                              <Icon name="template" />
+                            </button>
+                            <div className="w-px h-4 bg-[#2a2a3a] mx-1"></div>
+                          </>
+                        )}
+                        <label className="flex items-center gap-2 text-xs text-[#6b7280] cursor-pointer select-none px-2 py-1 hover:text-[#f1f1f5]">
+                          <span>ИИ отвечает</span>
+                          <button
+                            type="button"
+                            onClick={toggleAI}
+                            className={
+                              "relative w-8 h-[18px] rounded-full transition " +
+                              (aiEnabled ? "bg-[#4F8EF7]" : "bg-[#2a2a3a]")
+                            }
+                          >
+                            <span
+                              className={
+                                "absolute top-[2px] w-[14px] h-[14px] bg-white rounded-full transition-all " +
+                                (aiEnabled ? "left-[16px]" : "left-[2px]")
+                              }
+                            ></span>
+                          </button>
+                        </label>
+                      </div>
+                      <button
+                        onClick={sendMessage}
+                        disabled={(mode === "message" ? (!draft.trim() && !pendingFile) : !draft.trim()) || active.status === "closed"}
+                        className={"px-4 py-1.5 rounded-lg text-white text-xs font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 " +
+                          (mode === "comment" ? "bg-[#eab308]/80 hover:bg-[#eab308]" : "bg-[#4F8EF7] hover:bg-[#3d7ce8]")}
+                      >
+                        <Icon name="send" className="w-3.5 h-3.5" />
+                        {mode === "comment" ? "Комментарий" : "Отправить"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-[#6b7280] mt-1.5 ml-1">Cmd/Ctrl + Enter для отправки</div>
+                </div>
               </div>
             </>
           )}
@@ -469,26 +973,71 @@ function DialogsScreen({
           </div>
         </div>
       )}
+      {showTemplates && <TemplatePickerModal onSelect={pickTemplate} onClose={() => setShowTemplates(false)} />}
+      {showTransfer && (
+        <TransferModal
+          activeDialog={active}
+          operators={operators}
+          currentOperator={currentOperator}
+          onTransfer={handleTransfer}
+          onClose={() => setShowTransfer(false)}
+        />
+      )}
     </>
+  );
+}
+
+function NotesEditor({ convId, initialValue, showToast }) {
+  const [value, setValue] = React.useState(initialValue);
+  const [saving, setSaving] = React.useState(false);
+  const savedRef = React.useRef(initialValue);
+
+  React.useEffect(() => {
+    setValue(initialValue);
+    savedRef.current = initialValue;
+  }, [convId]);
+
+  const save = async () => {
+    if (value === savedRef.current) return;
+    setSaving(true);
+    try {
+      const token = localStorage.getItem("hd_token") || "";
+      const res = await fetch(`/api/dialogs/${convId}/notes`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+        body: JSON.stringify({ text: value }),
+      });
+      if (!res.ok) throw new Error();
+      savedRef.current = value;
+      showToast && showToast("Заметка сохранена");
+    } catch {
+      showToast && showToast("Ошибка сохранения", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="relative">
+      <textarea
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        onBlur={save}
+        rows={4}
+        placeholder="Заметки об этом пользователе..."
+        className="w-full bg-[#1a1a24] border border-[#2a2a3a]/60 rounded-xl px-3 py-2.5 text-xs text-[#f1f1f5] placeholder-[#6b7280]/60 resize-none focus:outline-none focus:border-[#eab308]/40 transition scrollbar-thin"
+      />
+      {saving && (
+        <div className="absolute bottom-2 right-2 text-[10px] text-[#eab308]/70">Сохранение…</div>
+      )}
+    </div>
   );
 }
 
 function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClick }) {
   const [historyOpen, setHistoryOpen] = useStateD(true);
-  const [billingOpen, setBillingOpen] = useStateD(null);
-  const [months, setMonths] = useStateD(1);
-  const [gb, setGb] = useStateD(10);
   const trafficPct = Math.min(100, (conv.traffic.used / conv.traffic.total) * 100);
   const trafficColor = trafficPct > 85 ? "#ef4444" : trafficPct > 60 ? "#eab308" : "#22c55e";
-
-  function billingAction(action, params) {
-    if (onBillingAction) onBillingAction(conv.id, action, params);
-    setBillingOpen(null);
-  }
-
-  function toggleBilling(action) {
-    setBillingOpen((v) => (v === action ? null : action));
-  }
 
   return (
     <div className="p-4 space-y-5">
@@ -497,7 +1046,7 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClic
         <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">Пользователь</div>
         <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60">
           <div className="flex items-center gap-3 mb-3">
-            <Avatar initials={conv.initials} color={conv.avatarColor} size={44} />
+            <Avatar initials={conv.initials} color={conv.avatarColor} size={44} photoUrl={conv.photoUrl} />
             <div className="min-w-0">
               <div className="font-medium text-[#f1f1f5] text-sm truncate">{conv.name}</div>
               <div className="text-xs text-[#6b7280]">{conv.username}</div>
@@ -517,6 +1066,12 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClic
               <span className="text-[#6b7280]">След. платёж</span>
               <span className="text-[#f1f1f5]">{conv.nextPayment}</span>
             </div>
+            <div className="flex justify-between items-center">
+              <span className="text-[#6b7280]">Последний платёж</span>
+              <span className="text-[#f1f1f5] tabular-nums">
+                {conv.lastPayment.amount} <span className="text-[#6b7280]">· {conv.lastPayment.date}</span>
+              </span>
+            </div>
             <div className="pt-2 mt-2 border-t border-[#2a2a3a]/60">
               <div className="flex justify-between items-center mb-1.5">
                 <span className="text-[#6b7280]">Трафик</span>
@@ -535,116 +1090,21 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClic
         </div>
       </section>
 
-      {/* Billing */}
-      <section>
-        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">Биллинг</div>
-        <div className="space-y-1.5">
-
-          {/* Renew */}
-          <button
-            onClick={() => toggleBilling("renew")}
-            className={"w-full px-3 py-2 border rounded-lg text-xs font-medium transition flex items-center justify-between " + (billingOpen === "renew" ? "bg-[#4F8EF7]/25 border-[#4F8EF7]/50 text-[#7BA8F9]" : "bg-[#4F8EF7]/15 border-[#4F8EF7]/30 text-[#7BA8F9] hover:bg-[#4F8EF7]/25")}
-          >
-            <span>Продлить подписку</span>
-            <Icon name={billingOpen === "renew" ? "chevronDown" : "refresh"} className="w-3.5 h-3.5" />
-          </button>
-          {billingOpen === "renew" && (
-            <div className="bg-[#13131a] border border-[#4F8EF7]/20 rounded-lg p-3 space-y-2.5">
-              <div className="text-[10px] text-[#6b7280]">Срок продления</div>
-              <div className="grid grid-cols-4 gap-1">
-                {[1, 3, 6, 12].map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setMonths(m)}
-                    className={"py-1.5 rounded text-[11px] font-medium transition " + (months === m ? "bg-[#4F8EF7] text-white" : "bg-[#1a1a24] text-[#6b7280] hover:text-[#f1f1f5] border border-[#2a2a3a]")}
-                  >
-                    {m} мес.
-                  </button>
-                ))}
-              </div>
-              <div className="text-[10px] text-[#6b7280]">
-                Итого: <span className="text-[#f1f1f5]">{months} {months === 1 ? "месяц" : months < 5 ? "месяца" : "месяцев"}</span>
-              </div>
-              <button
-                onClick={() => billingAction("renew", { months })}
-                className="w-full py-1.5 bg-[#4F8EF7] hover:bg-[#4F8EF7]/80 text-white rounded text-xs font-medium transition"
-              >
-                Подтвердить
-              </button>
-            </div>
-          )}
-
-          {/* Buy traffic */}
-          <button
-            onClick={() => toggleBilling("buy_traffic")}
-            className={"w-full px-3 py-2 border rounded-lg text-xs font-medium transition flex items-center justify-between " + (billingOpen === "buy_traffic" ? "bg-[#1f1f2a] border-[#4F8EF7]/30 text-[#f1f1f5]" : "bg-[#1a1a24] border-[#2a2a3a] text-[#f1f1f5] hover:bg-[#1f1f2a]")}
-          >
-            <span>Докупить трафик</span>
-            <Icon name={billingOpen === "buy_traffic" ? "chevronDown" : "plus2"} className="w-3.5 h-3.5" />
-          </button>
-          {billingOpen === "buy_traffic" && (
-            <div className="bg-[#13131a] border border-[#2a2a3a] rounded-lg p-3 space-y-2.5">
-              <div className="text-[10px] text-[#6b7280]">Объём трафика</div>
-              <div className="grid grid-cols-3 gap-1">
-                {[10, 50, 100].map((g) => (
-                  <button
-                    key={g}
-                    onClick={() => setGb(g)}
-                    className={"py-1.5 rounded text-[11px] font-medium transition " + (gb === g ? "bg-[#4F8EF7] text-white" : "bg-[#1a1a24] text-[#6b7280] hover:text-[#f1f1f5] border border-[#2a2a3a]")}
-                  >
-                    {g} GB
-                  </button>
-                ))}
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-[#6b7280] shrink-0">Другой объём:</span>
-                <input
-                  type="number"
-                  min="1"
-                  max="999"
-                  value={gb}
-                  onChange={(e) => setGb(Math.max(1, parseInt(e.target.value) || 1))}
-                  className="w-full bg-[#1a1a24] border border-[#2a2a3a] rounded px-2 py-1 text-xs text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50"
-                />
-                <span className="text-[10px] text-[#6b7280] shrink-0">GB</span>
-              </div>
-              <button
-                onClick={() => billingAction("buy_traffic", { gb })}
-                className="w-full py-1.5 bg-[#4F8EF7] hover:bg-[#4F8EF7]/80 text-white rounded text-xs font-medium transition"
-              >
-                Подтвердить
-              </button>
-            </div>
-          )}
-
-          {/* Reset key */}
-          <button
-            onClick={() => toggleBilling("reset_key")}
-            className={"w-full px-3 py-2 border rounded-lg text-xs font-medium transition flex items-center justify-between " + (billingOpen === "reset_key" ? "bg-[#1f1f2a] border-[#ef4444]/30 text-[#f87171]" : "bg-[#1a1a24] border-[#2a2a3a] text-[#f1f1f5] hover:bg-[#1f1f2a]")}
-          >
-            <span>Сбросить ключ</span>
-            <Icon name={billingOpen === "reset_key" ? "chevronDown" : "key"} className="w-3.5 h-3.5" />
-          </button>
-          {billingOpen === "reset_key" && (
-            <div className="bg-[#13131a] border border-[#ef4444]/20 rounded-lg p-3 space-y-2.5">
-              <div className="text-[11px] text-[#fca5a5]">Ключ будет отозван и выдан новый. Все текущие подключения оборвутся.</div>
-              <button
-                onClick={() => billingAction("reset_key", {})}
-                className="w-full py-1.5 bg-[#ef4444]/80 hover:bg-[#ef4444] text-white rounded text-xs font-medium transition"
-              >
-                Сбросить ключ
-              </button>
-            </div>
-          )}
-
-          {/* Last payment */}
-          <div className="bg-[#1a1a24]/60 rounded-lg px-3 py-2 mt-1 border border-[#2a2a3a]/60">
-            <div className="text-[10px] text-[#6b7280] mb-0.5">Последний платёж</div>
-            <div className="text-xs text-[#f1f1f5] tabular-nums">
-              {conv.lastPayment.amount} <span className="text-[#6b7280]">· {conv.lastPayment.date}</span>
-            </div>
+      {/* Rating */}
+      {conv.rating && (
+        <section>
+          <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Оценка поддержки</div>
+          <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60 flex items-center justify-between">
+            <StarRating rating={conv.rating} size="lg" />
+            <span className="text-[11px] text-[#6b7280]">{conv.rating} / 5</span>
           </div>
-        </div>
+        </section>
+      )}
+
+      {/* Notes */}
+      <section>
+        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Заметки</div>
+        <NotesEditor convId={conv.id} initialValue={conv.notes || ""} showToast={showToast} />
       </section>
 
       {/* History */}
@@ -675,7 +1135,10 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClic
                   </span>
                 </div>
                 <div className="text-xs text-[#f1f1f5] mb-0.5 truncate">{t.title}</div>
-                <div className="text-[10px] text-[#6b7280]">{t.date}</div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-[#6b7280]">{t.date}</span>
+                  {t.rating && <StarRating rating={t.rating} />}
+                </div>
               </div>
             ))}
           </div>
