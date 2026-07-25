@@ -23,6 +23,9 @@
             },
             {
               "name": "file_type"
+            },
+            {
+              "name": "service"
             }
           ]
         }
@@ -88,7 +91,8 @@
           "__rl": true,
           "value": "kb",
           "mode": "list",
-          "cachedResultName": "kb"
+          "cachedResultName": "kb",
+          "notice": "ПРИ КОПИРОВАНИИ НА НОВЫЙ ВПН: смените на коллекцию сервиса (kb_<слаг>) — она показана в панели, «Настройки → Сервисы»"
         },
         "topK": 5,
         "options": {}
@@ -132,7 +136,7 @@
       "parameters": {
         "operation": "get",
         "propertyName": "ai_settings",
-        "key": "vpn_bot:ai_settings",
+        "key": "=vpn_bot:{{ $('AI').first().json.service || 'gruvpn' }}:ai_settings",
         "options": {}
       },
       "type": "n8n-nodes-base.redis",
@@ -606,7 +610,7 @@
       "parameters": {
         "queue": "vpn_bot.incoming",
         "sendInputData": false,
-        "message": "={{ JSON.stringify({\n  \"type\": \"ai_response\",\n  \"dialog_id\": $('AI').first().json.dialog_id,\n  \"chat_id\": $('AI').first().json.chat_id,\n  \"message\": $('Собрать ответ').first().json.output,\n  \"ai_enabled\": $('AI').first().json.ai_enabled\n}) }}",
+        "message": "={{ JSON.stringify({\n  \"type\": \"ai_response\",\n  \"service\": $('AI').first().json.service || 'gruvpn',\n  \"dialog_id\": $('AI').first().json.dialog_id,\n  \"chat_id\": $('AI').first().json.chat_id,\n  \"message\": $('Собрать ответ').first().json.output,\n  \"ai_enabled\": $('AI').first().json.ai_enabled\n}) }}",
         "options": {}
       },
       "type": "n8n-nodes-base.rabbitmq",
@@ -628,7 +632,7 @@
       "parameters": {
         "operation": "get",
         "propertyName": "history",
-        "key": "=chat_history:{{ $('AI').item.json.dialog_id }}",
+        "key": "=chat_history:{{ $('AI').first().json.service || 'gruvpn' }}:{{ $('AI').item.json.dialog_id }}",
         "keyType": "list",
         "options": {}
       },
@@ -651,7 +655,7 @@
     {
       "parameters": {
         "operation": "push",
-        "list": "=chat_history:{{ $('AI').first().json.dialog_id }}",
+        "list": "=chat_history:{{ $('AI').first().json.service || 'gruvpn' }}:{{ $('AI').first().json.dialog_id }}",
         "messageData": "={{ JSON.stringify({ role: \"user\", content: $('Приведение к 1 формату').first().json.prompt }) }}",
         "tail": true
       },
@@ -674,7 +678,7 @@
     {
       "parameters": {
         "operation": "push",
-        "list": "=chat_history:{{ $('AI').first().json.dialog_id }}",
+        "list": "=chat_history:{{ $('AI').first().json.service || 'gruvpn' }}:{{ $('AI').first().json.dialog_id }}",
         "messageData": "={{ JSON.stringify({ role: \"assistant\", content: ($('Собрать ответ').first().json.output || '').replace('[HANDOFF]', '').trim() }) }}",
         "tail": true
       },
