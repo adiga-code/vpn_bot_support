@@ -9,7 +9,7 @@ from app.auth import hash_password
 from app.billing import make_billing_provider
 from app.config import Settings
 from app.database import DatabaseManager
-from app.health import ServiceHealthMonitor
+from app.health import ServiceHealthMonitor, load_plugins
 from app.n8n_client import N8NClient
 from app.rabbitmq_consumer import RabbitMQConsumer
 from app.routing import RoutingEngine
@@ -81,6 +81,10 @@ async def main():
             "service_name": service.get("name"),
         }, service)
         print(f"[NOTIF] {event}: {component.get('name')} ({service.get('slug')})")
+
+    # Свои источники данных из app/providers/ — подхватываются файлом, без
+    # правки кода приложения (см. app/providers/__init__.py).
+    load_plugins()
 
     health_monitor = ServiceHealthMonitor(db, on_component_down=on_component_down)
 

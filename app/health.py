@@ -129,6 +129,31 @@ def build_provider(name: str, service: dict, config: dict = None) -> HealthProvi
     return cls(service, config) if cls else None
 
 
+def load_plugins(package: str = "app.providers") -> list[str]:
+    """Импортировать все модули из app/providers/ — свой источник данных
+    подключается просто файлом в этом каталоге, без правки кода приложения.
+    Модуль сам вызывает register_provider() при импорте."""
+    import importlib
+    import pkgutil
+
+    loaded = []
+    try:
+        pkg = importlib.import_module(package)
+    except ModuleNotFoundError:
+        return loaded
+    for mod in pkgutil.iter_modules(pkg.__path__):
+        if mod.name.startswith("_"):
+            continue
+        try:
+            importlib.import_module(f"{package}.{mod.name}")
+            loaded.append(mod.name)
+        except Exception as e:
+            print(f"[health] плагин {mod.name} не загружен: {e}")
+    if loaded:
+        print(f"[health] подключены свои провайдеры: {', '.join(loaded)}")
+    return loaded
+
+
 def known_providers(kind: str = None) -> list[dict]:
     """Список зарегистрированных источников — отдаётся в админку, чтобы было из
     чего выбирать без правки фронта при добавлении своего провайдера."""
@@ -158,6 +183,10 @@ class ServiceHealthMonitor:
         # только когда админ поменял настройки, а не на каждой итерации.
         self._cache: dict[tuple[int, str], tuple[str, HealthProvider]] = {}
         self._prev: dict[tuple[int, str], str] = {}  # (service_id, component id) → статус
+        # Опросы одного сервиса не должны идти параллельно: иначе два
+        # одновременных refresh (фоновый цикл + кнопка «Обновить») прочитают
+        # один и тот же прошлый статус и оба пошлют уведомление о падении.
+        self._locks: dict[int, asyncio.Lock] = {}
 
     # ── Конфиг ────────────────────────────────────────────────────────────────
 
@@ -183,6 +212,11 @@ class ServiceHealthMonitor:
 
     async def refresh(self, service: dict) -> dict:
         """Опросить один сервис и обновить его снимок."""
+        lock = self._locks.setdefault(service["id"], asyncio.Lock())
+        async with lock:
+            return await self._refresh_locked(service)
+
+    async def _refresh_locked(self, service: dict) -> dict:
         monitoring = await self._monitoring(service["id"])
         result = {"serviceId": service["id"], "serviceName": service["name"],
                   "serviceSlug": service["slug"], "serviceColor": service.get("color"),
