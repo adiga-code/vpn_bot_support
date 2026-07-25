@@ -26,28 +26,42 @@ function ServiceBanner({ service, hint }) {
 }
 
 function SettingsScreen({ operators: ops, setOperators, showToast, currentOperator,
-                          services = [], serviceId = null, onServicesChanged }) {
+                          services = [], serviceId = null, onServicesChanged,
+                          mobileChrome = null }) {
   const isAdmin = currentOperator?.role === "admin";
   const defaultSection = isAdmin ? "operators" : "profile";
   const [section, setSection] = useStateT(defaultSection);
   const [modalOpen, setModalOpen] = useStateT(false);
   const [editingOp, setEditingOp] = useStateT(null);
   const [confirmDelete, setConfirmDelete] = useStateT(null);
+  // Телефон: null — список разделов, иначе открыт конкретный раздел.
+  const [mobileSection, setMobileSection] = useStateT(null);
 
   // Настройки всегда правятся у конкретного ВПН-а: промпт, база знаний,
   // автоматизация и рассылка у каждого свои.
   const svc = services.find((s) => s.id === serviceId) || null;
 
+  // hint — подпись под названием в мобильном списке; scope делит список на
+  // «настройки этого ВПН-а» и «общие для всех».
   const allSections = [
-    { id: "operators",     label: "Операторы",    icon: "operators", adminOnly: true  },
-    { id: "services",      label: "Сервисы",      icon: "server",    adminOnly: true  },
-    { id: "profile",       label: "Профиль",      icon: "user",      adminOnly: false },
-    { id: "ai",            label: "ИИ-настройки", icon: "sparkles",  adminOnly: true  },
-    { id: "kb",            label: "База знаний",  icon: "book",      adminOnly: true  },
-    { id: "automation",    label: "Автоматизация",icon: "zap",       adminOnly: true  },
-    { id: "sounds",        label: "Звуки",        icon: "bellRing",  adminOnly: true  },
-    { id: "broadcast",     label: "Рассылка",     icon: "megaphone", adminOnly: true  },
-    { id: "templates",     label: "Шаблоны",      icon: "template",  adminOnly: true  },
+    { id: "operators",  label: "Операторы",     icon: "operators", adminOnly: true,  scope: "common",
+      hint: "команда, роли, доступ к ВПН" },
+    { id: "services",   label: "Сервисы",       icon: "server",    adminOnly: true,  scope: "common",
+      hint: "список ВПН-ов, слаги, вебхуки" },
+    { id: "profile",    label: "Профиль",       icon: "user",      adminOnly: false, scope: "common",
+      hint: "имя, пароль, уведомления" },
+    { id: "ai",         label: "ИИ-настройки",  icon: "sparkles",  adminOnly: true,  scope: "service",
+      hint: "промпт, модель, автоответ" },
+    { id: "kb",         label: "База знаний",   icon: "book",      adminOnly: true,  scope: "service",
+      hint: "статьи для ответов ИИ" },
+    { id: "automation", label: "Автоматизация", icon: "zap",       adminOnly: true,  scope: "service",
+      hint: "эскалация, оценки, лимиты" },
+    { id: "sounds",     label: "Звуки",         icon: "bellRing",  adminOnly: true,  scope: "common",
+      hint: "новое сообщение, вызов оператора" },
+    { id: "broadcast",  label: "Рассылка",      icon: "megaphone", adminOnly: true,  scope: "service",
+      hint: "сообщение клиентам сервиса" },
+    { id: "templates",  label: "Шаблоны",       icon: "template",  adminOnly: true,  scope: "service",
+      hint: "быстрые ответы по «/»" },
   ];
   const sections = allSections.filter(s => !s.adminOnly || isAdmin);
 
@@ -79,6 +93,109 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
     setConfirmDelete(null);
   }
 
+  const sectionBody = (
+    <>
+      {section === "operators"     && <OperatorsSection operators={ops} services={services} showToast={showToast} setOperators={setOperators} onAdd={() => { setEditingOp(null); setModalOpen(true); }} onEdit={(op) => { setEditingOp(op); setModalOpen(true); }} onDelete={(op) => setConfirmDelete(op)} />}
+      {section === "services"      && <ServicesSection showToast={showToast} onChanged={onServicesChanged} />}
+      {section === "profile"       && <ProfileSection showToast={showToast} />}
+      {section === "ai"            && <AISection showToast={showToast} service={svc} />}
+      {section === "kb"            && <KBSection service={svc} />}
+      {section === "automation"    && <AutomationSection showToast={showToast} service={svc} />}
+      {section === "sounds"        && <SoundsSection showToast={showToast} />}
+      {section === "broadcast"     && <BroadcastSection showToast={showToast} service={svc} />}
+      {section === "templates"     && <TemplatesSection showToast={showToast} service={svc} />}
+    </>
+  );
+
+  const modals = (
+    <>
+      {modalOpen && <OperatorModal editing={editingOp} services={services} onClose={() => setModalOpen(false)} onSave={saveOperator} />}
+
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirmDelete(null)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <div className="font-semibold text-[#f1f1f5] mb-1">Удалить оператора?</div>
+            <div className="text-sm text-[#6b7280] mb-5">«{confirmDelete.name}» больше не сможет отвечать.</div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirmDelete(null)} className="px-3 py-1.5 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+              <button onClick={() => deleteOperator(confirmDelete)} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30">Удалить</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+
+  // ── Телефон: боковое меню превращается в список с провалами ──────────────
+  if (mobileChrome) {
+    const chrome = mobileChrome;
+    const current = sections.find((x) => x.id === section);
+    if (mobileSection) {
+      return (
+        <div className="h-full flex flex-col min-h-0 bg-[#0d0d12]">
+          <MobileAppBar title={current?.label || "Настройки"}
+                        subtitle={current?.scope === "service" ? (svc?.name || "") : "общая настройка"}
+                        onBack={() => setMobileSection(null)} />
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">{sectionBody}</div>
+          {modals}
+        </div>
+      );
+    }
+    const groups = [
+      { title: "Этот сервис", items: sections.filter((x) => x.scope === "service") },
+      { title: "Общее",       items: sections.filter((x) => x.scope === "common")  },
+    ].filter((g) => g.items.length);
+    return (
+      <div className="h-full flex flex-col min-h-0 bg-[#0d0d12]">
+        <MobileAppBar title="Настройки" subtitle={svc?.name || ""}
+          right={<>
+            <AppBarButton icon="user" label="Профиль оператора" onClick={chrome.onProfile} />
+            <AppBarButton icon="bell" label="Уведомления" badge={chrome.bellBadge} onClick={chrome.onBell} />
+          </>} />
+        <ServiceRail services={chrome.services} currentServiceId={chrome.currentServiceId}
+                     onSelect={chrome.onSelectService} />
+        <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin pb-4">
+          {svc && (
+            <div className="flex items-center gap-3 m-3 p-3 bg-[#13131a] border border-[#2a2a3a] rounded-xl">
+              <span className="w-9 h-9 rounded-[11px] flex items-center justify-center font-bold shrink-0"
+                    style={{ background: svc.color, color: contrastOn(svc.color) }}>
+                {svc.emoji || svc.name[0]}
+              </span>
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-[#f1f1f5] truncate">{svc.name}</div>
+                <div className="text-[11px] text-[#6b7280] font-mono truncate">{svc.qdrantCollection}</div>
+              </div>
+            </div>
+          )}
+          {groups.map((g) => (
+            <div key={g.title}>
+              <div className="text-[10.5px] uppercase tracking-wider text-[#4F8EF7] font-semibold mx-4 mt-4 mb-1.5">
+                {g.title}
+              </div>
+              <div className="mx-3 bg-[#13131a] border border-[#2a2a3a] rounded-xl overflow-hidden">
+                {g.items.map((x) => (
+                  <button key={x.id}
+                    onClick={() => { setSection(x.id); setMobileSection(x.id); }}
+                    className="w-full min-h-[56px] px-3.5 py-3 flex items-center gap-3 text-left border-b border-[#2a2a3a] last:border-0 active:bg-[#1a1a24]">
+                    <span className="w-8 h-8 shrink-0 rounded-[9px] bg-[#1a1a24] flex items-center justify-center text-[#9095a3]">
+                      <Icon name={x.icon} className="w-[18px] h-[18px]" />
+                    </span>
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm text-[#f1f1f5]">{x.label}</span>
+                      <span className="block text-[11.5px] text-[#6b7280] truncate">{x.hint}</span>
+                    </span>
+                    <Icon name="chevronRight" className="w-4 h-4 text-[#6b7280] shrink-0" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        {modals}
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 flex bg-[#0d0d12] min-h-0">
       <aside className="w-[240px] shrink-0 bg-[#13131a] border-r border-[#2a2a3a] p-4">
@@ -95,32 +212,9 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
         </nav>
       </aside>
 
-      <div className="flex-1 overflow-y-auto scrollbar-thin">
-        {section === "operators"     && <OperatorsSection operators={ops} services={services} showToast={showToast} setOperators={setOperators} onAdd={() => { setEditingOp(null); setModalOpen(true); }} onEdit={(op) => { setEditingOp(op); setModalOpen(true); }} onDelete={(op) => setConfirmDelete(op)} />}
-        {section === "services"      && <ServicesSection showToast={showToast} onChanged={onServicesChanged} />}
-        {section === "profile"       && <ProfileSection showToast={showToast} />}
-        {section === "ai"            && <AISection showToast={showToast} service={svc} />}
-        {section === "kb"            && <KBSection service={svc} />}
-        {section === "automation"    && <AutomationSection showToast={showToast} service={svc} />}
-        {section === "sounds"        && <SoundsSection showToast={showToast} />}
-        {section === "broadcast"     && <BroadcastSection showToast={showToast} service={svc} />}
-        {section === "templates"     && <TemplatesSection showToast={showToast} service={svc} />}
-      </div>
+      <div className="flex-1 overflow-y-auto scrollbar-thin">{sectionBody}</div>
 
-      {modalOpen && <OperatorModal editing={editingOp} services={services} onClose={() => setModalOpen(false)} onSave={saveOperator} />}
-
-      {confirmDelete && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirmDelete(null)}>
-          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
-            <div className="font-semibold text-[#f1f1f5] mb-1">Удалить оператора?</div>
-            <div className="text-sm text-[#6b7280] mb-5">«{confirmDelete.name}» больше не сможет отвечать.</div>
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setConfirmDelete(null)} className="px-3 py-1.5 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
-              <button onClick={() => deleteOperator(confirmDelete)} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30">Удалить</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {modals}
     </div>
   );
 }
@@ -147,7 +241,7 @@ function OperatorsSection({ operators, services = [], setOperators, showToast, o
   }
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-[#f1f1f5]">Операторы</h1>
@@ -158,7 +252,67 @@ function OperatorsSection({ operators, services = [], setOperators, showToast, o
           Добавить оператора
         </button>
       </div>
-      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
+      {/* Телефон: шесть колонок не помещаются — те же данные карточками */}
+      <div className="sm:hidden space-y-2">
+        {operators.length === 0 && (
+          <div className="text-center text-xs text-[#6b7280] py-8">Нет операторов</div>
+        )}
+        {operators.map((op) => (
+          <div key={op.id} className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-3.5">
+            <div className="flex items-center gap-3">
+              <Avatar initials={op.initials || "??"} color={op.color || "#4F8EF7"} size={36} />
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-[#f1f1f5] truncate">{op.name}</div>
+                <div className="text-[11px] text-[#6b7280] font-mono truncate">
+                  {op.tg}{op.tgId ? ` · ID ${op.tgId}` : ""}
+                </div>
+              </div>
+              <button onClick={() => onEdit(op)} aria-label="Изменить"
+                className="w-11 h-11 shrink-0 flex items-center justify-center text-[#6b7280] active:text-[#7BA8F9] rounded-lg"><Icon name="edit" className="w-4 h-4" /></button>
+              <button onClick={() => onDelete(op)} aria-label="Удалить"
+                className="w-11 h-11 shrink-0 flex items-center justify-center text-[#6b7280] active:text-[#ef4444] rounded-lg"><Icon name="trash" className="w-4 h-4" /></button>
+            </div>
+            <div className="flex items-center gap-2 mt-2.5 flex-wrap">
+              <span className={"inline-flex px-2 py-0.5 rounded-md text-[11px] font-medium border " +
+                (op.role === "admin" ? "bg-[#A855F7]/15 text-[#C084FC] border-[#A855F7]/30" : "bg-[#1a1a24] text-[#f1f1f5] border-[#2a2a3a]")}>
+                {op.role === "admin" ? "Администратор" : "Агент"}
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-xs">
+                <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? (op.paused ? "bg-[#eab308]" : "bg-[#22c55e]") : "bg-zinc-600")}></span>
+                <span className={op.online ? (op.paused ? "text-[#eab308]" : "text-[#22c55e]") : "text-[#6b7280]"}>
+                  {op.online ? (op.paused ? "На паузе" : "Онлайн") : "Офлайн"}
+                </span>
+              </span>
+            </div>
+            <div className="mt-2.5">
+              <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-1.5">Доступ к ВПН</div>
+              {op.role === "admin" ? (
+                <span className="text-[11px] text-[#6b7280]">все сервисы</span>
+              ) : services.length === 0 ? (
+                <span className="text-[11px] text-[#6b7280]">—</span>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {services.map((sv) => {
+                    const on = (op.serviceIds || []).includes(sv.id);
+                    const busy = saving === `${op.id}:${sv.id}`;
+                    return (
+                      <button key={sv.id} disabled={busy} onClick={() => toggleService(op, sv.id)}
+                        className={"inline-flex items-center gap-1.5 min-h-[36px] px-2.5 rounded-md text-[11px] font-medium border transition disabled:opacity-40 " +
+                          (on ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]" : "text-[#6b7280] border-[#2a2a3a]")}>
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0"
+                              style={{ background: on ? sv.color : "#3a3a4a" }}></span>
+                        {sv.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="hidden sm:block bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-[10px] uppercase tracking-wider text-[#6b7280] border-b border-[#2a2a3a]/60">
@@ -289,7 +443,7 @@ function ServicesSection({ showToast, onChanged }) {
   if (services === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-[#f1f1f5]">ВПН-сервисы</h1>
@@ -304,7 +458,39 @@ function ServicesSection({ showToast, onChanged }) {
         </button>
       </div>
 
-      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
+      <div className="sm:hidden space-y-2">
+        {services.map((s) => (
+          <div key={s.id} className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-3.5">
+            <div className="flex items-center gap-2.5">
+              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: s.color }}></span>
+              <span className="font-medium text-[#f1f1f5] truncate flex-1">
+                {s.emoji ? s.emoji + " " : ""}{s.name}
+              </span>
+              <button onClick={() => setModal(s)} aria-label="Изменить"
+                className="w-11 h-11 shrink-0 flex items-center justify-center text-[#6b7280] active:text-[#7BA8F9] rounded-lg"><Icon name="edit" className="w-4 h-4" /></button>
+              <button onClick={() => setConfirmDel(s)} aria-label="Удалить"
+                className="w-11 h-11 shrink-0 flex items-center justify-center text-[#6b7280] active:text-[#ef4444] rounded-lg"><Icon name="trash" className="w-4 h-4" /></button>
+            </div>
+            <div className="mt-2 space-y-1 text-[11px]">
+              <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">Слаг</span>
+                <span className="font-mono text-[#d1d1d8] truncate">{s.slug}</span></div>
+              <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">Qdrant</span>
+                <span className="font-mono text-[#d1d1d8] truncate">{s.qdrantCollection}</span></div>
+              <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">Вебхук n8n</span>
+                <span className="text-[#d1d1d8] truncate">{s.n8nWebhookUrl || "общий"}</span></div>
+              <div className="flex gap-2 items-center"><span className="text-[#6b7280] w-[86px] shrink-0">Статус</span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className={"w-1.5 h-1.5 rounded-full " + (s.isActive ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
+                  <span className={s.isActive ? "text-[#22c55e]" : "text-[#6b7280]"}>
+                    {s.isActive ? "Активен" : "Выключен"}
+                  </span>
+                </span></div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="hidden sm:block bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-[10px] uppercase tracking-wider text-[#6b7280] border-b border-[#2a2a3a]/60">
@@ -635,7 +821,7 @@ function ProfileSection({ showToast }) {
   }
 
   return (
-    <div className="max-w-[600px] mx-auto p-6 space-y-5">
+    <div className="max-w-[600px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Профиль</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">Управление своим аккаунтом</div>
@@ -730,7 +916,7 @@ function ScheduleSection({ showToast }) {
   if (!schedule) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Расписание</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">Уведомления в нерабочее время накапливаются и отправляются операторам в начале рабочего дня. ИИ работает круглосуточно.</div>
@@ -783,7 +969,7 @@ function AISection({ showToast, service }) {
   if (!settings) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">ИИ-настройки</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">Сохраняется в БД и Redis — n8n подхватывает сразу</div>
@@ -855,7 +1041,7 @@ function NotificationsSection({ showToast }) {
   if (!s) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Уведомления</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">Python публикует события в Redis → n8n доставляет в Telegram</div>
@@ -956,7 +1142,7 @@ function KBSection({ service }) {
   if (articles === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-[#f1f1f5]">База знаний</h1>
@@ -1080,7 +1266,7 @@ function AutomationSection({ showToast, service }) {
   if (!s) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Автоматизация</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">Автоматические действия при диалогах. Все параметры настраиваются отдельно для каждого ВПН-сервиса</div>
@@ -1266,7 +1452,7 @@ function SoundsSection({ showToast }) {
   ];
 
   return (
-    <div className="max-w-[600px] mx-auto p-6 space-y-5">
+    <div className="max-w-[600px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Звуки уведомлений</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">Загрузите аудиофайлы для браузерных уведомлений</div>
@@ -1321,7 +1507,7 @@ function BroadcastSection({ showToast, service }) {
   }
 
   return (
-    <div className="max-w-[700px] mx-auto p-6 space-y-5">
+    <div className="max-w-[700px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Рассылка</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">
@@ -1557,7 +1743,7 @@ function TemplatesSection({ showToast, service }) {
   if (templates === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-[#f1f1f5]">Шаблоны сообщений</h1>

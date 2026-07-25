@@ -162,13 +162,52 @@ function TopQuestionsChart({ data }) {
   );
 }
 
-function OperatorsTable({ operators }) {
+// На телефоне таблица из пяти колонок не читается — те же данные показываем
+// карточками: имя со статусом сверху, метрики в ряд под ним.
+function OperatorCards({ operators }) {
+  return (
+    <div className="divide-y divide-[#2a2a3a]/40">
+      {operators.map((op) => (
+        <div key={op.id} className="px-4 py-3">
+          <div className="flex items-center gap-3">
+            <Avatar initials={op.initials} color={op.color} size={32} />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm text-[#f1f1f5] truncate">{op.name}</div>
+              <div className="text-[10px] text-[#6b7280] truncate">
+                {op.role === "admin" ? "Администратор" : "Агент"} · {op.tg}
+              </div>
+            </div>
+            <span className="inline-flex items-center gap-1.5 text-[11px] shrink-0">
+              <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
+              <span className={op.online ? "text-[#22c55e]" : "text-[#6b7280]"}>
+                {op.online ? "Онлайн" : "Офлайн"}
+              </span>
+            </span>
+          </div>
+          <div className="grid grid-cols-3 gap-2 mt-2.5">
+            {[["Диалогов", op.dialogs_count ?? 0],
+              ["Первый ответ", fmtDuration(op.first_response_avg)],
+              ["Ср. ответ", fmtDuration(op.next_response_avg)]].map(([l, v]) => (
+              <div key={l} className="bg-[#0d0d12] rounded-lg px-2 py-1.5">
+                <div className="text-[10px] text-[#6b7280] truncate">{l}</div>
+                <div className="text-xs text-[#f1f1f5] tabular-nums truncate">{v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function OperatorsTable({ operators, compact = false }) {
   return (
     <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
       <div className="px-5 py-4 border-b border-[#2a2a3a]/60">
         <div className="text-sm font-medium text-[#f1f1f5]">Операторы</div>
         <div className="text-xs text-[#6b7280]">{operators.filter((o) => o.online).length} онлайн</div>
       </div>
+      {compact ? <OperatorCards operators={operators} /> : (
       <table className="w-full text-sm">
         <thead>
           <tr className="text-[10px] uppercase tracking-wider text-[#6b7280]">
@@ -208,11 +247,12 @@ function OperatorsTable({ operators }) {
           ))}
         </tbody>
       </table>
+      )}
     </div>
   );
 }
 
-function StatisticsScreen({ serviceId = null }) {
+function StatisticsScreen({ serviceId = null, mobileChrome = null }) {
   const [range,  setRange]  = useStateS("14d");
   const [stats,  setStats]  = useStateS(null);
   const [times,  setTimes]  = useStateS(null);
@@ -250,23 +290,39 @@ function StatisticsScreen({ serviceId = null }) {
     return base.map((op) => ({ ...op, ...(timeMap[op.id] || {}) }));
   }, [stats, times]);
 
+  const chrome = mobileChrome;
+  const currentName = chrome && (chrome.currentServiceId == null
+    ? "Все сервисы"
+    : (chrome.services || []).find((s) => s.id === chrome.currentServiceId)?.name || "");
+
   return (
-    <div className="flex-1 overflow-y-auto scrollbar-thin bg-[#0d0d12]">
-      <div className="max-w-[1400px] mx-auto p-6 space-y-5">
+    <div className={"h-full bg-[#0d0d12] " +
+                    (chrome ? "flex flex-col min-h-0" : "overflow-y-auto scrollbar-thin")}>
+      {chrome && (
+        <>
+          <MobileAppBar title="Статистика" subtitle={currentName}
+            right={<AppBarButton icon="bell" label="Уведомления" badge={chrome.bellBadge} onClick={chrome.onBell} />} />
+          <ServiceRail services={chrome.services} currentServiceId={chrome.currentServiceId}
+                       onSelect={chrome.onSelectService} />
+        </>
+      )}
+      <div className={"max-w-[1400px] w-full mx-auto space-y-4 sm:space-y-5 p-3 sm:p-6 " +
+                      (chrome ? "flex-1 min-h-0 overflow-y-auto scrollbar-thin" : "")}>
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex items-center justify-between gap-3">
+          <div className={chrome ? "hidden" : ""}>
             <h1 className="text-xl font-semibold text-[#f1f1f5]">Статистика</h1>
             <div className="text-xs text-[#6b7280] mt-0.5">данные за выбранный период</div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0 overflow-x-auto no-scrollbar">
             <div className="bg-[#13131a] border border-[#2a2a3a] rounded-lg p-1 flex gap-0.5">
               {ranges.map((r) => (
                 <button
                   key={r.id}
                   onClick={() => setRange(r.id)}
                   className={
-                    "px-3 py-1.5 rounded-md text-xs font-medium transition " +
+                    "px-3 rounded-md text-xs font-medium transition whitespace-nowrap " +
+                    (chrome ? "min-h-[40px] " : "py-1.5 ") +
                     (range === r.id ? "bg-[#4F8EF7] text-white" : "text-[#6b7280] hover:text-[#f1f1f5]")
                   }
                 >
@@ -278,7 +334,7 @@ function StatisticsScreen({ serviceId = null }) {
         </div>
 
         {/* KPI row */}
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
           <StatCard label="Обращений сегодня" value={stats ? String(stats.today_total) : "—"} />
           <StatCard label="Первый ответ (команда)" value={fmtDuration(team.first_response_avg)} />
           <StatCard label="Закрыто диалогов" value={stats ? String(stats.today_closed) : "—"} />
@@ -294,19 +350,23 @@ function StatisticsScreen({ serviceId = null }) {
         )}
 
         {/* Charts row */}
-        <div className="grid grid-cols-3 gap-4">
-          <div className="col-span-2">
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 sm:gap-4">
+          <div className="xl:col-span-2 min-w-0">
             <LineChart data={stats?.daily || []} days={days} />
           </div>
-          <HeatmapChart data={stats?.hourly || Array(24).fill(0)} />
+          <div className="min-w-0">
+            <HeatmapChart data={stats?.hourly || Array(24).fill(0)} />
+          </div>
         </div>
 
         {/* Bottom row */}
-        <div className="grid grid-cols-3 gap-4">
-          <div className="col-span-2">
-            <OperatorsTable operators={operators} />
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 sm:gap-4">
+          <div className="xl:col-span-2 min-w-0">
+            <OperatorsTable operators={operators} compact={!!chrome} />
           </div>
-          <TopQuestionsChart data={stats?.top_questions || []} />
+          <div className="min-w-0">
+            <TopQuestionsChart data={stats?.top_questions || []} />
+          </div>
         </div>
       </div>
     </div>

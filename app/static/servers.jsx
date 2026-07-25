@@ -90,17 +90,18 @@ function HealthSummary({ items }) {
     { label: "Недоступно", value: count("down"), color: "#ef4444" },
   ];
   return (
-    <div className="grid grid-cols-3 gap-4">
+    <div className="grid grid-cols-3 gap-2.5 sm:gap-4">
       {cells.map((c) => (
-        <div key={c.label} className="bg-[#13131a] border rounded-xl p-4 flex items-center gap-3"
+        <div key={c.label} className="bg-[#13131a] border rounded-xl p-3 sm:p-4 flex items-center gap-3"
              style={{ borderColor: c.color + "33" }}>
-          <div className="w-10 h-10 rounded-lg flex items-center justify-center"
+          {/* Иконка съедает ширину на телефоне — там достаточно цифры и подписи */}
+          <div className="w-10 h-10 rounded-lg hidden sm:flex items-center justify-center shrink-0"
                style={{ background: c.color + "26" }}>
             <span className="w-3 h-3 rounded-full" style={{ background: c.color }}></span>
           </div>
-          <div>
-            <div className="text-2xl font-semibold text-[#f1f1f5] tabular-nums">{c.value}</div>
-            <div className="text-xs text-[#6b7280]">{c.label}</div>
+          <div className="min-w-0">
+            <div className="text-xl sm:text-2xl font-semibold tabular-nums" style={{ color: c.color }}>{c.value}</div>
+            <div className="text-[10.5px] sm:text-xs text-[#6b7280] leading-tight">{c.label}</div>
           </div>
         </div>
       ))}
@@ -201,7 +202,7 @@ function SourcePicker({ serviceId, onChanged }) {
   );
 }
 
-function HealthScreen({ serviceId = null, currentOperator = null }) {
+function HealthScreen({ serviceId = null, currentOperator = null, mobileChrome = null }) {
   const [data, setData] = useStateSv(null);
   const [loading, setLoading] = useStateSv(true);
 
@@ -222,9 +223,27 @@ function HealthScreen({ serviceId = null, currentOperator = null }) {
   // serviceId === null — режим «Все сервисы»: секция на каждый ВПН.
   const multi = serviceId === null && snapshots.length > 1;
 
+  const chrome = mobileChrome;
+  const currentName = chrome && (chrome.currentServiceId == null
+    ? "Все сервисы"
+    : (chrome.services || []).find((s) => s.id === chrome.currentServiceId)?.name || "");
+
   return (
-    <div className="h-full overflow-y-auto scrollbar-thin bg-[#0d0d12]">
-      <div className="max-w-[1200px] mx-auto p-6 space-y-6">
+    <div className={"h-full bg-[#0d0d12] " +
+                    (chrome ? "flex flex-col min-h-0" : "overflow-y-auto scrollbar-thin")}>
+      {chrome && (
+        <>
+          <MobileAppBar title="Состояние" subtitle={currentName}
+            right={<>
+              <AppBarButton icon="refresh" label="Обновить" onClick={() => load(true)} />
+              <AppBarButton icon="bell" label="Уведомления" badge={chrome.bellBadge} onClick={chrome.onBell} />
+            </>} />
+          <ServiceRail services={chrome.services} currentServiceId={chrome.currentServiceId}
+                       onSelect={chrome.onSelectService} />
+        </>
+      )}
+      <div className={"max-w-[1200px] w-full mx-auto space-y-4 sm:space-y-6 p-3 sm:p-6 " +
+                      (chrome ? "flex-1 min-h-0 overflow-y-auto scrollbar-thin" : "")}>
 
         {data && data.isMock && (
           <div className="flex items-start gap-3 bg-[#2a1f0a] border border-[#f59e0b]/30 rounded-xl px-4 py-3 text-sm text-[#f59e0b]">
@@ -241,7 +260,7 @@ function HealthScreen({ serviceId = null, currentOperator = null }) {
           </div>
         )}
 
-        <div className="flex items-center justify-between">
+        <div className={"items-center justify-between " + (chrome ? "hidden" : "flex")}>
           <div>
             <h1 className="text-xl font-semibold text-[#f1f1f5]">Состояние</h1>
             <div className="text-xs text-[#6b7280] mt-0.5">
@@ -256,6 +275,14 @@ function HealthScreen({ serviceId = null, currentOperator = null }) {
             Обновить
           </button>
         </div>
+
+        {chrome && (
+          <div className="text-[11px] text-[#6b7280] -mb-1">
+            {lastUpdated
+              ? "Обновлено: " + new Date(lastUpdated).toLocaleString("ru", { dateStyle: "short", timeStyle: "short" })
+              : "Ожидание первой проверки..."}
+          </div>
+        )}
 
         {all.length > 0 && <HealthSummary items={all} />}
 
