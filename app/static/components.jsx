@@ -168,6 +168,99 @@ function Icon({ name, className = "w-4 h-4", strokeWidth = 1.75 }) {
   );
 }
 
+// ── Переключатель ВПН-сервисов ───────────────────────────────────────────────
+// Ряд пилюль под шапкой: слева «Все сервисы» с суммарным счётчиком, дальше по
+// пилюле на каждый ВПН — точка фирменного цвета, название и счётчик активных
+// обращений («новые + непрочитанные»). Нулевой счётчик не рисуется.
+// currentServiceId === null означает режим «Все сервисы».
+
+function ServicePill({ service, count, active, onClick, allMode = false }) {
+  return (
+    <button
+      onClick={onClick}
+      title={service?.name}
+      className={
+        "shrink-0 flex items-center gap-2 pl-2.5 pr-2 py-1.5 rounded-lg text-sm font-medium transition border " +
+        (active
+          ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
+          : "text-[#9ca3af] hover:text-[#f1f1f5] hover:bg-[#1a1a24]/60 border-transparent")
+      }
+    >
+      {allMode ? (
+        <span className="whitespace-nowrap">Все сервисы</span>
+      ) : (
+        <>
+          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: service.color }}></span>
+          <span className="whitespace-nowrap">{service.emoji ? service.emoji + " " : ""}{service.name}</span>
+        </>
+      )}
+      {count > 0 && (
+        <span className={
+          "min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center " +
+          (allMode ? "bg-[#2a2a3a] text-[#9ca3af]" : "bg-[#ef4444] text-white")
+        }>
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function ServiceSwitcher({ services, currentServiceId, onSelect, activeService, aiPromptPreview }) {
+  // Один сервис — переключать нечего, ряд не занимает место.
+  if (!services || services.length < 2) return null;
+  const total = services.reduce((sum, s) => sum + (s.activeCount || 0), 0);
+  return (
+    <div className="shrink-0 bg-[#13131a] border-b border-[#2a2a3a] relative z-20">
+      <div className="flex items-center gap-1 px-3 py-2 overflow-x-auto scrollbar-thin">
+        <ServicePill allMode count={total} active={currentServiceId === null}
+                     onClick={() => onSelect(null)} />
+        <div className="w-px h-5 bg-[#2a2a3a] mx-1 shrink-0"></div>
+        {services.map((s) => (
+          <ServicePill key={s.id} service={s} count={s.activeCount || 0}
+                       active={currentServiceId === s.id} onClick={() => onSelect(s.id)} />
+        ))}
+      </div>
+      <div className="flex items-center gap-2 px-3 pb-2 overflow-x-auto scrollbar-thin text-[11px]">
+        {activeService ? (
+          <>
+            <ContextChip label="Активен" value={activeService.name} dot={activeService.color} strong />
+            <ContextChip label="База знаний" value={activeService.qdrantCollection} mono />
+            {aiPromptPreview && <ContextChip label="Промпт ИИ" value={aiPromptPreview} />}
+            <ContextChip label="Новых" value={String(activeService.activeCount || 0)} accent />
+          </>
+        ) : (
+          <ContextChip label="Все сервисы" value={`${services.length} шт · ${total} обращений`} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ContextChip({ label, value, dot, mono, strong, accent }) {
+  return (
+    <span className="shrink-0 inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#0d0d12] border border-[#2a2a3a]/70">
+      {dot && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dot }}></span>}
+      <span className="text-[#6b7280]">{label}:</span>
+      <span className={
+        "max-w-[220px] truncate " +
+        (accent ? "text-[#ef4444] font-semibold " : strong ? "text-[#f1f1f5] font-semibold " : "text-[#d1d1d8] ") +
+        (mono ? "font-mono" : "")
+      }>
+        {value}
+      </span>
+    </span>
+  );
+}
+
+// Точка цвета сервиса — метка в списке диалогов в режиме «Все сервисы».
+function ServiceDot({ color, name }) {
+  if (!color) return null;
+  return (
+    <span title={name} className="w-2 h-2 rounded-full shrink-0" style={{ background: color }}></span>
+  );
+}
+
 function Toast({ msg, type = "ok" }) {
   if (!msg) return null;
   const dot = type === "warn" ? "bg-[#f59e0b]" : "bg-[#22c55e]";
@@ -181,4 +274,5 @@ function Toast({ msg, type = "ok" }) {
   );
 }
 
-Object.assign(window, { Avatar, StatusBadge, WaitingLabel, SlaTimer, fmtSla, PlanBadge, SubStatus, Icon, Toast });
+Object.assign(window, { Avatar, StatusBadge, WaitingLabel, SlaTimer, fmtSla, PlanBadge, SubStatus, Icon, Toast,
+                        ServiceSwitcher, ServicePill, ContextChip, ServiceDot });

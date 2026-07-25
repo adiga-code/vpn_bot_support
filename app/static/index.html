@@ -382,8 +382,33 @@
       const [screen, setScreenRaw] = useState(() => localStorage.getItem("screen") || "dialogs");
       const setScreen = (s) => { localStorage.setItem("screen", s); setScreenRaw(s); };
       const [conversations,   setConversations]   = useState([]);
+
+      // ── ВПН-сервисы ─────────────────────────────────────────────────────
+      // currentServiceId === null — режим «Все сервисы»: диалоги всех
+      // доступных ВПН-ов в одном списке. Настройкам режим «все» не подходит,
+      // поэтому они работают с settingsServiceId (последний конкретный).
+      const [services,        setServices]        = useState([]);
+      const [currentServiceId, setCurrentServiceIdRaw] = useState(() => {
+        const saved = localStorage.getItem("hd_service");
+        return saved && saved !== "all" ? Number(saved) : null;
+      });
+      const [aiPromptPreview, setAiPromptPreview] = useState("");
+
+      const activeKey = (sid) => "hd_active:" + (sid === null ? "all" : sid);
       const [activeId,        setActiveIdRaw]     = useState(null);
-      const setActiveId = (id) => { id ? localStorage.setItem("hd_active", id) : localStorage.removeItem("hd_active"); setActiveIdRaw(id); };
+      const setActiveId = (id) => {
+        const k = activeKey(currentServiceIdRef.current);
+        id ? localStorage.setItem(k, id) : localStorage.removeItem(k);
+        setActiveIdRaw(id);
+      };
+      const currentServiceIdRef = useRef(currentServiceId);
+      useEffect(() => { currentServiceIdRef.current = currentServiceId; }, [currentServiceId]);
+
+      const activeService = currentServiceId === null
+        ? null
+        : services.find((s) => s.id === currentServiceId) || null;
+      // Конкретный сервис для настроек: в режиме «Все» — первый доступный.
+      const settingsServiceId = currentServiceId ?? (services[0]?.id ?? null);
       const [opsState,        setOpsState]        = useState([]);
       const [dataLoading,     setDataLoading]     = useState(false);
       const [notifOpen,       setNotifOpen]       = useState(false);
@@ -460,14 +485,45 @@
 
       // ── Load app data once authenticated ──────────────────────────────────
 
+      // Список сервисов и счётчики — отдельно от диалогов: они не зависят от
+      // выбранной пилюли и обновляются по WS-событиям.
+      const loadServices = React.useCallback(async () => {
+        try {
+          const list = await apiGet("/api/services");
+          setServices(list);
+          // Доступ к текущему сервису могли отобрать — уводим на первый доступный.
+          setCurrentServiceIdRaw((prev) =>
+            prev !== null && !list.some((s) => s.id === prev) ? (list[0]?.id ?? null) : prev
+          );
+          return list;
+        } catch { return []; }
+      }, []);
+
+      const selectService = (sid) => {
+        if (sid === currentServiceId) return;
+        localStorage.setItem("hd_service", sid === null ? "all" : String(sid));
+        currentServiceIdRef.current = sid;
+        // Диалоги другого сервиса — другой набор: сбрасываем список и кэши
+        // подгруженных сообщений, иначе в ленте останутся чужие тикеты.
+        loadedRef.current = new Set();
+        ticketsLoadedRef.current = new Set();
+        setConversations([]);
+        setActiveIdRaw(null);
+        setCurrentServiceIdRaw(sid);
+      };
+
       useEffect(() => {
         if (authState !== "app") return;
         setDataLoading(true);
+        const dialogsPath = currentServiceId === null
+          ? "/api/dialogs"
+          : `/api/dialogs?service_id=${currentServiceId}`;
         Promise.all([
-          apiGet("/api/dialogs"),
+          apiGet(dialogsPath),
           apiGet("/api/operators").catch(() => []),
           apiGet("/api/settings/sounds").catch(() => ({})),
           apiGet("/api/operators/me/notifications").catch(() => ({})),
+          loadServices(),
         ]).then(async ([dialogs, operators, sounds, notifPrefs]) => {
           const sc = sounds || {};
           const se = notifPrefs?.sound_enabled !== false;
@@ -478,7 +534,7 @@
           const withMessages = dialogs.map((d) => ({ ...d, messages: [], tickets: [] }));
           setConversations(withMessages);
           const pendingId = pendingDialogRef.current;
-          const savedId   = localStorage.getItem("hd_active");
+          const savedId   = localStorage.getItem(activeKey(currentServiceId));
           const targetId  = pendingId || savedId;
           if (pendingId) pendingDialogRef.current = null;
           if (targetId) {
@@ -506,7 +562,18 @@
           setOpsState(operators || []);
         }).catch((e) => console.error("Failed to load initial data:", e))
           .finally(() => setDataLoading(false));
-      }, [authState]);
+      }, [authState, currentServiceId]);
+
+      // Превью промпта ИИ для контекстной полосы под пилюлями.
+      useEffect(() => {
+        if (authState !== "app" || settingsServiceId === null) { setAiPromptPreview(""); return; }
+        apiGet(`/api/settings/ai?service_id=${settingsServiceId}`)
+          .then((ai) => {
+            const p = (ai?.prompt || "").replace(/\s+/g, " ").trim();
+            setAiPromptPreview(p.length > 60 ? p.slice(0, 60) + "…" : p);
+          })
+          .catch(() => setAiPromptPreview(""));
+      }, [authState, settingsServiceId]);
 
       // ── WebSocket ─────────────────────────────────────────────────────────
 
@@ -530,7 +597,8 @@
             // initial GET snapshot and this socket opening (a slow GET can
             // even overwrite an already-received broadcast) — re-sync once,
             // keeping locally loaded messages.
-            apiGet("/api/dialogs").then((fresh) => {
+            const sid = currentServiceIdRef.current;
+            apiGet(sid === null ? "/api/dialogs" : `/api/dialogs?service_id=${sid}`).then((fresh) => {
               setConversations((prev) => fresh.map((d) => {
                 const old = prev.find((c) => c.id === d.id);
                 return { ...d, messages: old?.messages || [], tickets: old?.tickets || [] };
@@ -569,6 +637,10 @@
                 })
               );
             } else if (data.type === "new_dialog") {
+              // В режиме одного сервиса чужие тикеты в список не добавляем:
+              // сервер шлёт события по всем доступным ВПН-ам.
+              const sid = currentServiceIdRef.current;
+              if (sid !== null && data.dialog.serviceId !== sid) return;
               setConversations((prev) => {
                 const exists = prev.some((c) => c.id === data.dialog.id);
                 if (exists) {
@@ -580,6 +652,15 @@
                 }
                 return [{ ...data.dialog, messages: [], tickets: [] }, ...prev];
               });
+            } else if (data.type === "service_counts") {
+              setServices((prev) => prev.map((s) =>
+                data.counts[String(s.id)] === undefined
+                  ? s
+                  : { ...s, activeCount: data.counts[String(s.id)] }
+              ));
+            } else if (data.type === "services_changed") {
+              // Список сервисов или флаги доступа изменились админом.
+              loadServices();
             } else if (data.type === "message_status") {
               setConversations((prev) => prev.map((c) => {
                 if (c.id !== data.dialog_id) return c;
@@ -621,7 +702,7 @@
           clearInterval(pingInterval);
           if (wsRef.current) wsRef.current.close();
         };
-      }, [authState]);
+      }, [authState, loadServices]);
 
       // ── Lazy-load messages + history ──────────────────────────────────────
 
@@ -825,6 +906,13 @@
             onNotifItemClick={handleNotifItemClick}
             onDismissAll={handleDismissAll}
           />
+          <ServiceSwitcher
+            services={services}
+            currentServiceId={currentServiceId}
+            onSelect={selectService}
+            activeService={activeService}
+            aiPromptPreview={aiPromptPreview}
+          />
           <main className="flex-1 min-h-0">
             <div className={"h-full " + (screen !== "dialogs" ? "hidden" : "")}>
               <DialogsScreen
@@ -843,13 +931,17 @@
                 currentOperator={currentOperator}
                 operators={opsState}
                 servers={[]}
+                showServiceTag={currentServiceId === null}
               />
             </div>
             <div className={"h-full " + (screen !== "stats" ? "hidden" : "")}>
-              <StatisticsScreen />
+              <StatisticsScreen serviceId={currentServiceId} />
             </div>
             <div className={"h-full " + (screen !== "settings" ? "hidden" : "")}>
-              <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast} currentOperator={currentOperator} />
+              <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast}
+                              currentOperator={currentOperator}
+                              services={services} serviceId={settingsServiceId}
+                              onServicesChanged={loadServices} />
             </div>
           </main>
           <Toast msg={toast?.msg ?? toast} type={toast?.type} />

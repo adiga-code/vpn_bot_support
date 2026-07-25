@@ -56,7 +56,7 @@ function StarRating({ rating, size = "sm" }) {
   );
 }
 
-function ConvCard({ conv, active, onClick }) {
+function ConvCard({ conv, active, onClick, showServiceTag = false }) {
   // escalated but not yet served — grabs attention in «ИИ»/«Очередь»
   const calledUnserved = conv.operatorCalled && ["ai", "queue"].includes(conv.status);
   return (
@@ -94,7 +94,11 @@ function ConvCard({ conv, active, onClick }) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2 mb-0.5">
-            <div className="text-sm font-medium text-[#f1f1f5] truncate">{conv.name}</div>
+            <div className="flex items-center gap-1.5 min-w-0">
+              {/* В режиме «Все сервисы» — чей это тикет */}
+              {showServiceTag && <ServiceDot color={conv.serviceColor} name={conv.serviceName} />}
+              <div className="text-sm font-medium text-[#f1f1f5] truncate">{conv.name}</div>
+            </div>
             <div className="text-[10px] text-[#6b7280] shrink-0">{conv.time}</div>
           </div>
           <div className="text-[10px] text-[#6b7280]/70 truncate -mt-0.5 mb-0.5">{conv.username}</div>
@@ -280,14 +284,16 @@ function MessageBubble({ msg, onImageClick }) {
   return null;
 }
 
-function TemplatePickerModal({ onSelect, onClose }) {
+function TemplatePickerModal({ onSelect, onClose, serviceId }) {
   const [templates, setTemplates] = useStateD(null);
   const [search, setSearch] = useStateD("");
   const [group, setGroup] = useStateD("all");
 
   useEffectD(() => {
-    window.apiFetch("GET", "/api/templates").then(setTemplates).catch(() => setTemplates([]));
-  }, []);
+    // Шаблоны берём для сервиса открытого тикета — плюс общие (service_id NULL).
+    const q = serviceId ? `?service_id=${serviceId}` : "";
+    window.apiFetch("GET", "/api/templates" + q).then(setTemplates).catch(() => setTemplates([]));
+  }, [serviceId]);
 
   const groups = useMemoD(() => {
     if (!templates) return [];
@@ -353,7 +359,12 @@ function TemplatePickerModal({ onSelect, onClose }) {
 }
 
 function TransferModal({ activeDialog, operators, currentOperator, onTransfer, onClose }) {
-  const candidates = (operators || []).filter(op => op.name !== activeDialog?.assignedOperator);
+  // Передать тикет можно только тому, у кого есть доступ к его ВПН-сервису
+  // (админ обслуживает все) — иначе сервер вернёт 400.
+  const candidates = (operators || []).filter(op =>
+    op.name !== activeDialog?.assignedOperator &&
+    (op.role === "admin" || (op.serviceIds || []).includes(activeDialog?.serviceId))
+  );
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
@@ -392,6 +403,7 @@ function DialogsScreen({
   onReply, onToggleAI, onClose, onHandoff, onReopen, onWait, onBillingAction,
   currentOperator, operators,
   servers,
+  showServiceTag = false,
 }) {
   const [searchQ, setSearchQ] = useStateD("");
   const [view,   setView]   = useStateD("my");  // "my" | "all"
@@ -672,7 +684,8 @@ function DialogsScreen({
               <div className="text-center text-xs text-[#6b7280] py-8">Диалоги не найдены</div>
             )}
             {filtered.map((c) => (
-              <ConvCard key={c.id} conv={c} active={c.id === activeId} onClick={() => setActiveId(c.id)} />
+              <ConvCard key={c.id} conv={c} active={c.id === activeId}
+                        onClick={() => setActiveId(c.id)} showServiceTag={showServiceTag} />
             ))}
           </div>
         </aside>
@@ -973,7 +986,8 @@ function DialogsScreen({
           </div>
         </div>
       )}
-      {showTemplates && <TemplatePickerModal onSelect={pickTemplate} onClose={() => setShowTemplates(false)} />}
+      {showTemplates && <TemplatePickerModal onSelect={pickTemplate} serviceId={active?.serviceId}
+                                             onClose={() => setShowTemplates(false)} />}
       {showTransfer && (
         <TransferModal
           activeDialog={active}

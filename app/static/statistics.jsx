@@ -212,7 +212,7 @@ function OperatorsTable({ operators }) {
   );
 }
 
-function StatisticsScreen() {
+function StatisticsScreen({ serviceId = null }) {
   const [range,  setRange]  = useStateS("14d");
   const [stats,  setStats]  = useStateS(null);
   const [times,  setTimes]  = useStateS(null);
@@ -223,12 +223,15 @@ function StatisticsScreen() {
     setStats(null);
     setTimes(null);
     let stale = false;
+    // serviceId === null — сводная статистика по всем доступным сервисам
+    // (режим «Все сервисы» в переключателе).
+    const svc = serviceId === null ? "" : `&service_id=${serviceId}`;
     Promise.all([
-      window.apiFetch("GET", `/api/stats?days=${days}`),
-      window.apiFetch("GET", `/api/stats/times?days=${days}`),
+      window.apiFetch("GET", `/api/stats?days=${days}${svc}`),
+      window.apiFetch("GET", `/api/stats/times?days=${days}${svc}`),
     ]).then(([s, t]) => { if (!stale) { setStats(s); setTimes(t); } }).catch(() => {});
     return () => { stale = true; };
-  }, [days]);
+  }, [days, serviceId]);
 
   const ranges = [
     { id: "today", label: "Сегодня" },

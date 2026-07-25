@@ -2,7 +2,31 @@
 
 const { useState: useStateT, useEffect: useEffectT, useMemo: useMemoT } = React;
 
-function SettingsScreen({ operators: ops, setOperators, showToast, currentOperator }) {
+// Все контентные настройки (промпт, БЗ, автоматизация, шаблоны, рассылка)
+// пер-сервисные — запросы всегда несут service_id открытого ВПН-а.
+function svcQuery(service, extra = "") {
+  const q = service ? `service_id=${service.id}` : "";
+  const all = [q, extra].filter(Boolean).join("&");
+  return all ? "?" + all : "";
+}
+
+// Плашка «какой ВПН сейчас правим» — чтобы админ не отредактировал промпт или
+// не отправил рассылку не тому сервису.
+function ServiceBanner({ service, hint }) {
+  if (!service) return null;
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#13131a] border border-[#2a2a3a]/60 text-xs">
+      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: service.color }}></span>
+      <span className="text-[#6b7280]">Сервис:</span>
+      <span className="text-[#f1f1f5] font-semibold">{service.name}</span>
+      <span className="text-[#6b7280] font-mono text-[10px]">{service.slug}</span>
+      {hint && <span className="text-[#6b7280] ml-auto">{hint}</span>}
+    </div>
+  );
+}
+
+function SettingsScreen({ operators: ops, setOperators, showToast, currentOperator,
+                          services = [], serviceId = null, onServicesChanged }) {
   const isAdmin = currentOperator?.role === "admin";
   const defaultSection = isAdmin ? "operators" : "profile";
   const [section, setSection] = useStateT(defaultSection);
@@ -10,8 +34,13 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
   const [editingOp, setEditingOp] = useStateT(null);
   const [confirmDelete, setConfirmDelete] = useStateT(null);
 
+  // Настройки всегда правятся у конкретного ВПН-а: промпт, база знаний,
+  // автоматизация и рассылка у каждого свои.
+  const svc = services.find((s) => s.id === serviceId) || null;
+
   const allSections = [
     { id: "operators",     label: "Операторы",    icon: "operators", adminOnly: true  },
+    { id: "services",      label: "Сервисы",      icon: "server",    adminOnly: true  },
     { id: "profile",       label: "Профиль",      icon: "user",      adminOnly: false },
     { id: "ai",            label: "ИИ-настройки", icon: "sparkles",  adminOnly: true  },
     { id: "kb",            label: "База знаний",  icon: "book",      adminOnly: true  },
@@ -67,17 +96,18 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       </aside>
 
       <div className="flex-1 overflow-y-auto scrollbar-thin">
-        {section === "operators"     && <OperatorsSection operators={ops} onAdd={() => { setEditingOp(null); setModalOpen(true); }} onEdit={(op) => { setEditingOp(op); setModalOpen(true); }} onDelete={(op) => setConfirmDelete(op)} />}
+        {section === "operators"     && <OperatorsSection operators={ops} services={services} showToast={showToast} setOperators={setOperators} onAdd={() => { setEditingOp(null); setModalOpen(true); }} onEdit={(op) => { setEditingOp(op); setModalOpen(true); }} onDelete={(op) => setConfirmDelete(op)} />}
+        {section === "services"      && <ServicesSection showToast={showToast} onChanged={onServicesChanged} />}
         {section === "profile"       && <ProfileSection showToast={showToast} />}
-        {section === "ai"            && <AISection showToast={showToast} />}
-        {section === "kb"            && <KBSection />}
-        {section === "automation"    && <AutomationSection showToast={showToast} />}
+        {section === "ai"            && <AISection showToast={showToast} service={svc} />}
+        {section === "kb"            && <KBSection service={svc} />}
+        {section === "automation"    && <AutomationSection showToast={showToast} service={svc} />}
         {section === "sounds"        && <SoundsSection showToast={showToast} />}
-        {section === "broadcast"     && <BroadcastSection showToast={showToast} />}
-        {section === "templates"     && <TemplatesSection showToast={showToast} />}
+        {section === "broadcast"     && <BroadcastSection showToast={showToast} service={svc} />}
+        {section === "templates"     && <TemplatesSection showToast={showToast} service={svc} />}
       </div>
 
-      {modalOpen && <OperatorModal editing={editingOp} onClose={() => setModalOpen(false)} onSave={saveOperator} />}
+      {modalOpen && <OperatorModal editing={editingOp} services={services} onClose={() => setModalOpen(false)} onSave={saveOperator} />}
 
       {confirmDelete && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirmDelete(null)}>
@@ -95,7 +125,27 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
   );
 }
 
-function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
+function OperatorsSection({ operators, services = [], setOperators, showToast, onAdd, onEdit, onDelete }) {
+  const [saving, setSaving] = useStateT(null);
+
+  // Флаг = доступ оператора к ВПН-сервису. Снятие возвращает его тикеты в
+  // этом сервисе в очередь, установка сразу подключает к раздаче.
+  async function toggleService(op, serviceId) {
+    const current = op.serviceIds || [];
+    const next = current.includes(serviceId)
+      ? current.filter((id) => id !== serviceId)
+      : [...current, serviceId];
+    setSaving(`${op.id}:${serviceId}`);
+    try {
+      await window.apiFetch("PUT", `/api/operators/${op.id}/services`, { service_ids: next });
+      setOperators((arr) => arr.map((o) => (o.id === op.id ? { ...o, serviceIds: next } : o)));
+    } catch {
+      showToast && showToast("Ошибка изменения доступа");
+    } finally {
+      setSaving(null);
+    }
+  }
+
   return (
     <div className="max-w-[1100px] mx-auto p-6 space-y-5">
       <div className="flex items-center justify-between">
@@ -115,6 +165,7 @@ function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
               <th className="text-left px-5 py-3 font-medium">Имя</th>
               <th className="text-left px-3 py-3 font-medium">Telegram</th>
               <th className="text-left px-3 py-3 font-medium">Роль</th>
+              <th className="text-left px-3 py-3 font-medium">Доступ к ВПН</th>
               <th className="text-left px-3 py-3 font-medium">Статус</th>
               <th className="text-right px-5 py-3 font-medium w-[120px]">Действия</th>
             </tr>
@@ -140,6 +191,31 @@ function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
                   </span>
                 </td>
                 <td className="px-3 py-3">
+                  {op.role === "admin" ? (
+                    <span className="text-[11px] text-[#6b7280]">все сервисы</span>
+                  ) : services.length === 0 ? (
+                    <span className="text-[11px] text-[#6b7280]">—</span>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {services.map((s) => {
+                        const on = (op.serviceIds || []).includes(s.id);
+                        const busy = saving === `${op.id}:${s.id}`;
+                        return (
+                          <button key={s.id} disabled={busy} onClick={() => toggleService(op, s.id)}
+                            title={on ? `Снять доступ к ${s.name}` : `Выдать доступ к ${s.name}`}
+                            className={"inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border transition disabled:opacity-40 " +
+                              (on ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
+                                  : "text-[#6b7280] border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24]/60")}>
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0"
+                                  style={{ background: on ? s.color : "#3a3a4a" }}></span>
+                            {s.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </td>
+                <td className="px-3 py-3">
                   <span className="inline-flex items-center gap-1.5 text-xs">
                     <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? (op.paused ? "bg-[#eab308]" : "bg-[#22c55e]") : "bg-zinc-600")}></span>
                     <span className={op.online ? (op.paused ? "text-[#eab308]" : "text-[#22c55e]") : "text-[#6b7280]"}>
@@ -155,7 +231,7 @@ function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
                 </td>
               </tr>
             ))}
-            {operators.length === 0 && <tr><td colSpan={5} className="px-5 py-8 text-center text-xs text-[#6b7280]">Нет операторов</td></tr>}
+            {operators.length === 0 && <tr><td colSpan={6} className="px-5 py-8 text-center text-xs text-[#6b7280]">Нет операторов</td></tr>}
           </tbody>
         </table>
       </div>
@@ -163,13 +239,260 @@ function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
   );
 }
 
-function OperatorModal({ editing, onClose, onSave }) {
+// ── Секция «Сервисы»: CRUD ВПН-ов ────────────────────────────────────────────
+// slug, коллекция Qdrant и префикс dialog_id задаются один раз при создании:
+// они зашиваются в воркфлоу n8n, ключи Redis и первичные ключи диалогов.
+
+const SERVICE_COLORS = ["#4F8EF7", "#A855F7", "#22c55e", "#eab308", "#ef4444", "#06b6d4", "#f97316", "#ec4899"];
+
+function ServicesSection({ showToast, onChanged }) {
+  const [services, setServices] = useStateT(null);
+  const [modal, setModal] = useStateT(null);      // {} — новый, объект — правка
+  const [confirmDel, setConfirmDel] = useStateT(null);
+
+  async function reload() {
+    try {
+      const list = await window.apiFetch("GET", "/api/services/all");
+      setServices(list);
+      onChanged && onChanged();
+    } catch { setServices([]); }
+  }
+  useEffectT(() => { reload(); }, []);
+
+  async function save(form) {
+    try {
+      if (form.id) {
+        await window.apiFetch("PUT", `/api/services/${form.id}`, form);
+        showToast("Сервис обновлён");
+      } else {
+        await window.apiFetch("POST", "/api/services", form);
+        showToast("Сервис добавлен");
+      }
+      setModal(null);
+      reload();
+    } catch (e) {
+      showToast(e?.detail || "Ошибка сохранения");
+    }
+  }
+
+  async function remove(svc) {
+    try {
+      await window.apiFetch("DELETE", `/api/services/${svc.id}`);
+      showToast("Сервис удалён");
+      reload();
+    } catch (e) {
+      showToast(e?.detail || "Ошибка удаления");
+    }
+    setConfirmDel(null);
+  }
+
+  if (services === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+
+  return (
+    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold text-[#f1f1f5]">ВПН-сервисы</h1>
+          <div className="text-xs text-[#6b7280] mt-0.5">
+            У каждого свои диалоги, база знаний, промпты, шаблоны и рассылки
+          </div>
+        </div>
+        <button onClick={() => setModal({})}
+          className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5">
+          <Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />
+          Добавить сервис
+        </button>
+      </div>
+
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-wider text-[#6b7280] border-b border-[#2a2a3a]/60">
+              <th className="text-left px-5 py-3 font-medium">Название</th>
+              <th className="text-left px-3 py-3 font-medium">Слаг</th>
+              <th className="text-left px-3 py-3 font-medium">Коллекция Qdrant</th>
+              <th className="text-left px-3 py-3 font-medium">Вебхук n8n</th>
+              <th className="text-left px-3 py-3 font-medium">Статус</th>
+              <th className="text-right px-5 py-3 font-medium w-[120px]">Действия</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#2a2a3a]/40">
+            {services.map((s) => (
+              <tr key={s.id} className="hover:bg-[#1a1a24]/40 transition">
+                <td className="px-5 py-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: s.color }}></span>
+                    <span className="font-medium text-[#f1f1f5]">{s.emoji ? s.emoji + " " : ""}{s.name}</span>
+                  </div>
+                </td>
+                <td className="px-3 py-3 font-mono text-xs text-[#6b7280]">{s.slug}</td>
+                <td className="px-3 py-3 font-mono text-xs text-[#6b7280]">{s.qdrantCollection}</td>
+                <td className="px-3 py-3 text-xs text-[#6b7280] max-w-[200px] truncate">
+                  {s.n8nWebhookUrl || <span className="text-[#3a3a4a]">общий</span>}
+                </td>
+                <td className="px-3 py-3">
+                  <span className="inline-flex items-center gap-1.5 text-xs">
+                    <span className={"w-1.5 h-1.5 rounded-full " + (s.isActive ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
+                    <span className={s.isActive ? "text-[#22c55e]" : "text-[#6b7280]"}>
+                      {s.isActive ? "Активен" : "Выключен"}
+                    </span>
+                  </span>
+                </td>
+                <td className="px-5 py-3">
+                  <div className="flex items-center justify-end gap-1">
+                    <button onClick={() => setModal(s)} className="p-1.5 text-[#6b7280] hover:text-[#7BA8F9] hover:bg-[#4F8EF7]/10 rounded transition"><Icon name="edit" className="w-4 h-4" /></button>
+                    <button onClick={() => setConfirmDel(s)} className="p-1.5 text-[#6b7280] hover:text-[#ef4444] hover:bg-[#ef4444]/10 rounded transition"><Icon name="trash" className="w-4 h-4" /></button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="text-[11px] text-[#6b7280] leading-relaxed bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-4">
+        <div className="text-[#f1f1f5] font-medium mb-1.5">Как подключить новый ВПН</div>
+        1. Создайте сервис здесь — слаг попадёт в ключи Redis и имя коллекции Qdrant.<br />
+        2. Скопируйте воркфлоу n8n, подставьте токен своего бота и добавьте в стартовую
+        Set-ноду поле <code className="font-mono text-[#7BA8F9]">service</code> со слагом сервиса.<br />
+        3. Переключите Redis-ключи на <code className="font-mono text-[#7BA8F9]">vpn_bot:&lt;слаг&gt;:ai_settings</code> и
+        коллекцию Qdrant на указанную в таблице.<br />
+        4. Выдайте операторам флаги доступа на вкладке «Операторы».<br />
+        5. Загрузите базу знаний и задайте промпт — они пер-сервисные.
+      </div>
+
+      {modal && <ServiceModal editing={modal.id ? modal : null} onSave={save} onClose={() => setModal(null)} />}
+
+      {confirmDel && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirmDel(null)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <div className="font-semibold text-[#f1f1f5] mb-1">Удалить сервис «{confirmDel.name}»?</div>
+            <div className="text-sm text-[#6b7280] mb-5">
+              Вместе с ним удалятся все его диалоги, сообщения, статьи базы знаний и коллекция
+              Qdrant <span className="font-mono">{confirmDel.qdrantCollection}</span>. Действие необратимо.
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirmDel(null)} className="px-3 py-1.5 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+              <button onClick={() => remove(confirmDel)} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30">Удалить</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ServiceModal({ editing, onSave, onClose }) {
+  const [name,  setName]  = useStateT(editing?.name  || "");
+  const [slug,  setSlug]  = useStateT(editing?.slug  || "");
+  const [color, setColor] = useStateT(editing?.color || SERVICE_COLORS[0]);
+  const [emoji, setEmoji] = useStateT(editing?.emoji || "");
+  const [hook,  setHook]  = useStateT(editing?.n8nWebhookUrl || "");
+  const [active, setActive] = useStateT(editing ? editing.isActive : true);
+
+  // Слаг сам предлагается из названия, но остаётся редактируемым.
+  function changeName(v) {
+    setName(v);
+    if (!editing && !slug) return;
+    if (!editing) setSlug(slugify(v));
+  }
+  function slugify(v) {
+    return v.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 31);
+  }
+
+  function submit(e) {
+    e?.preventDefault();
+    if (!name.trim()) return;
+    const finalSlug = editing ? editing.slug : (slug || slugify(name));
+    onSave({
+      id: editing?.id, name: name.trim(), slug: finalSlug, color,
+      emoji: emoji.trim() || null, n8n_webhook_url: hook.trim(), is_active: active,
+    });
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
+          <div className="font-semibold text-[#f1f1f5]">{editing ? "Редактировать сервис" : "Новый ВПН-сервис"}</div>
+          <button type="button" onClick={onClose} className="p-1 text-[#6b7280] hover:text-[#f1f1f5] rounded"><Icon name="x" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="grid grid-cols-[1fr_80px] gap-3">
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">Название</label>
+              <input autoFocus value={name} onChange={(e) => changeName(e.target.value)} placeholder="NordFlow"
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">Эмодзи</label>
+              <input value={emoji} onChange={(e) => setEmoji(e.target.value)} placeholder="🛡"
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 text-center" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">
+              Слаг {editing && <span className="text-[#3a3a4a]">— неизменяем: зашит в n8n, Redis и ID диалогов</span>}
+            </label>
+            <input value={editing ? editing.slug : slug} disabled={!!editing}
+              onChange={(e) => setSlug(slugify(e.target.value))} placeholder="nordflow"
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono disabled:opacity-50" />
+            {!editing && (
+              <div className="text-[10px] text-[#6b7280] mt-1">
+                Коллекция Qdrant: <span className="font-mono text-[#7BA8F9]">kb_{slug || "…"}</span> ·
+                префикс ID диалогов: <span className="font-mono text-[#7BA8F9]">{slug || "…"}_</span>
+              </div>
+            )}
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Цвет</label>
+            <div className="flex flex-wrap gap-2">
+              {SERVICE_COLORS.map((c) => (
+                <button key={c} type="button" onClick={() => setColor(c)}
+                  className={"w-7 h-7 rounded-lg transition " + (color === c ? "ring-2 ring-offset-2 ring-offset-[#13131a] ring-white/60" : "")}
+                  style={{ background: c }}></button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">
+              Вебхук n8n <span className="text-[#3a3a4a]">— если у сервиса отдельный инстанс n8n; пусто = общий</span>
+            </label>
+            <input value={hook} onChange={(e) => setHook(e.target.value)} placeholder="https://n8n.example.com/webhook/..."
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+          </div>
+          {editing && (
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm text-[#f1f1f5]">Активен</div>
+                <div className="text-[10px] text-[#6b7280]">Выключенный сервис пропадает из переключателя</div>
+              </div>
+              <Switch on={active} onChange={() => setActive((v) => !v)} />
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-4 border-t border-[#2a2a3a] flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+          <button type="submit" disabled={!name.trim() || (!editing && !slug)}
+            className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold disabled:opacity-40">
+            {editing ? "Сохранить" : "Создать"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function OperatorModal({ editing, services = [], onClose, onSave }) {
   const [name,     setName]     = useStateT(editing?.name || "");
   const [tg,       setTg]       = useStateT(editing?.tg   || "@");
   const [tgId,     setTgId]     = useStateT(editing?.tgId != null ? String(editing.tgId) : "");
   const [role,     setRole]     = useStateT(editing?.role  || "agent");
   const [password, setPassword] = useStateT("");
   const [pwErr,    setPwErr]    = useStateT(null);
+  // Флаги доступа задаются при создании; у существующего правятся прямо в
+  // таблице операторов, поэтому здесь показываются только для нового.
+  const [serviceIds, setServiceIds] = useStateT(editing?.serviceIds || []);
 
   function submit(e) {
     e?.preventDefault();
@@ -179,7 +502,7 @@ function OperatorModal({ editing, onClose, onSave }) {
     }
     setPwErr(null);
     const tg_id = tgId.trim() ? parseInt(tgId.trim(), 10) : null;
-    onSave({ name: name.trim(), tg: tg.trim(), tg_id, role, password });
+    onSave({ name: name.trim(), tg: tg.trim(), tg_id, role, password, service_ids: serviceIds });
   }
 
   return (
@@ -219,6 +542,36 @@ function OperatorModal({ editing, onClose, onSave }) {
                 </button>
               ))}
             </div>
+            {role === "agent" && services.length > 0 && (
+              <div className="mt-4">
+                <label className="block text-xs text-[#6b7280] mb-1.5">
+                  Доступ к ВПН-сервисам
+                  <span className="text-[#3a3a4a]"> — по каким тикетам сможет отвечать</span>
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {services.map((s) => {
+                    const on = serviceIds.includes(s.id);
+                    return (
+                      <button key={s.id} type="button"
+                        onClick={() => setServiceIds((ids) =>
+                          on ? ids.filter((i) => i !== s.id) : [...ids, s.id])}
+                        className={"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition " +
+                          (on ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
+                              : "bg-[#0d0d12] text-[#6b7280] border-[#2a2a3a] hover:text-[#f1f1f5]")}>
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0"
+                              style={{ background: on ? s.color : "#3a3a4a" }}></span>
+                        {s.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {role === "admin" && (
+              <div className="mt-3 text-[10px] text-[#6b7280]">
+                Администратор видит все ВПН-сервисы — отдельные флаги не нужны.
+              </div>
+            )}
           </div>
           {!editing && (
             <div>
@@ -412,16 +765,17 @@ function ScheduleSection({ showToast }) {
   );
 }
 
-function AISection({ showToast }) {
+function AISection({ showToast, service }) {
   const [settings, setSettings] = useStateT(null);
 
   useEffectT(() => {
-    window.apiFetch("GET", "/api/settings/ai").then(setSettings).catch(() => {});
-  }, []);
+    setSettings(null);
+    window.apiFetch("GET", "/api/settings/ai" + svcQuery(service)).then(setSettings).catch(() => {});
+  }, [service?.id]);
 
   async function save() {
     try {
-      await window.apiFetch("PUT", "/api/settings/ai", settings);
+      await window.apiFetch("PUT", "/api/settings/ai" + svcQuery(service), settings);
       showToast("Настройки ИИ сохранены");
     } catch { showToast("Ошибка сохранения"); }
   }
@@ -434,6 +788,7 @@ function AISection({ showToast }) {
         <h1 className="text-xl font-semibold text-[#f1f1f5]">ИИ-настройки</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">Сохраняется в БД и Redis — n8n подхватывает сразу</div>
       </div>
+      <ServiceBanner service={service} hint={service ? `ключ Redis: vpn_bot:${service.slug}:ai_settings` : ""} />
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
         <SettingsRow title="Автоматические ответы" desc="ИИ сам отвечает на сообщения" control={<Switch on={settings.auto_reply} onChange={() => setSettings((s) => ({ ...s, auto_reply: !s.auto_reply }))} />} />
         <div className="px-5 py-4">
@@ -533,7 +888,7 @@ const CATEGORY_COLORS = {
   escalation:      "bg-[#A855F7]/15 text-[#C084FC] border-[#A855F7]/30",
 };
 
-function KBSection() {
+function KBSection({ service }) {
   const [articles,   setArticles]   = useStateT(null);
   const [uploading,  setUploading]  = useStateT(false);
   const [uploadErr,  setUploadErr]  = useStateT(null);
@@ -543,8 +898,9 @@ function KBSection() {
   const fileRef = React.createRef();
 
   useEffectT(() => {
-    window.apiFetch("GET", "/api/kb").then(setArticles).catch(() => setArticles([]));
-  }, []);
+    setArticles(null);
+    window.apiFetch("GET", "/api/kb" + svcQuery(service)).then(setArticles).catch(() => setArticles([]));
+  }, [service?.id]);
 
   async function handleUpload(e) {
     const file = e.target.files?.[0];
@@ -558,13 +914,13 @@ function KBSection() {
       const headers = {};
       const token = localStorage.getItem("hd_token");
       if (token) headers["Authorization"] = "Bearer " + token;
-      const res = await fetch("/api/kb/upload", { method: "POST", headers, body: form });
+      const res = await fetch("/api/kb/upload" + svcQuery(service), { method: "POST", headers, body: form });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || res.statusText);
       }
       const data = await res.json();
-      const fresh = await window.apiFetch("GET", "/api/kb");
+      const fresh = await window.apiFetch("GET", "/api/kb" + svcQuery(service));
       setArticles(fresh);
       setUploadErr(null);
     } catch (err) {
@@ -577,7 +933,7 @@ function KBSection() {
   async function handleDelete(id) {
     setDeleting(id);
     try {
-      await window.apiFetch("DELETE", `/api/kb/${id}`);
+      await window.apiFetch("DELETE", `/api/kb/${id}` + svcQuery(service));
       setArticles((arr) => arr.filter((a) => a.id !== id));
     } catch {
     } finally {
@@ -589,7 +945,7 @@ function KBSection() {
     if (!window.confirm("Сбросить всю базу знаний? Все статьи и векторы будут удалены без возможности восстановления.")) return;
     setResetting(true);
     try {
-      await window.apiFetch("DELETE", "/api/kb");
+      await window.apiFetch("DELETE", "/api/kb" + svcQuery(service));
       setArticles([]);
     } catch {
     } finally {
@@ -623,6 +979,8 @@ function KBSection() {
           <input ref={fileRef} type="file" accept=".txt,.md" className="hidden" onChange={handleUpload} />
         </div>
       </div>
+      <ServiceBanner service={service}
+                     hint={service ? `коллекция Qdrant: ${service.qdrantCollection}` : ""} />
 
       {uploadErr && (
         <div className="text-sm text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-4 py-2">
@@ -690,16 +1048,17 @@ function KBSection() {
   );
 }
 
-function AutomationSection({ showToast }) {
+function AutomationSection({ showToast, service }) {
   const [s, setS] = useStateT(null);
 
   useEffectT(() => {
-    window.apiFetch("GET", "/api/settings/automation").then(setS).catch(() => {});
-  }, []);
+    setS(null);
+    window.apiFetch("GET", "/api/settings/automation" + svcQuery(service)).then(setS).catch(() => {});
+  }, [service?.id]);
 
   async function save() {
     try {
-      await window.apiFetch("PUT", "/api/settings/automation", s);
+      await window.apiFetch("PUT", "/api/settings/automation" + svcQuery(service), s);
       showToast("Настройки автоматизации сохранены");
     } catch { showToast("Ошибка сохранения"); }
   }
@@ -712,7 +1071,7 @@ function AutomationSection({ showToast }) {
     const next = { ...s, [key]: !s[key] };
     setS(next);
     try {
-      await window.apiFetch("PUT", "/api/settings/automation", next);
+      await window.apiFetch("PUT", "/api/settings/automation" + svcQuery(service), next);
       showToast("Настройки автоматизации сохранены");
     } catch { showToast("Ошибка сохранения"); }
   }
@@ -724,8 +1083,9 @@ function AutomationSection({ showToast }) {
     <div className="max-w-[1100px] mx-auto p-6 space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Автоматизация</h1>
-        <div className="text-xs text-[#6b7280] mt-0.5">Автоматические действия при диалогах</div>
+        <div className="text-xs text-[#6b7280] mt-0.5">Автоматические действия при диалогах. Все параметры настраиваются отдельно для каждого ВПН-сервиса</div>
       </div>
+      <ServiceBanner service={service} />
 
       {/* Operator handoff */}
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
@@ -938,7 +1298,7 @@ function SoundsSection({ showToast }) {
   );
 }
 
-function BroadcastSection({ showToast }) {
+function BroadcastSection({ showToast, service }) {
   const [text, setText] = useStateT("");
   const [confirm, setConfirm] = useStateT(false);
   const [result, setResult] = useStateT(null);
@@ -949,7 +1309,7 @@ function BroadcastSection({ showToast }) {
     setLoading(true);
     setResult(null);
     try {
-      const res = await window.apiFetch("POST", "/api/broadcast", { text });
+      const res = await window.apiFetch("POST", "/api/broadcast" + svcQuery(service), { text });
       setResult(res);
       if (res.failed === 0) showToast(`Отправлено ${res.sent} пользователям`);
       else showToast(`Отправлено ${res.sent}, ошибок ${res.failed}`);
@@ -964,8 +1324,11 @@ function BroadcastSection({ showToast }) {
     <div className="max-w-[700px] mx-auto p-6 space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Рассылка</h1>
-        <div className="text-xs text-[#6b7280] mt-0.5">Отправить сообщение всем пользователям из базы</div>
+        <div className="text-xs text-[#6b7280] mt-0.5">
+          Сообщение уйдёт клиентам выбранного ВПН-сервиса через его бота. Рассылки разных сервисов идут независимо
+        </div>
       </div>
+      <ServiceBanner service={service} />
 
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5 space-y-4">
         <div>
@@ -1095,7 +1458,7 @@ function TemplateModal({ template, groups, onSave, onClose }) {
   );
 }
 
-function TemplatesSection({ showToast }) {
+function TemplatesSection({ showToast, service }) {
   const [templates, setTemplates] = useStateT(null);
   const [modal, setModal] = useStateT(null);
   const [deleting, setDeleting] = useStateT(null);
@@ -1107,8 +1470,9 @@ function TemplatesSection({ showToast }) {
   const [inlineSaving, setInlineSaving] = useStateT(false);
 
   useEffectT(() => {
-    window.apiFetch("GET", "/api/templates").then(setTemplates).catch(() => setTemplates([]));
-  }, []);
+    setTemplates(null);
+    window.apiFetch("GET", "/api/templates" + svcQuery(service)).then(setTemplates).catch(() => setTemplates([]));
+  }, [service?.id]);
 
   const groups = useMemoT(() => {
     if (!templates) return [];
@@ -1132,7 +1496,7 @@ function TemplatesSection({ showToast }) {
   async function saveTemplate(data) {
     try {
       const method = data.id ? "PUT" : "POST";
-      const url = data.id ? `/api/templates/${data.id}` : "/api/templates";
+      const url = (data.id ? `/api/templates/${data.id}` : "/api/templates") + svcQuery(service);
       const saved = await window.apiFetch(method, url, data);
       setTemplates(prev => data.id
         ? prev.map(t => t.id === data.id ? saved : t)
@@ -1145,7 +1509,7 @@ function TemplatesSection({ showToast }) {
   async function deleteTemplate(id) {
     setDeleting(id);
     try {
-      await window.apiFetch("DELETE", `/api/templates/${id}`);
+      await window.apiFetch("DELETE", `/api/templates/${id}` + svcQuery(service));
       setTemplates(prev => prev.filter(t => t.id !== id));
       showToast("Шаблон удалён");
     } catch { showToast("Ошибка удаления"); }
@@ -1156,7 +1520,7 @@ function TemplatesSection({ showToast }) {
     const trimmed = (newName || "").trim();
     if (!trimmed || trimmed === oldName) { setRenamingGroup(null); return; }
     try {
-      await window.apiFetch("PATCH", "/api/templates/group", { old_name: oldName, new_name: trimmed });
+      await window.apiFetch("PATCH", "/api/templates/group" + svcQuery(service), { old_name: oldName, new_name: trimmed });
       setTemplates(prev => prev.map(t => t.group_name === oldName ? { ...t, group_name: trimmed } : t));
       if (selectedGroup === oldName) setSelectedGroup(trimmed);
       showToast("Группа переименована");
@@ -1168,7 +1532,7 @@ function TemplatesSection({ showToast }) {
     const items = grouped[name] || [];
     if (!items.length) return;
     try {
-      await Promise.all(items.map(t => window.apiFetch("DELETE", `/api/templates/${t.id}`)));
+      await Promise.all(items.map(t => window.apiFetch("DELETE", `/api/templates/${t.id}` + svcQuery(service))));
       setTemplates(prev => prev.filter(t => t.group_name !== name));
       if (selectedGroup === name) setSelectedGroup(null);
       showToast(`Группа «${name}» удалена`);
@@ -1179,7 +1543,7 @@ function TemplatesSection({ showToast }) {
     if (!inlineForm.title.trim() || !inlineForm.text.trim()) return;
     setInlineSaving(true);
     try {
-      const saved = await window.apiFetch("POST", "/api/templates", {
+      const saved = await window.apiFetch("POST", "/api/templates" + svcQuery(service), {
         group_name: group, title: inlineForm.title.trim(), text: inlineForm.text.trim(),
       });
       setTemplates(prev => [...prev, saved].sort((a, b) => a.group_name.localeCompare(b.group_name) || a.title.localeCompare(b.title)));
