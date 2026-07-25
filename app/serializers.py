@@ -27,6 +27,11 @@ def fmt_dialog(row: dict, tickets: list = None) -> dict:
     return {
         "id": did,
         "chatId": row["chat_id"],
+        # Сервис (ВПН), которому принадлежит тикет — в режиме «Все сервисы»
+        # строка списка помечается точкой его цвета.
+        "serviceId": row.get("service_id"),
+        "serviceName": row.get("service_name"),
+        "serviceColor": row.get("service_color") or "#4F8EF7",
         "name": name,
         "username": username,
         "tgId": row["chat_id"],

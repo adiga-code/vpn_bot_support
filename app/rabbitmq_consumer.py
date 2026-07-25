@@ -73,8 +73,34 @@ class RabbitMQConsumer:
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 
+    async def _resolve_service(self, data: dict) -> dict | None:
+        """Сервис (ВПН) входящего события. Воркфлоу n8n кладёт слаг в поле
+        `service`; если поля нет — это старый одно-сервисный воркфлоу, и
+        событие относится к первому (мигрированному) сервису. Неизвестный слаг
+        — сообщение отбрасывается: тикет без сервиса некому показывать."""
+        slug = (data.get("service") or "").strip().lower()
+        if not slug:
+            services = await self.db.get_services()
+            return services[0] if services else None
+        service = await self.db.get_service_by_slug(slug)
+        if not service:
+            print(f"[consumer] неизвестный сервис '{slug}' — событие отброшено")
+        return service
+
+    @staticmethod
+    def _qualify(service: dict, dialog_id) -> str:
+        """dialog_id из n8n → глобально уникальный ключ. Префикс разводит
+        идентификаторы независимых инстансов n8n, которые могут выдать
+        одинаковые номера; у мигрированного сервиса он пустой."""
+        prefix = service["dialog_id_prefix"]
+        raw = str(dialog_id)
+        return raw if not prefix or raw.startswith(prefix) else prefix + raw
+
     async def _handle_user_message(self, data: dict):
-        dialog_id = data["dialog_id"]
+        service = await self._resolve_service(data)
+        if not service:
+            return
+        dialog_id = self._qualify(service, data["dialog_id"])
         chat_id = str(data["chat_id"])
         text = data.get("message", "")
         file_id = data.get("file_id")
@@ -99,7 +125,9 @@ class RabbitMQConsumer:
             "user_photo_url",
         )}
 
-        dialog_row = await self.db.upsert_dialog(dialog_id, chat_id, ai_enabled, user_info)
+        dialog_row = await self.db.upsert_dialog(
+            dialog_id, chat_id, service["id"], ai_enabled, user_info
+        )
         is_new = dialog_row["is_new_dialog"]
 
         msg_row = await self.db.save_message(
@@ -113,28 +141,32 @@ class RabbitMQConsumer:
         await self.db.update_last_message(dialog_id, text or f"[{file_type}]")
 
         if text and file_type == "text":
-            asyncio.create_task(self._classify_later(msg_row["id"], text))
+            asyncio.create_task(self._classify_later(msg_row["id"], text, service["id"]))
 
         if operator_called:
             await self.db.update_operator_called(dialog_id, True)
 
         if is_new:
-            await self.db.sync_n8n_dialog_status(chat_id, "active")
+            await self.db.sync_n8n_dialog_status(chat_id, "active", service["slug"])
 
         updated = await self.db.get_dialog(dialog_id)
         username = updated.get("user_username") or dialog_id
+        service_id = service["id"]
 
         await self.ws.broadcast({
             "type": "new_message",
             "dialog_id": dialog_id,
             "message": _fmt_message(msg_row),
-        })
+        }, service_id)
 
         if is_new:
-            await self.ws.broadcast({"type": "new_dialog", "dialog": _fmt_dialog(updated)})
-            await self.n8n.schedule_notify("new_dialog", {"dialog_id": dialog_id, "username": username})
+            await self.ws.broadcast({"type": "new_dialog", "dialog": _fmt_dialog(updated)}, service_id)
+            await self.n8n.schedule_notify(
+                "new_dialog", {"dialog_id": dialog_id, "username": username}, updated
+            )
         else:
-            await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+            await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)}, service_id)
+        await self.routing.emit_counts()
 
         # ── Routing ──
         # AI dialogs stay in the «ИИ» section unassigned — no eager pre-assign.
@@ -147,7 +179,9 @@ class RabbitMQConsumer:
             pass
         else:
             if operator_called:
-                await self.n8n.schedule_notify("operator_called", {"dialog_id": dialog_id, "username": username})
+                await self.n8n.schedule_notify(
+                    "operator_called", {"dialog_id": dialog_id, "username": username}, updated
+                )
             if is_new and updated["status"] == "queue":
                 # AI disabled on the bot side → route straight to operators
                 await self.routing.assign_or_queue(dialog_id)
@@ -155,16 +189,16 @@ class RabbitMQConsumer:
                 # scenario 3/5: a client reply wakes a waiting ticket
                 await self.routing.on_client_message(updated)
 
-        automation = await self.db.get_setting_json("automation", {})
+        automation = await self.db.get_setting_json("automation", {}, service_id)
         if automation.get("operator_button_enabled") and not operator_called:
             n = int(automation.get("operator_button_after_msgs") or 3)
             count = await self.db.get_user_message_count(dialog_id)
             if count == n:
-                asyncio.create_task(self.n8n.send_operator_button(chat_id, dialog_id))
+                asyncio.create_task(self.n8n.send_operator_button(chat_id, dialog_id, updated))
 
-    async def _classify_later(self, msg_id: int, text: str):
+    async def _classify_later(self, msg_id: int, text: str, service_id: int):
         try:
-            ai_settings = await self.db.get_setting_json("ai_settings", {})
+            ai_settings = await self.db.get_setting_json("ai_settings", {}, service_id)
             if not ai_settings.get("classification_enabled") or not self.chat_client:
                 return
             category = await classify_message(text, self.chat_client)
@@ -175,7 +209,10 @@ class RabbitMQConsumer:
             print(f"[classifier] background error: {e}")
 
     async def _handle_ai_response(self, data: dict):
-        dialog_id = data["dialog_id"]
+        service = await self._resolve_service(data)
+        if not service:
+            return
+        dialog_id = self._qualify(service, data["dialog_id"])
         text = data.get("message", "")
 
         dialog = await self.db.get_dialog(dialog_id)
@@ -196,11 +233,12 @@ class RabbitMQConsumer:
                 "type": "new_message",
                 "dialog_id": dialog_id,
                 "message": _fmt_message(msg_row),
-            })
-            await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+            }, service["id"])
+            await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+                                    service["id"])
 
         if wants_handoff and not dialog.get("operator_called"):
-            ai_settings = await self.db.get_setting_json("ai_settings", {})
+            ai_settings = await self.db.get_setting_json("ai_settings", {}, service["id"])
             if ai_settings.get("handoff_enabled", True):
                 await self._auto_handoff(dialog_id, dialog)
 
@@ -228,12 +266,15 @@ class RabbitMQConsumer:
                     print(f"[callback] rating={score} for dialog={dialog_id}")
                     updated = await self.db.get_dialog(dialog_id)
                     if updated:
-                        await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+                        await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+                                                updated["service_id"])
                         chat_id = updated.get("chat_id") or data.get("chat_id")
                         if chat_id:
-                            automation = await self.db.get_setting_json("automation", {})
+                            automation = await self.db.get_setting_json(
+                                "automation", {}, updated["service_id"]
+                            )
                             thanks = automation.get("rating_thanks_text") or "Спасибо за оценку! 🙏"
-                            await self.n8n.send_to_user(str(chat_id), thanks)
+                            await self.n8n.send_to_user(str(chat_id), thanks, service=updated)
                 except ValueError:
                     pass
 
@@ -245,13 +286,14 @@ class RabbitMQConsumer:
         if not message_id or not status:
             return
         await self.db.update_message_delivery(int(message_id), status, error)
+        dialog = await self.db.get_dialog(dialog_id) if dialog_id else None
         await self.ws.broadcast({
             "type":       "message_status",
             "dialog_id":  dialog_id,
             "message_id": int(message_id),
             "status":     status,
             "error":      error,
-        })
+        }, dialog["service_id"] if dialog else None)
 
     async def _auto_handoff(self, dialog_id: str, dialog: dict):
         print(f"[auto-handoff] dialog={dialog_id}")
