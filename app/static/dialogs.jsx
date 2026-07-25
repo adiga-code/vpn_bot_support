@@ -284,16 +284,89 @@ function MessageBubble({ msg, onImageClick }) {
   return null;
 }
 
-function TemplatePickerModal({ onSelect, onClose, serviceId }) {
-  const [templates, setTemplates] = useStateD(null);
+// ── Автодополнение шаблонов по слешу ────────────────────────────────────────
+// Оператор пишет «/» в начале сообщения → список шаблонов; дальше сужает его
+// набором по заголовку либо по началу текста шаблона. Логика поиска вынесена
+// отдельно от компонента: её же удобно дёрнуть из проверок.
+
+// Порядок важен: точное попадание должно оказаться первым, чтобы «/» + пара
+// букв + Enter закрывали типичный случай.
+function rankTemplates(templates, query) {
+  const list = templates || [];
+  const q = (query || "").trim().toLowerCase();
+  if (!q) return list;
+  const scored = [];
+  for (const t of list) {
+    const title = (t.title || "").toLowerCase();
+    const text = (t.text || "").toLowerCase();
+    let rank = -1;
+    if (title.startsWith(q)) rank = 0;
+    else if (title.includes(q)) rank = 1;
+    // «Заголовок не помню, помню как начинается ответ».
+    else if (text.startsWith(q)) rank = 2;
+    else if (text.includes(q)) rank = 3;
+    if (rank >= 0) scored.push({ t, rank });
+  }
+  // Внутри одного ранга сохраняем исходный порядок (группа, заголовок).
+  return scored.map((s, i) => ({ ...s, i }))
+    .sort((a, b) => a.rank - b.rank || a.i - b.i)
+    .map((s) => s.t);
+}
+
+// Запрос автодополнения или null, если панель показывать не нужно: слеш ловим
+// только первым символом (как в ТГ), поэтому «/home/user» внутри текста ничего
+// не открывает.
+function slashQueryOf(draft, mode) {
+  if (mode !== "message") return null;
+  if (!draft.startsWith("/")) return null;
+  if (draft.includes("\n")) return null;
+  return draft.slice(1);
+}
+
+function SlashTemplateList({ items, activeIndex, onPick, onHover }) {
+  const boxRef = useRefD(null);
+
+  // Активная строка всегда в видимой области — иначе перебор стрелками
+  // «уезжает» за границу списка.
+  useEffectD(() => {
+    const box = boxRef.current;
+    const row = box && box.querySelector(`[data-idx="${activeIndex}"]`);
+    if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+  }, [activeIndex]);
+
+  return (
+    <div className="absolute bottom-full left-0 right-0 mb-2 z-40 bg-[#13131a] border border-[#2a2a3a] rounded-xl shadow-2xl overflow-hidden">
+      <div ref={boxRef} className="max-h-[260px] overflow-y-auto scrollbar-thin py-1">
+        {items.map((t, i) => (
+          <button
+            key={t.id}
+            data-idx={i}
+            onMouseDown={(e) => { e.preventDefault(); onPick(t); }}
+            onMouseEnter={() => onHover(i)}
+            className={"w-full px-3.5 py-2 text-left transition " +
+              (i === activeIndex ? "bg-[#1a1a24]" : "hover:bg-[#1a1a24]/60")}
+          >
+            <div className="flex items-center gap-2">
+              <span className={"text-sm font-medium truncate " +
+                (i === activeIndex ? "text-[#7BA8F9]" : "text-[#f1f1f5]")}>{t.title}</span>
+              <span className="text-[10px] text-[#6b7280] shrink-0">{t.group_name}</span>
+            </div>
+            <div className="text-xs text-[#6b7280] truncate mt-0.5">{(t.text || "").split("\n")[0]}</div>
+          </button>
+        ))}
+      </div>
+      <div className="px-3.5 py-1.5 border-t border-[#2a2a3a]/60 text-[10px] text-[#6b7280]">
+        ↑↓ выбрать · Enter вставить · Esc закрыть
+      </div>
+    </div>
+  );
+}
+
+function TemplatePickerModal({ onSelect, onClose, templates }) {
+  // Список приходит готовым из DialogsScreen — он же питает автодополнение по
+  // слешу, поэтому грузить его второй раз при открытии модалки не нужно.
   const [search, setSearch] = useStateD("");
   const [group, setGroup] = useStateD("all");
-
-  useEffectD(() => {
-    // Шаблоны берём для сервиса открытого тикета — плюс общие (service_id NULL).
-    const q = serviceId ? `?service_id=${serviceId}` : "";
-    window.apiFetch("GET", "/api/templates" + q).then(setTemplates).catch(() => setTemplates([]));
-  }, [serviceId]);
 
   const groups = useMemoD(() => {
     if (!templates) return [];
@@ -416,8 +489,14 @@ function DialogsScreen({
   const [confirmClose, setConfirmClose] = useStateD(false);
   const [showTemplates, setShowTemplates] = useStateD(false);
   const [showTransfer, setShowTransfer] = useStateD(false);
+  // Шаблоны нужны сразу: по «/» список должен появляться мгновенно, без похода
+  // в сеть. Модалка шаблонов берёт этот же массив.
+  const [templates, setTemplates] = useStateD([]);
+  const [slashIndex, setSlashIndex] = useStateD(0);
+  const [slashDismissed, setSlashDismissed] = useStateD(false);
   const scrollRef = useRefD(null);
   const fileInputRef = useRefD(null);
+  const composerRef = useRefD(null);
 
   const active = conversations.find((c) => c.id === activeId) || conversations[0];
 
@@ -432,6 +511,70 @@ function DialogsScreen({
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [active?.id, active?.messages?.length]);
+
+  // Шаблоны пер-сервисные: при переходе на тикет другого ВПН-а подгружаем его
+  // набор (плюс общие).
+  useEffectD(() => {
+    const sid = active?.serviceId;
+    if (!sid) { setTemplates([]); return; }
+    let stale = false;
+    window.apiFetch("GET", `/api/templates?service_id=${sid}`)
+      .then((list) => { if (!stale) setTemplates(list || []); })
+      .catch(() => { if (!stale) setTemplates([]); });
+    return () => { stale = true; };
+  }, [active?.serviceId]);
+
+  // ── Автодополнение по слешу ──────────────────────────────────────────────
+  const slashQuery = slashQueryOf(draft, mode);
+  const slashMatches = useMemoD(
+    () => (slashQuery === null ? [] : rankTemplates(templates, slashQuery)),
+    [templates, slashQuery]
+  );
+  // Нет совпадений — панель прячется: иначе она мешала бы отправить сообщение,
+  // которое просто начинается со слеша.
+  const slashOpen = slashQuery !== null && !slashDismissed && slashMatches.length > 0;
+
+  // Смена запроса возвращает выделение на первую строку; уход от слеша снимает
+  // ручное закрытие, чтобы следующий «/» снова открыл панель.
+  useEffectD(() => { setSlashIndex(0); }, [slashQuery]);
+  useEffectD(() => { if (slashQuery === null) setSlashDismissed(false); }, [slashQuery]);
+
+  function applyTemplate(t) {
+    // Слеш ловится только в начале сообщения, поэтому шаблон заменяет весь текст.
+    setDraft(t.text);
+    setSlashDismissed(false);
+    const el = composerRef.current;
+    if (el) {
+      requestAnimationFrame(() => {
+        el.focus();
+        el.selectionStart = el.selectionEnd = el.value.length;
+      });
+    }
+  }
+
+  function onComposerKeyDown(e) {
+    // Cmd/Ctrl+Enter отправляет всегда — панель при этом просто закрывается.
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      setSlashDismissed(true);
+      sendMessage();
+      return;
+    }
+    if (!slashOpen) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSlashIndex((i) => (i + 1) % slashMatches.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length);
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      applyTemplate(slashMatches[Math.min(slashIndex, slashMatches.length - 1)]);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setSlashDismissed(true);   // текст остаётся как есть
+    }
+  }
 
   // Sections per view: «Все» — the whole pipeline, «Мои» — only own tickets.
   // «Все» shows 3 main tabs + an overflow menu («ещё») with ИИ and Закрытые.
@@ -857,17 +1000,21 @@ function DialogsScreen({
                       <button onClick={() => setPendingFile(null)} className="text-[#6b7280] hover:text-[#ef4444]"><Icon name="x" className="w-3.5 h-3.5" /></button>
                     </div>
                   )}
-                  <div className={"bg-[#1a1a24] border rounded-xl focus-within:border-[#4F8EF7]/50 transition " +
+                  <div className={"relative bg-[#1a1a24] border rounded-xl focus-within:border-[#4F8EF7]/50 transition " +
                     (mode === "comment" ? "border-[#eab308]/30 focus-within:border-[#eab308]/50" : "border-[#2a2a3a]")}>
+                    {slashOpen && (
+                      <SlashTemplateList
+                        items={slashMatches}
+                        activeIndex={slashIndex}
+                        onPick={applyTemplate}
+                        onHover={setSlashIndex}
+                      />
+                    )}
                     <textarea
+                      ref={composerRef}
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                          e.preventDefault();
-                          sendMessage();
-                        }
-                      }}
+                      onKeyDown={onComposerKeyDown}
                       placeholder={
                         active.status === "closed" ? "Диалог закрыт" :
                         mode === "comment" ? "Комментарий виден только операторам..." :
@@ -930,7 +1077,10 @@ function DialogsScreen({
                       </button>
                     </div>
                   </div>
-                  <div className="text-[10px] text-[#6b7280] mt-1.5 ml-1">Cmd/Ctrl + Enter для отправки</div>
+                  <div className="text-[10px] text-[#6b7280] mt-1.5 ml-1">
+                    Cmd/Ctrl + Enter для отправки
+                    {mode === "message" && <span> · <span className="font-mono text-[#7BA8F9]">/</span> — шаблоны</span>}
+                  </div>
                 </div>
               </div>
             </>
@@ -986,7 +1136,7 @@ function DialogsScreen({
           </div>
         </div>
       )}
-      {showTemplates && <TemplatePickerModal onSelect={pickTemplate} serviceId={active?.serviceId}
+      {showTemplates && <TemplatePickerModal onSelect={pickTemplate} templates={templates}
                                              onClose={() => setShowTemplates(false)} />}
       {showTransfer && (
         <TransferModal
