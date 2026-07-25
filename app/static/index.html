@@ -221,11 +221,13 @@
     function TopBar({ screen, setScreen, activeName, notifCount, onNotifClick, notifOpen, onProfileClick, profileOpen, onCloseMenus, currentOperator, onLogout, onTogglePause, notifItems, onNotifItemClick, onDismissAll }) {
       const screens = [
         { id: "dialogs",  label: "Диалоги",    icon: "chat"     },
+        { id: "health",   label: "Состояние",  icon: "server"   },
         { id: "stats",    label: "Статистика", icon: "chart"    },
         { id: "settings", label: "Настройки",  icon: "settings" },
       ];
       const breadcrumbMap = {
         dialogs:  ["Диалоги", activeName ? "@" + activeName : null],
+        health:   ["Состояние"],
         stats:    ["Статистика"],
         settings: ["Настройки"],
       };
@@ -933,6 +935,12 @@
                 servers={[]}
                 showServiceTag={currentServiceId === null}
               />
+            </div>
+            <div className={"h-full " + (screen !== "health" ? "hidden" : "")}>
+              {/* Ключ по сервису — при переключении ВПН-а экран перезапрашивает
+                  состояние, а не показывает данные предыдущего. */}
+              <HealthScreen key={currentServiceId ?? "all"} serviceId={currentServiceId}
+                            currentOperator={currentOperator} />
             </div>
             <div className={"h-full " + (screen !== "stats" ? "hidden" : "")}>
               <StatisticsScreen serviceId={currentServiceId} />

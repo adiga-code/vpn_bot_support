@@ -424,6 +424,48 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS kb_articles_service_idx ON kb_articles (service_id)"
         )
 
+        await self._migrate_monitoring(conn)
+
+    async def _migrate_monitoring(self, conn):
+        """Мониторинг серверов был глобальным (SERVERS в .env) — переносим его в
+        пер-сервисную настройку `monitoring` первого сервиса, чтобы установка с
+        настроенными серверами не откатилась на мок. Отдельный флаг: базы,
+        мигрировавшие на мультитенантность раньше, тоже должны это получить."""
+        flag = await conn.fetchval(
+            "SELECT value FROM settings WHERE key='monitoring_v1' AND service_id=$1",
+            GLOBAL_SERVICE_ID,
+        )
+        if flag:
+            return
+        try:
+            servers = json.loads(self.settings.SERVERS or "[]")
+        except Exception:
+            servers = []
+        monitor_type = (self.settings.SERVERS_MONITOR_TYPE or "stub").lower()
+        # "stub" — прежнее имя мока в конфиге; провайдер называется "mock".
+        provider = "mock" if not servers or monitor_type == "stub" else monitor_type
+        config = {"servers": servers} if servers else {}
+        if provider == "http":
+            config["health_path"] = self.settings.SERVERS_HEALTH_PATH
+        row = await conn.fetchrow("SELECT id FROM services ORDER BY sort_order, id LIMIT 1")
+        if row:
+            monitoring = {
+                "interval": int(self.settings.SERVERS_CHECK_INTERVAL or 300),
+                "servers": {"provider": provider, "config": config},
+                "bots": {"provider": "mock_bot", "config": {}},
+            }
+            await conn.execute(
+                "INSERT INTO settings (key, value, service_id) VALUES ('monitoring', $1, $2) "
+                "ON CONFLICT (key, service_id) DO NOTHING",
+                json.dumps(monitoring, ensure_ascii=False), row["id"],
+            )
+            print(f"[migrate] monitoring: провайдер серверов '{provider}' у сервиса id={row['id']}")
+        await conn.execute(
+            "INSERT INTO settings (key, value, service_id) VALUES ('monitoring_v1','1',$1) "
+            "ON CONFLICT DO NOTHING",
+            GLOBAL_SERVICE_ID,
+        )
+
     # ── Services ──────────────────────────────────────────────────────────────
 
     async def get_services(self, only_active: bool = True) -> list[dict]:

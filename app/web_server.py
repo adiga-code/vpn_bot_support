@@ -25,7 +25,7 @@ from app.serializers import (
 from app.storage import make_storage
 from app.summarizer import summarize_dialog
 from app.n8n_client import N8NClient
-from app.servers import ServerMonitor, StubServerMonitor
+from app.health import MONITORING_DEFAULTS, ServiceHealthMonitor, known_providers
 from app.ws_manager import WebSocketManager
 
 _STATIC = Path(__file__).parent / "static"
@@ -170,6 +170,17 @@ class ServiceBody(BaseModel):
 class OperatorServicesBody(BaseModel):
     service_ids: list[int] = []
 
+class MonitoringSourceBody(BaseModel):
+    provider: str
+    config: dict = {}
+
+class MonitoringBody(BaseModel):
+    """Пер-сервисный мониторинг: какой источник данных опрашивать по серверам и
+    по ботам. Имена провайдеров — из реестра app.health."""
+    interval: int = 300
+    servers: MonitoringSourceBody
+    bots: MonitoringSourceBody
+
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
@@ -180,7 +191,7 @@ def build_app(
     n8n: N8NClient,
     routing: RoutingEngine,
     billing: BillingProvider,
-    server_monitor: ServerMonitor,
+    health: ServiceHealthMonitor,
 ) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
@@ -604,13 +615,65 @@ def build_app(
         url = await storage.save(content, filename)
         return {"url": url, "filename": filename}
 
-    # ── Servers ───────────────────────────────────────────────────────────────
+    # ── Состояние серверов и ботов ────────────────────────────────────────────
 
-    @app.get("/api/servers")
-    async def get_servers(operator: dict = Depends(require_auth)):
-        snapshot = server_monitor.get_snapshot()
-        snapshot["is_stub"] = isinstance(server_monitor, StubServerMonitor)
-        return snapshot
+    @app.get("/api/health")
+    async def get_health(service_id: Optional[int] = None,
+                         operator: dict = Depends(require_auth)):
+        """С service_id — состояние одного ВПН-а; без него сводка по всем
+        доступным оператору (режим «Все сервисы»). Доступно всем операторам —
+        каждый видит только свои сервисы."""
+        ids = await db.get_operator_service_ids(operator)
+        if service_id is not None:
+            if service_id not in ids:
+                raise HTTPException(403, "Нет доступа к этому сервису")
+            ids = [service_id]
+        services = {s["id"]: s for s in await db.get_services()}
+        out = []
+        for sid in ids:
+            service = services.get(sid)
+            if service:
+                out.append(await health.ensure(service))
+        return {"services": out, "isMock": any(s.get("isMock") for s in out)}
+
+    @app.post("/api/health/refresh")
+    async def refresh_health(service_id: Optional[int] = None,
+                             operator: dict = Depends(require_auth)):
+        """Кнопка «Обновить»: внеочередной опрос вместо ожидания цикла."""
+        ids = await db.get_operator_service_ids(operator)
+        if service_id is not None:
+            if service_id not in ids:
+                raise HTTPException(403, "Нет доступа к этому сервису")
+            ids = [service_id]
+        services = {s["id"]: s for s in await db.get_services()}
+        out = [await health.refresh(services[sid]) for sid in ids if sid in services]
+        return {"services": out, "isMock": any(s.get("isMock") for s in out)}
+
+    @app.get("/api/settings/monitoring")
+    async def get_monitoring(service_id: Optional[int] = None,
+                             operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
+        stored = await db.get_setting_json("monitoring", None, service["id"]) or {}
+        return {**MONITORING_DEFAULTS, **stored,
+                "serviceId": service["id"], "serviceName": service["name"],
+                # Список зарегистрированных источников — админка строит выбор по
+                # нему, поэтому свой провайдер появляется в UI сам собой.
+                "available": {"servers": known_providers("servers"),
+                              "bots": known_providers("bots")}}
+
+    @app.put("/api/settings/monitoring")
+    async def save_monitoring(body: MonitoringBody, service_id: Optional[int] = None,
+                              operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
+        data = body.model_dump()
+        await db.set_setting_json("monitoring", data, service["id"])
+        # Подхватить новый источник сразу, не дожидаясь цикла опроса.
+        asyncio.create_task(health.refresh(service))
+        return {"ok": True}
 
     # ── Statistics ────────────────────────────────────────────────────────────
 
