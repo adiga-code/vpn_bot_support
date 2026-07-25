@@ -17,8 +17,9 @@ from app.web_server import build_app
 from app.ws_manager import WebSocketManager
 
 # Импорт ради регистрации провайдеров мониторинга в реестре app.health.
-# Свой источник данных подключается таким же импортом — см. README.
+# Свой источник данных кладётся файлом в app/providers/ — см. README.
 import app.bots  # noqa: F401
+import app.infra  # noqa: F401
 import app.servers  # noqa: F401
 
 
