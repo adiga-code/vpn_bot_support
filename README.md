@@ -1,6 +1,25 @@
-# VPN Helpdesk — веб-панель техподдержки
+# VPN Bot Support — Helpdesk Panel
 
-Веб-интерфейс для операторов техподдержки VPN-сервиса. Заменяет старый интерфейс на основе Telegram-топиков.
+Веб-панель оператора поддержки для VPN-сервиса. Работает в связке с Telegram-ботом через n8n: n8n принимает сообщения от пользователей и передаёт их в панель через Redis, операторы отвечают через веб-интерфейс, n8n доставляет ответы обратно в Telegram.
+
+---
+
+## Содержание
+
+- [Архитектура](#архитектура)
+- [Компоненты системы](#компоненты-системы)
+- [Поток данных](#поток-данных)
+- [n8n воркфлоу](#n8n-воркфлоу)
+  - [Воркфлоу 1: Main (Основной)](#воркфлоу-1-main-основной)
+  - [Воркфлоу 2: AI Agent](#воркфлоу-2-ai-agent)
+  - [Воркфлоу 3: Output (Отправка пользователю)](#воркфлоу-3-output-отправка-пользователю)
+- [Redis-протокол](#redis-протокол)
+- [Что нужно настроить в n8n](#что-нужно-настроить-в-n8n)
+- [Переменные окружения](#переменные-окружения)
+- [Развёртывание](#развёртывание)
+- [База данных](#база-данных)
+- [Структура проекта](#структура-проекта)
+- [REST API](#rest-api-краткий-справочник)
 
 ---
 
@@ -26,13 +45,73 @@
         │
         ▼
   Браузер оператора (React SPA)
+┌─────────────────────────────────────────────────────────────────────┐
+│                          Telegram                                    │
+│                    (пользователь пишет боту)                         │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │  webhook
+                             ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                           n8n                                        │
+│                                                                      │
+│   ┌────────────┐    ┌─────────────┐    ┌──────────────────────┐    │
+│   │   Main     │───▶│  AI Agent   │───▶│      Output          │    │
+│   │ воркфлоу   │    │  воркфлоу   │    │     воркфлоу         │    │
+│   └─────┬──────┘    └─────────────┘    └──────────────────────┘    │
+│         │                                          ▲                 │
+│         │ LPUSH vpn_bot:incoming                   │                 │
+│         │                             SUBSCRIBE vpn_bot:messages    │
+└─────────┼──────────────────────────────────────────┼────────────────┘
+          │                                           │
+          ▼                                           │
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Python (этот репозиторий)                        │
+│                                                                      │
+│  ┌──────────────────┐   ┌──────────────────┐   ┌────────────────┐  │
+│  │  Redis Consumer  │   │   FastAPI / WS   │   │  n8n Client    │  │
+│  │ (слушает очередь)│   │  (REST + WS API) │   │ (пуш в Redis)  │  │
+│  └────────┬─────────┘   └────────┬─────────┘   └───────┬────────┘  │
+│           │                      │                      │           │
+│           ▼                      ▼                      │           │
+│  ┌──────────────────────────────────────────┐           │           │
+│  │              PostgreSQL                  │           │           │
+│  │  dialogs | messages | operators |        │           │           │
+│  │  settings | kb_articles                  │           │           │
+│  └──────────────────────────────────────────┘           │           │
+│                                                          │           │
+│  ┌─────────────────────┐   ┌────────────────────────┐  │           │
+│  │       Qdrant        │   │   Redis (очереди)      │◀─┘           │
+│  │  (knowledge base)   │   │  vpn_bot:incoming      │              │
+│  └─────────────────────┘   │  vpn_bot:messages      │              │
+│                             │  vpn_bot:notifications  │              │
+│                             │  vpn_bot:ai_toggled     │              │
+│                             │  vpn_bot:dialog_closed  │              │
+│                             │  vpn_bot:billing        │              │
+│                             └────────────────────────┘              │
+└─────────────────────────────────────────────────────────────────────┘
+                             │
+                             ▼ WebSocket
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Браузер оператора                                  │
+│              (React SPA — 3-колоночная панель)                       │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Что делает Python, что делает n8n
+## Компоненты системы
 
-### Python (этот репозиторий)
+| Компонент | Технология | Назначение |
+|-----------|-----------|------------|
+| **Веб-сервер** | FastAPI + Uvicorn | REST API + WebSocket |
+| **Redis Consumer** | asyncio + redis-py | Слушает очередь `vpn_bot:incoming` от n8n |
+| **n8n Client** | redis-py PUBLISH | Пушит команды оператора в n8n |
+| **База данных** | PostgreSQL 16 | Диалоги, сообщения, операторы, настройки |
+| **Векторная БД** | Qdrant | База знаний для AI-агента |
+| **Очередь** | Redis 7 | Двунаправленный обмен с n8n |
+| **Хранилище файлов** | Диск / S3 | Загрузка медиафайлов от операторов |
+| **AI-классификация** | OpenAI / Gemini | Категоризация сообщений |
+| **Фронтенд** | React 18 (CDN) + Tailwind | Панель оператора без сборки |
 
 | Функция | Как реализовано |
 |---|---|
@@ -53,7 +132,7 @@
 | Шаблоны ответов | CRUD, группировка по категориям |
 | Массовая рассылка | POST `/api/broadcast` ко всем chat_id |
 
-### n8n (внешний, не в этом репо)
+## Поток данных
 
 | Функция | Почему в n8n |
 |---|---|
@@ -62,9 +141,21 @@
 | Маршрутизация исходящих сообщений | Читает `vpn_bot:outgoing`, роутит по `type` |
 | Отправка inline-кнопок | Telegram Bot API: `reply_markup` |
 
----
+```
+1. Пользователь пишет в Telegram
+2. n8n: Telegram Trigger получает webhook
+3. n8n: создаёт/находит диалог в n8n_dialogs (PostgreSQL)
+4. n8n: если есть медиа — скачивает файл и загружает на наш сервер POST /api/n8n/upload
+5. n8n: LPUSH в Redis-очередь vpn_bot:incoming (JSON с типом user_message)
+6. Python: RedisConsumer читает сообщение из очереди
+7. Python: upsert диалога и сохранение сообщения в БД
+8. Python: WebSocket broadcast — все операторы видят новое сообщение
+9. Python: фоновая задача — классификация сообщения по категории
+10. Python: если новый диалог — PUBLISH в vpn_bot:notifications (уведомление операторов)
+11. Если ai_status=true для диалога → n8n вызывает AI Agent воркфлоу
+```
 
-## Структура проекта
+### Ответ оператора пользователю
 
 ```
 vpn_bot_support/
@@ -101,18 +192,88 @@ vpn_bot_support/
 
 ---
 
-## Быстрый старт
+## n8n воркфлоу
 
-```bash
-git clone <repo>
-cd vpn_bot_support
+В систему входят три взаимосвязанных воркфлоу.
 
 cp .env.example .env
 # Обязательно заполнить: POSTGRES_PASSWORD, SECRET_KEY
 # Опционально: ADMIN_INIT_TG, ADMIN_INIT_PASSWORD — создаст первого администратора
 
-docker compose up -d --build
-# Панель: http://localhost:8000
+### Воркфлоу 1: Main (Основной)
+
+Главный воркфлоу запускается по Telegram webhook. Содержит несколько независимых веток (параллельные триггеры).
+
+#### Ветка A: Входящее сообщение от пользователя
+
+```
+Telegram Trigger
+    │
+    ▼
+Поиск диалогов пользователя
+  (SELECT FROM n8n_dialogs WHERE user_id AND status='active')
+    │
+    ├── [диалог найден] → If: проверяем $json.id exists
+    │       │ TRUE  → Получить диалог (SELECT BY id)
+    │       │ FALSE → Добавить диалог (INSERT в n8n_dialogs)
+    │                      └──► Получить диалог (SELECT BY id)
+    │
+    ▼
+Switch: тип медиа (sticker | photo | voice | video | text)
+    │
+    ├── sticker → Edit Fields
+    │               file_id   = sticker.file_id
+    │               file_type = sticker
+    │
+    ├── photo → HTTP Request (getFile по file_id)
+    │           HTTP Request (скачать файл)
+    │           POST /api/n8n/upload (загрузить на наш сервер)
+    │           Edit Fields1
+    │               file_id   = URL нашего сервера
+    │               file_type = photo
+    │
+    ├── voice → HTTP Request (getFile)
+    │           HTTP Request (скачать)
+    │           POST /api/n8n/upload
+    │           Edit Fields2
+    │               file_id   = URL нашего сервера
+    │               file_type = voice
+    │
+    ├── video → HTTP Request2 (getFile)
+    │           Edit Fields4
+    │               file_id   = прямая ссылка Telegram
+    │               file_type = video
+    │
+    └── text  → Edit Fields3
+                    message   = message.text
+                    file_type = text
+
+    │ (все ветки сходятся)
+    ▼
+Добавить сообщение в базу (INSERT INTO n8n_messages)
+    │
+    ▼
+Если ИИ включена для чата (проверка ai_status из n8n_dialogs)
+    │
+    ├── [ai_status = true]
+    │       Redis LPUSH vpn_bot:incoming (type=user_message, ai_enabled=true)
+    │       Call 'AI Agent' воркфлоу
+    │
+    └── [ai_status = false]
+            Redis LPUSH vpn_bot:incoming (type=user_message, ai_enabled=false)
+```
+
+**Что кладётся в `vpn_bot:incoming` (user_message):**
+```json
+{
+  "type": "user_message",
+  "dialog_id": "42",
+  "chat_id": "123456789",
+  "message": "Не работает VPN",
+  "ai_enabled": true,
+  "file_id": "https://yourdomain.com/api/files/photo_abc.jpg",
+  "file_type": "photo"
+}
 ```
 
 > После `git pull` всегда делай `docker compose up -d --build` —
@@ -120,225 +281,35 @@ docker compose up -d --build
 
 При старте в консоль выводятся учётные данные всех операторов:
 ```
-==================================================
-  HELPDESK LOGIN CREDENTIALS
-==================================================
-  [ADMIN] @ivan  (✓ password set)
-==================================================
-```
 
 ---
 
-## Переменные окружения (.env)
-
-### Обязательные
-
-| Переменная | Описание |
-|---|---|
-| `POSTGRES_PASSWORD` | Пароль PostgreSQL |
-| `SECRET_KEY` | Ключ подписи сессионных cookie. Сгенерировать: `python -c "import secrets; print(secrets.token_hex(32))"` |
-
-### Аутентификация и первый администратор
-
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `ADMIN_INIT_TG` | — | Telegram @username первого администратора (без @). Используется один раз при первом запуске или если у оператора нет пароля. |
-| `ADMIN_INIT_PASSWORD` | — | Пароль первого администратора |
-
-### PostgreSQL
-
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `POSTGRES_HOST` | `postgres` | Хост |
-| `POSTGRES_PORT` | `5432` | Порт |
-| `POSTGRES_DB` | `vpnbot` | Имя базы данных |
-| `POSTGRES_USER` | `vpnbot` | Пользователь |
-
-### Redis
-
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `REDIS_URL` | `redis://redis:6379` | URL Redis |
-
-### Веб-сервер
-
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `WEB_HOST` | `0.0.0.0` | Хост |
-| `WEB_PORT` | `8000` | Порт |
-| `BASE_URL` | — | Публичный URL (scheme+host) для абсолютных ссылок на файлы, например `https://helpdesk.example.com`. Нужен когда n8n пересылает файлы в Telegram. |
-| `BASE_URL_PATH` | — | Путь-префикс если nginx проксирует без strip, например `/files` |
-
-### Файлы и хранилище
-
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `UPLOADS_DIR` | `app/uploads` | Директория для локального хранения файлов |
-| `N8N_API_KEY` | — | API-ключ для эндпоинта `/api/n8n/upload` (n8n загружает файлы из Telegram). Сгенерировать: `python -c "import secrets; print(secrets.token_hex(24))"` |
-| `S3_BUCKET` | — | Имя S3-бакета. Если задано вместе с `S3_ACCESS_KEY` — используется S3 вместо локального диска |
-| `S3_ENDPOINT_URL` | — | URL эндпоинта (AWS S3, R2, MinIO, Yandex OS и т.д.) |
-| `S3_ACCESS_KEY` | — | Access key |
-| `S3_SECRET_KEY` | — | Secret key |
-| `S3_REGION` | `us-east-1` | Регион |
-| `S3_PUBLIC_URL` | — | CDN или кастомный домен для публичных ссылок на файлы |
-
-### AI (классификация, суммаризация, KB)
-
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `CHAT_PROVIDER` | `openai` | Провайдер LLM: `openai` или `gemini` |
-| `OPENAI_API_KEY` | — | Ключ OpenAI. Обязателен для KB (эмбеддинги всегда через OpenAI), для `openai`-провайдера |
-| `GEMINI_API_KEY` | — | Ключ Google Gemini. Нужен только при `CHAT_PROVIDER=gemini` |
-| `QDRANT_URL` | `http://qdrant:6333` | URL Qdrant (для базы знаний) |
-
-### Биллинг
-
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `BILLING_API_URL` | — | URL биллингового API. Если пустой — используется заглушка |
-| `BILLING_API_TOKEN` | — | Bearer-токен биллингового API |
-
-### Мониторинг серверов
-
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `SERVERS_MONITOR_TYPE` | `stub` | Тип мониторинга: `tcp` \| `http` \| `stub` |
-| `SERVERS_CHECK_INTERVAL` | `300` | Интервал проверки (секунды) |
-| `SERVERS_HEALTH_PATH` | `/health` | Путь health-эндпоинта (только для `type=http`) |
-| `SERVERS` | `[]` | JSON-список серверов (см. раздел Мониторинг) |
-
----
-
-## Аутентификация
-
-Операторы логинятся по Telegram @username и паролю. Сессия хранится в `httpOnly`-cookie.
-
-### Роли
-
-| Роль | Возможности |
-|---|---|
-| `admin` | Всё: управление операторами, настройки, передача любых диалогов |
-| `agent` | Работа с диалогами, передача только своих тикетов |
-
-### Первый вход
-
-1. Задать `ADMIN_INIT_TG` и `ADMIN_INIT_PASSWORD` в `.env`
-2. Запустить — при старте создаётся оператор с ролью `admin`
-3. Войти на `http://localhost:8000` с этими учётными данными
-4. Через панель настроек добавить остальных операторов и задать им пароли
-
-### Смена пароля
+#### Ветка C: Переключение AI
 
 ```
-PUT /api/auth/password  { "old_password": "...", "new_password": "..." }
+Redis Trigger: SUBSCRIBE vpn_bot:ai_toggled
+    │
+    ▼
+To JSON1 → Получить диалог по ID1
+    │
+    ▼
+UPDATE n8n_dialogs SET ai_status = !ai_status WHERE id = dialog_id
+    │
+    ▼
+Redis LPUSH vpn_bot:toggle:{dialog_id}: {"ai_enabled": true/false}
+```
+
+**Что Python публикует в `vpn_bot:ai_toggled`:**
+```json
+{
+  "type": "ai_toggled",
+  "dialog_id": "42",
+  "chat_id": "123456789",
+  "ai_enabled": true
+}
 ```
 
 ---
-
-## Автораспределение тикетов
-
-При поступлении нового тикета система автоматически назначает его наименее загруженному **онлайн**-оператору.
-
-### Алгоритм
-
-1. Найти оператора с `online=true` и наименьшим числом активных (не `closed`) тикетов
-2. Если у всех операторов тикетов ≥ `max_tickets_per_operator` — тикет остаётся в очереди (`assigned_operator IS NULL`)
-3. Очередь сливается автоматически когда оператор:
-   - закрывает тикет
-   - выходит онлайн через WebSocket
-
-### Настройка
-
-В панели **Настройки → Автоматизация**:
-
-| Параметр | По умолчанию | Описание |
-|---|---|---|
-| `max_tickets_per_operator` | `10` | Максимум активных тикетов на оператора |
-| `operator_button_enabled` | `false` | Показывать кнопку «Позвать оператора» |
-| `operator_button_after_msgs` | `3` | После скольких сообщений показывать кнопку |
-
-### Передача тикета
-
-```
-POST /api/dialogs/{dialog_id}/transfer  { "operator_name": "Петров" }
-```
-
-- Оператор может передать только **свой** тикет
-- Администратор — **любой** тикет
-- При передаче старый оператор освобождает слот → срабатывает слив очереди
-
-### Вкладки в панели
-
-- **Мои** — тикеты назначенные текущему оператору
-- **Все** — все тикеты (доступна администраторам и при ручном взятии)
-- Тикеты без оператора отображаются с меткой «В очереди»
-
----
-
-## База знаний (KB)
-
-Документы загружаются, автоматически разбиваются на чанки и индексируются в Qdrant.
-
-### Загрузка
-
-```
-POST /api/kb/upload  (multipart/form-data: file=<pdf|txt|md|docx>)
-```
-
-Процесс:
-1. LLM разбивает документ на семантически независимые чанки
-2. Чанки эмбеддятся через `text-embedding-3-small` (OpenAI)
-3. Векторы сохраняются в Qdrant (коллекция `kb`)
-4. Метаданные (`title`, `category`, `keywords`, `content`) — в PostgreSQL
-
-### Управление статьями
-
-```
-GET    /api/kb                    — список всех статей
-DELETE /api/kb/{article_id}       — удалить статью
-```
-
-### Требования
-
-- `OPENAI_API_KEY` — обязателен для эмбеддингов
-- `QDRANT_URL` — должен быть доступен (включён в `docker-compose.yml`)
-
----
-
-## Шаблоны ответов
-
-Быстрые ответы с группировкой по категориям. Доступны оператору в чате.
-
-```
-GET    /api/templates
-POST   /api/templates             { "group_name": "Тарифы", "title": "Продление", "text": "..." }
-PUT    /api/templates/{id}
-DELETE /api/templates/{id}
-```
-
----
-
-## Массовая рассылка
-
-Отправить текстовое сообщение всем пользователям (всем `chat_id` из таблицы `dialogs`):
-
-```
-POST /api/broadcast  { "text": "Плановые работы с 23:00 до 01:00" }
-```
-
-Сообщение ставится в очередь через `vpn_bot:outgoing` и доставляется n8n-воркфлоу.
-
----
-
-## База данных
-
-`init_db()` запускается при каждом старте и безопасен для повторного запуска:
-
-- **Свежая установка** — создаёт все таблицы
-- **Обновление** — добавляет новые колонки через `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
-- **Миграция со старой системы** (Telegram-топики) — старые таблицы `dialogs`, `messages`, `chat_topics` автоматически переименуются в `*_legacy`, новые создадутся рядом
-
-### Таблицы
 
 **`dialogs`** — одно обращение пользователя:
 
@@ -407,13 +378,48 @@ id, title, category, keywords, content (полный текст чанка)
 group_name, title, text
 ```
 
+**Специальный маркер `[HANDOFF]`:** если AI добавляет этот маркер в ответ, Python-сторона автоматически переключает диалог на оператора (выключает AI, устанавливает `operator_called=true`, меняет статус диалога).
+
+---
+
+### Воркфлоу 3: Output (Отправка пользователю)
+
+Универсальный воркфлоу для отправки любого типа контента пользователю в Telegram. Вызывается из Main и AI Agent как `executeWorkflow`.
+
+```
+When Executed by Another Workflow
+  Inputs: chat_id, message, file_id, file_type
+    │
+    ▼
+Switch: file_type
+    │
+    ├── "photo"   → HTTP Request (скачать файл по file_id как binary)
+    │               Send a photo message
+    │                   Telegram sendPhoto + binary data
+    │                   caption = message
+    │
+    ├── "sticker" → Send a sticker
+    │                   Telegram sendSticker
+    │                   file = file_id (оригинальный Telegram file_id)
+    │
+    ├── "voice"   → HTTP Request2 (Telegram getFile по file_id)
+    │               HTTP Request3 (скачать OGG по result.file_path)
+    │               HTTP Request4 (POST sendVoice multipart/form-data)
+    │
+    └── [text/default] → Send a text message
+                             Telegram sendMessage
+                             parse_mode = HTML
+```
+
+> **Важно:** для фото/голоса загруженных оператором через веб-панель `file_id` содержит URL нашего сервера (`https://yourdomain.com/api/files/...`). Для стикеров от пользователей — передаётся оригинальный Telegram `file_id` напрямую.
+
 ---
 
 ## Redis: протокол обмена с n8n
 
 ### n8n → Python: входящие (`LPUSH vpn_bot:incoming`)
 
-**Сообщение пользователя:**
+**Тип `user_message`:**
 ```json
 {
   "type": "user_message",
@@ -436,7 +442,7 @@ group_name, title, text
 }
 ```
 
-**Ответ AI:**
+**Тип `ai_response`:**
 ```json
 {
   "type": "ai_response",
@@ -704,26 +710,22 @@ Telegram inline-кнопки посылают `callback_query` — добави�
 | POST | `/api/n8n/upload` | Загрузить файл (от n8n, требует `X-API-Key`) |
 | GET | `/api/files/{filename}` | Скачать файл |
 
----
+Redis в credentials: host = `redis`, port = `6379` (если в одной Docker-сети с n8n).
 
-## Мониторинг VPN-серверов
+### 2. Переменные n8n (`$vars`)
 
 Фоновая задача проверяет серверы каждые `SERVERS_CHECK_INTERVAL` секунд. При падении — уведомление операторам через `vpn_bot:outgoing`.
 
 ### Конфигурация
 
-```env
-SERVERS_MONITOR_TYPE=tcp          # tcp | http | stub
-SERVERS_CHECK_INTERVAL=300        # секунды
-SERVERS_HEALTH_PATH=/health       # только для type=http
+### 3. Загрузка файлов на наш сервер
 
-SERVERS=[
-  {"name":"Frankfurt-01","host":"1.2.3.4","port":443,"location":"DE"},
-  {"name":"Amsterdam-03","host":"5.6.7.8","port":443,"location":"NL","load_warn_pct":75}
-]
+В HTTP Request узлах загрузки фото/голоса (Main воркфлоу) нужно добавить заголовок для авторизации:
+```
+X-API-Key: {значение N8N_API_KEY из .env}
 ```
 
-### Типы мониторинга
+URL загрузки: `POST https://yourdomain.com/api/n8n/upload`
 
 | Тип | Как работает |
 |---|---|
@@ -778,7 +780,7 @@ Telegram-файлы нельзя отобразить в браузере по `
 
 ---
 
-## Биллинг
+### Первый администратор
 
 Три действия: **Продлить подписку**, **Докупить трафик**, **Сбросить ключ**.
 
@@ -789,14 +791,17 @@ BILLING_API_URL=https://billing.example.com/api
 BILLING_API_TOKEN=your_secret_token
 ```
 
-`HttpBillingProvider` вызовет:
-```
-POST /subscriptions/renew        { "chat_id": "...", "dialog_id": "..." }
-POST /subscriptions/buy_traffic  { "chat_id": "...", "dialog_id": "..." }
-POST /keys/reset                 { "chat_id": "...", "dialog_id": "..." }
-```
+| Переменная | По умолчанию | Описание |
+|-----------|-------------|---------|
+| `REDIS_URL` | `redis://redis:6379` | URL Redis |
+| `POSTGRES_HOST` | `postgres` | Хост PostgreSQL |
+| `POSTGRES_PORT` | `5432` | Порт PostgreSQL |
+| `POSTGRES_DB` | `helpdesk` | Имя базы данных |
+| `POSTGRES_USER` | `helpdesk` | Пользователь PostgreSQL |
+| `WEB_HOST` | `0.0.0.0` | Хост uvicorn |
+| `WEB_PORT` | `8000` | Порт uvicorn |
 
-### Своя схема запросов
+### Публичный URL и файлы
 
 ```python
 # app/billing.py
@@ -809,22 +814,99 @@ class MyBilling(HttpBillingProvider):
 
 ---
 
-## Порты контейнеров
+## Структура проекта
 
-| Контейнер | Образ | Порт на хосте |
-|---|---|---|
-| `vpn-helpdesk` | python:3.11-slim | `8000` |
-| `vpn-bot-redis` | redis:7-alpine | `6380` |
-| `vpn-bot-postgres` | postgres:16-alpine | `5433` |
-| `vpn-bot-qdrant` | qdrant/qdrant | `6333`, `6334` |
+```
+vpn_bot_support/
+├── app/
+│   ├── config.py          # Все переменные окружения (Pydantic Settings)
+│   ├── database.py        # PostgreSQL: все запросы + автомиграции при старте
+│   ├── web_server.py      # FastAPI: REST API + WebSocket endpoint
+│   ├── ws_manager.py      # WebSocket broadcast + онлайн-статус операторов
+│   ├── redis_consumer.py  # Слушает vpn_bot:incoming, обрабатывает сообщения
+│   ├── n8n_client.py      # PUBLISH событий в Redis → n8n
+│   ├── auth.py            # bcrypt хэширование + JWT (30 дней)
+│   ├── billing.py         # Биллинговый API (HttpBillingProvider или Stub)
+│   ├── servers.py         # Мониторинг VPN-серверов (TCP/HTTP/Stub)
+│   ├── ai_client.py       # OpenAI / Gemini wrapper
+│   ├── classifier.py      # AI-классификация категории сообщения
+│   ├── kb.py              # Knowledge base: chunking + embeddings → Qdrant
+│   ├── summarizer.py      # AI-сводка диалога при закрытии
+│   ├── storage.py         # Хранилище файлов (Local или S3)
+│   └── static/
+│       ├── index.html     # React SPA (Tailwind + Babel CDN, без сборки)
+│       ├── components.jsx # Avatar, Icon, Toast, Badge, StatusBadge
+│       ├── dialogs.jsx    # Основной экран: список диалогов + чат + детали
+│       ├── statistics.jsx # Статистика и аналитика
+│       ├── servers.jsx    # Мониторинг VPN-серверов
+│       └── settings.jsx   # Операторы, AI-настройки, расписание, KB
+├── main.py                # Точка входа: asyncio.gather(web, redis_consumer, monitor)
+├── requirements.txt       # Python-зависимости
+├── Dockerfile             # python:3.11-slim
+├── docker-compose.yml     # Полный стек (app + PG + Redis + Qdrant + pgAdmin)
+└── .env.example           # Шаблон конфигурации
+```
+
+### Запуск (`main.py`)
+
+При старте выполняется в порядке:
+1. Загрузка настроек из `.env` (Pydantic Settings)
+2. Инициализация пула соединений PostgreSQL
+3. Автомиграции БД (idempotent `ALTER TABLE IF NOT EXISTS`)
+4. Создание первого администратора (если задан `ADMIN_INIT_TG`)
+5. Инициализация: Redis, WebSocket-менеджер, n8n-клиент, биллинг, мониторинг серверов
+6. Параллельный запуск трёх задач через `asyncio.gather()`:
+   - Uvicorn (FastAPI + WebSocket)
+   - RedisConsumer (BRPOP `vpn_bot:incoming`)
+   - ServerMonitor (периодическая проверка серверов)
 
 ---
 
-## Обновление
+## REST API (краткий справочник)
 
-```bash
-git pull
-docker compose up -d --build   # пересобрать образ с новым кодом
+### Аутентификация
+
+| Метод | Путь | Описание |
+|-------|------|---------|
+| GET | `/api/auth/status` | Нужна ли начальная настройка |
+| POST | `/api/auth/setup` | Создать первого администратора |
+| POST | `/api/auth/login` | Войти (tg + password) → JWT токен |
+| GET | `/api/auth/me` | Текущий оператор |
+| PUT | `/api/auth/password` | Сменить пароль |
+
+JWT токен передаётся в заголовке `Authorization: Bearer <token>` или через WebSocket query `?token=<token>`.
+
+### Диалоги
+
+| Метод | Путь | Описание |
+|-------|------|---------|
+| GET | `/api/dialogs` | Список всех диалогов |
+| GET | `/api/dialogs/{id}` | Диалог + история сообщений |
+| GET | `/api/dialogs/{id}/history` | Предыдущие тикеты от этого пользователя |
+| POST | `/api/dialogs/{id}/reply` | Ответить пользователю |
+| POST | `/api/dialogs/{id}/toggle_ai` | Вкл/выкл AI для диалога |
+| POST | `/api/dialogs/{id}/handoff` | Передать оператору (выкл AI) |
+| POST | `/api/dialogs/{id}/close` | Закрыть диалог |
+| POST | `/api/dialogs/{id}/billing/{action}` | `renew` / `buy_traffic` / `reset_key` |
+
+### Файлы
+
+| Метод | Путь | Auth | Описание |
+|-------|------|------|---------|
+| POST | `/api/upload` | JWT Bearer | Загрузить файл (оператор → пользователю) |
+| POST | `/api/n8n/upload` | X-API-Key | Загрузить файл (n8n → хранилище) |
+| GET | `/api/files/{filename}` | — | Скачать файл |
+
+### WebSocket
+
+```
+WS /ws?token=<JWT>
 ```
 
-База данных обновляется автоматически при старте — новые колонки добавятся через `ALTER TABLE`.
+События приходящие с сервера:
+```json
+{"type": "new_message",      "dialog_id": "42", "message": {...}}
+{"type": "dialog_updated",   "dialog_id": "42", "dialog": {...}}
+{"type": "new_dialog",       "dialog": {...}}
+{"type": "operator_status",  "operator_id": 1, "online": true}
+```
