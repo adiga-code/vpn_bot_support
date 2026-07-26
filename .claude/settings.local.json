@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(docker exec:*)"
+      "Bash(docker exec:*)",
+      "Bash(grep -n \"broadcast\" app/web_server.py | head; echo \"=== endpoint ===\"; sed -n '/async def broadcast_msg/,/^    # ── Templates/p' app/web_server.py)",
+      "Bash(sed -n '/async def send_to_user/,/return await self._push\\(payload, service\\)/p' app/n8n_client.py)",
+      "Bash(sed -n '/async def _push\\(self, payload: dict, service/,/return await self._push_rmq\\(payload\\)/p' app/n8n_client.py)",
+      "Bash(python3 -)"
     ]
   }
 }

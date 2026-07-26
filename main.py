@@ -1,5 +1,4 @@
 import asyncio
-import json
 
 import aio_pika
 import uvicorn
@@ -7,15 +6,22 @@ import redis.asyncio as aioredis
 
 from app.ai_client import make_chat_client
 from app.auth import hash_password
-from app.billing import make_billing_provider
 from app.config import Settings
+from app.customer import CustomerService
 from app.database import DatabaseManager
+from app.health import ServiceHealthMonitor, load_plugins
 from app.n8n_client import N8NClient
 from app.rabbitmq_consumer import RabbitMQConsumer
 from app.routing import RoutingEngine
-from app.servers import make_server_monitor
 from app.web_server import build_app
 from app.ws_manager import WebSocketManager
+
+# Импорт ради регистрации провайдеров в реестрах app.health и app.customer.
+# Свой источник данных кладётся файлом в app/providers/ — см. README.
+import app.bots  # noqa: F401
+import app.customers  # noqa: F401
+import app.infra  # noqa: F401
+import app.servers  # noqa: F401
 
 
 async def main():
@@ -64,25 +70,30 @@ async def main():
 
     ws_manager = WebSocketManager()
     n8n_client = N8NClient(settings, rmq, redis, db)
-    billing = make_billing_provider(settings.BILLING_API_URL, settings.BILLING_API_TOKEN)
 
-    # ── Server-down notification callback ─────────────────────────────────────
-    async def on_server_down(name: str, location: str):
-        await n8n_client.schedule_notify("server_down", {"server_name": name, "location": location})
-        print(f"[NOTIF] server_down: {name} ({location})")
+    # ── Уведомление о падении сервера или бота ────────────────────────────────
+    # Уходит боту того ВПН-а, чей компонент лёг, а не всем подряд.
+    async def on_component_down(service: dict, component: dict):
+        event = "bot_down" if component.get("kind") == "bots" else "server_down"
+        await n8n_client.schedule_notify(event, {
+            "server_name": component.get("name"),
+            "location": component.get("location", ""),
+            "reason": component.get("message", ""),
+            "service_name": service.get("name"),
+        }, service)
+        print(f"[NOTIF] {event}: {component.get('name')} ({service.get('slug')})")
 
-    server_monitor = make_server_monitor(
-        monitor_type=settings.SERVERS_MONITOR_TYPE,
-        servers=json.loads(settings.SERVERS),
-        interval=settings.SERVERS_CHECK_INTERVAL,
-        health_path=settings.SERVERS_HEALTH_PATH,
-        on_server_down=on_server_down,
-    )
+    # Свои источники данных из app/providers/ — подхватываются файлом, без
+    # правки кода приложения (см. app/providers/__init__.py).
+    load_plugins()
+
+    health_monitor = ServiceHealthMonitor(db, on_component_down=on_component_down)
+    customers = CustomerService(db)
 
     chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
     routing = RoutingEngine(db, ws_manager, n8n_client)
     consumer = RabbitMQConsumer(rmq, db, ws_manager, n8n_client, routing, chat_client)
-    app = build_app(settings, db, ws_manager, n8n_client, routing, billing, server_monitor)
+    app = build_app(settings, db, ws_manager, n8n_client, routing, customers, health_monitor)
 
     # ── HTTP server ───────────────────────────────────────────────────────────
     config = uvicorn.Config(
@@ -99,7 +110,7 @@ async def main():
         await asyncio.gather(
             server.serve(),
             consumer.consume(),
-            server_monitor.run_forever(),
+            health_monitor.run_forever(),
             routing.sweep_forever(),
         )
     finally:

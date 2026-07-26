@@ -12,7 +12,6 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 if TYPE_CHECKING:
     from app.ai_client import ChatClient
 
-_COLLECTION = "kb"
 _EMBED_MODEL = "text-embedding-3-small"
 _EMBED_DIMS  = 1536
 _BATCH_SIZE  = 400
@@ -226,20 +225,25 @@ async def embed_chunks(chunks: list[dict], openai_key: str) -> list[dict]:
     return chunks
 
 
-async def ensure_collection(qdrant_url: str):
-    """Create Qdrant collection and payload index if they don't exist."""
+async def ensure_collection(qdrant_url: str, collection: str):
+    """Create Qdrant collection and payload index if they don't exist.
+
+    У каждого ВПН-сервиса своя коллекция (services.qdrant_collection) — так
+    базы знаний не смешиваются, а в n8n имя коллекции остаётся обычным
+    параметром ноды.
+    """
     from qdrant_client.models import PayloadSchemaType
     client = AsyncQdrantClient(url=qdrant_url)
     try:
-        await client.get_collection(_COLLECTION)
+        await client.get_collection(collection)
     except Exception:
         await client.create_collection(
-            _COLLECTION,
+            collection,
             vectors_config=VectorParams(size=_EMBED_DIMS, distance=Distance.COSINE),
         )
     try:
         await client.create_payload_index(
-            _COLLECTION,
+            collection,
             field_name="metadata.article_id",
             field_schema=PayloadSchemaType.KEYWORD,
         )
@@ -248,13 +252,24 @@ async def ensure_collection(qdrant_url: str):
     await client.close()
 
 
+async def delete_collection(qdrant_url: str, collection: str):
+    """Полный сброс базы знаний одного сервиса."""
+    client = AsyncQdrantClient(url=qdrant_url)
+    try:
+        await client.delete_collection(collection)
+    except Exception:
+        pass
+    finally:
+        await client.close()
+
+
 def _point_id(article_id: str) -> str:
     # Deterministic: re-uploading the same document overwrites its points
     # instead of accumulating duplicates.
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"kb:{article_id}"))
 
 
-async def upsert_to_qdrant(chunks: list[dict], qdrant_url: str):
+async def upsert_to_qdrant(chunks: list[dict], qdrant_url: str, collection: str):
     """Upsert embedded chunks into Qdrant."""
     client = AsyncQdrantClient(url=qdrant_url)
     points = [
@@ -275,17 +290,17 @@ async def upsert_to_qdrant(chunks: list[dict], qdrant_url: str):
         )
         for c in chunks
     ]
-    await client.upsert(collection_name=_COLLECTION, points=points)
+    await client.upsert(collection_name=collection, points=points)
     await client.close()
 
 
-async def delete_from_qdrant(article_id: str, qdrant_url: str):
+async def delete_from_qdrant(article_id: str, qdrant_url: str, collection: str):
     """Delete a point by article_id payload filter."""
     from qdrant_client.models import Filter, FieldCondition, MatchValue
     client = AsyncQdrantClient(url=qdrant_url)
     try:
         await client.delete(
-            collection_name=_COLLECTION,
+            collection_name=collection,
             points_selector=Filter(
                 must=[FieldCondition(key="metadata.article_id", match=MatchValue(value=article_id))]
             ),
@@ -295,7 +310,9 @@ async def delete_from_qdrant(article_id: str, qdrant_url: str):
     await client.close()
 
 
-async def process_document(text: str, chat_client: "ChatClient", openai_key: str, qdrant_url: str) -> list[dict]:
+async def process_document(
+    text: str, chat_client: "ChatClient", openai_key: str, qdrant_url: str, collection: str,
+) -> list[dict]:
     """Full pipeline: text → chunks → embeddings (OpenAI) → Qdrant.
 
     Structured markdown ("## " sections) is split deterministically; the
@@ -313,9 +330,9 @@ async def process_document(text: str, chat_client: "ChatClient", openai_key: str
             return []
         print(f"[KB] Created {len(chunks)} chunks, embedding...")
         chunks = await embed_chunks(chunks, openai_key)
-        await ensure_collection(qdrant_url)
-        await upsert_to_qdrant(chunks, qdrant_url)
-        print(f"[KB] Upserted {len(chunks)} vectors to Qdrant")
+        await ensure_collection(qdrant_url, collection)
+        await upsert_to_qdrant(chunks, qdrant_url, collection)
+        print(f"[KB] Upserted {len(chunks)} vectors to Qdrant collection '{collection}'")
         for c in chunks:
             c.pop("embedding", None)
         return chunks

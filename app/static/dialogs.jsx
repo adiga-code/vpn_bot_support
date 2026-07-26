@@ -56,21 +56,24 @@ function StarRating({ rating, size = "sm" }) {
   );
 }
 
-function ConvCard({ conv, active, onClick }) {
+// flat — вид для телефона: строка во всю ширину с разделителем вместо карточки
+// с закруглениями, чтобы список читался как обычный мобильный лист.
+function ConvCard({ conv, active, onClick, showServiceTag = false, flat = false }) {
   // escalated but not yet served — grabs attention in «ИИ»/«Очередь»
   const calledUnserved = conv.operatorCalled && ["ai", "queue"].includes(conv.status);
   return (
     <button
       onClick={onClick}
       className={
-        "w-full text-left p-3 rounded-lg transition relative group " +
+        "w-full text-left relative group transition " +
+        (flat ? "p-3.5 border-b border-[#2a2a3a]/50 " : "p-3 rounded-lg ") +
         (active
           ? "bg-[#1a1a24] ring-1 ring-[#4F8EF7]/40"
           : calledUnserved
-          ? "bg-[#1a0a0a] ring-1 ring-[#ef4444]/50 hover:bg-[#1a1a24]/60"
+          ? (flat ? "bg-[#ef4444]/[.06] active:bg-[#1a1a24]" : "bg-[#1a0a0a] ring-1 ring-[#ef4444]/50 hover:bg-[#1a1a24]/60")
           : conv.status === "in_progress" && conv.unread > 0
-          ? "bg-[#1a1a18] ring-1 ring-[#eab308]/30 hover:bg-[#1a1a24]/60"
-          : "hover:bg-[#1a1a24]/60")
+          ? (flat ? "bg-[#eab308]/[.05] active:bg-[#1a1a24]" : "bg-[#1a1a18] ring-1 ring-[#eab308]/30 hover:bg-[#1a1a24]/60")
+          : (flat ? "active:bg-[#1a1a24]" : "hover:bg-[#1a1a24]/60"))
       }
     >
       {active && <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-[#4F8EF7] rounded-r"></div>}
@@ -94,7 +97,11 @@ function ConvCard({ conv, active, onClick }) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2 mb-0.5">
-            <div className="text-sm font-medium text-[#f1f1f5] truncate">{conv.name}</div>
+            <div className="flex items-center gap-1.5 min-w-0">
+              {/* В режиме «Все сервисы» — чей это тикет */}
+              {showServiceTag && <ServiceDot color={conv.serviceColor} name={conv.serviceName} />}
+              <div className="text-sm font-medium text-[#f1f1f5] truncate">{conv.name}</div>
+            </div>
             <div className="text-[10px] text-[#6b7280] shrink-0">{conv.time}</div>
           </div>
           <div className="text-[10px] text-[#6b7280]/70 truncate -mt-0.5 mb-0.5">{conv.username}</div>
@@ -191,7 +198,10 @@ function FileContent({ msg, side, onImageClick }) {
   );
 }
 
-function MessageBubble({ msg, onImageClick }) {
+function MessageBubble({ msg, onImageClick, compact = false }) {
+  // На узких экранах пузырь может занимать больше ширины — иначе текст
+  // ломается на две-три буквы в строке.
+  const wide = compact ? "max-w-[82%]" : "max-w-[70%]";
   if (msg.kind === "system") {
     return (
       <div className="flex justify-center my-2">
@@ -205,7 +215,7 @@ function MessageBubble({ msg, onImageClick }) {
     const hasFile = msg.fileType && msg.fileType !== "text";
     return (
       <div className="flex justify-start">
-        <div className="max-w-[70%]">
+        <div className={wide}>
           {hasFile
             ? <>
                 <FileContent msg={msg} side="left" onImageClick={onImageClick} />
@@ -221,7 +231,7 @@ function MessageBubble({ msg, onImageClick }) {
   if (msg.kind === "ai") {
     return (
       <div className="flex justify-start">
-        <div className="max-w-[70%]">
+        <div className={wide}>
           <div className="bg-[#4F8EF7]/12 border border-[#4F8EF7]/25 text-[#f1f1f5] px-3.5 py-2.5 rounded-2xl rounded-tl-md text-sm leading-relaxed relative">
             <div className="absolute -top-2 left-3 flex items-center gap-1 bg-[#4F8EF7] text-white text-[9px] font-bold px-1.5 py-0.5 rounded">
               <Icon name="sparkles" className="w-2.5 h-2.5" strokeWidth={2.5} />
@@ -242,7 +252,7 @@ function MessageBubble({ msg, onImageClick }) {
       : "bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5]";
     return (
       <div className="flex justify-end">
-        <div className="max-w-[70%]">
+        <div className={wide}>
           {hasFile
             ? <>
                 <FileContent msg={msg} side="right" onImageClick={onImageClick} />
@@ -264,7 +274,7 @@ function MessageBubble({ msg, onImageClick }) {
   if (msg.kind === "comment") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[70%]">
+        <div className={wide}>
           <div className="bg-[#eab308]/10 border border-[#eab308]/20 rounded-2xl rounded-tr-sm px-4 py-2.5">
             <div className="flex items-center gap-1.5 mb-1.5">
               <Icon name="edit" className="w-3 h-3 text-[#eab308]/60" />
@@ -280,14 +290,92 @@ function MessageBubble({ msg, onImageClick }) {
   return null;
 }
 
-function TemplatePickerModal({ onSelect, onClose }) {
-  const [templates, setTemplates] = useStateD(null);
+// ── Автодополнение шаблонов по слешу ────────────────────────────────────────
+// Оператор пишет «/» в начале сообщения → список шаблонов; дальше сужает его
+// набором по заголовку либо по началу текста шаблона. Логика поиска вынесена
+// отдельно от компонента: её же удобно дёрнуть из проверок.
+
+// Порядок важен: точное попадание должно оказаться первым, чтобы «/» + пара
+// букв + Enter закрывали типичный случай.
+function rankTemplates(templates, query) {
+  const list = templates || [];
+  const q = (query || "").trim().toLowerCase();
+  if (!q) return list;
+  const scored = [];
+  for (const t of list) {
+    const title = (t.title || "").toLowerCase();
+    const text = (t.text || "").toLowerCase();
+    let rank = -1;
+    if (title.startsWith(q)) rank = 0;
+    else if (title.includes(q)) rank = 1;
+    // «Заголовок не помню, помню как начинается ответ».
+    else if (text.startsWith(q)) rank = 2;
+    else if (text.includes(q)) rank = 3;
+    if (rank >= 0) scored.push({ t, rank });
+  }
+  // Внутри одного ранга сохраняем исходный порядок (группа, заголовок).
+  return scored.map((s, i) => ({ ...s, i }))
+    .sort((a, b) => a.rank - b.rank || a.i - b.i)
+    .map((s) => s.t);
+}
+
+// Запрос автодополнения или null, если панель показывать не нужно: слеш ловим
+// только первым символом (как в ТГ), поэтому «/home/user» внутри текста ничего
+// не открывает.
+function slashQueryOf(draft, mode) {
+  if (mode !== "message") return null;
+  if (!draft.startsWith("/")) return null;
+  if (draft.includes("\n")) return null;
+  return draft.slice(1);
+}
+
+function SlashTemplateList({ items, activeIndex, onPick, onHover, compact = false }) {
+  const boxRef = useRefD(null);
+
+  // Активная строка всегда в видимой области — иначе перебор стрелками
+  // «уезжает» за границу списка.
+  useEffectD(() => {
+    const box = boxRef.current;
+    const row = box && box.querySelector(`[data-idx="${activeIndex}"]`);
+    if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+  }, [activeIndex]);
+
+  return (
+    <div className="absolute bottom-full left-0 right-0 mb-2 z-40 bg-[#13131a] border border-[#2a2a3a] rounded-xl shadow-2xl overflow-hidden">
+      <div ref={boxRef} className={"overflow-y-auto scrollbar-thin py-1 " +
+           (compact ? "max-h-[200px]" : "max-h-[260px]")}>
+        {items.map((t, i) => (
+          <button
+            key={t.id}
+            data-idx={i}
+            onMouseDown={(e) => { e.preventDefault(); onPick(t); }}
+            onClick={(e) => { e.preventDefault(); onPick(t); }}
+            onMouseEnter={() => onHover(i)}
+            className={"w-full px-3.5 text-left transition " +
+              (compact ? "py-3 " : "py-2 ") +
+              (i === activeIndex ? "bg-[#1a1a24]" : "hover:bg-[#1a1a24]/60")}
+          >
+            <div className="flex items-center gap-2">
+              <span className={"text-sm font-medium truncate " +
+                (i === activeIndex ? "text-[#7BA8F9]" : "text-[#f1f1f5]")}>{t.title}</span>
+              <span className="text-[10px] text-[#6b7280] shrink-0">{t.group_name}</span>
+            </div>
+            <div className="text-xs text-[#6b7280] truncate mt-0.5">{(t.text || "").split("\n")[0]}</div>
+          </button>
+        ))}
+      </div>
+      <div className="px-3.5 py-1.5 border-t border-[#2a2a3a]/60 text-[10px] text-[#6b7280]">
+        ↑↓ выбрать · Enter вставить · Esc закрыть
+      </div>
+    </div>
+  );
+}
+
+function TemplatePickerModal({ onSelect, onClose, templates }) {
+  // Список приходит готовым из DialogsScreen — он же питает автодополнение по
+  // слешу, поэтому грузить его второй раз при открытии модалки не нужно.
   const [search, setSearch] = useStateD("");
   const [group, setGroup] = useStateD("all");
-
-  useEffectD(() => {
-    window.apiFetch("GET", "/api/templates").then(setTemplates).catch(() => setTemplates([]));
-  }, []);
 
   const groups = useMemoD(() => {
     if (!templates) return [];
@@ -353,7 +441,12 @@ function TemplatePickerModal({ onSelect, onClose }) {
 }
 
 function TransferModal({ activeDialog, operators, currentOperator, onTransfer, onClose }) {
-  const candidates = (operators || []).filter(op => op.name !== activeDialog?.assignedOperator);
+  // Передать тикет можно только тому, у кого есть доступ к его ВПН-сервису
+  // (админ обслуживает все) — иначе сервер вернёт 400.
+  const candidates = (operators || []).filter(op =>
+    op.name !== activeDialog?.assignedOperator &&
+    (op.role === "admin" || (op.serviceIds || []).includes(activeDialog?.serviceId))
+  );
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
@@ -389,9 +482,10 @@ function DialogsScreen({
   conversations, setConversations,
   activeId, setActiveId,
   showToast,
-  onReply, onToggleAI, onClose, onHandoff, onReopen, onWait, onBillingAction,
+  onReply, onToggleAI, onClose, onHandoff, onReopen, onWait,
   currentOperator, operators,
-  servers,
+  showServiceTag = false,
+  viewport, mobileChrome, onMobileChatOpen,
 }) {
   const [searchQ, setSearchQ] = useStateD("");
   const [view,   setView]   = useStateD("my");  // "my" | "all"
@@ -404,10 +498,28 @@ function DialogsScreen({
   const [confirmClose, setConfirmClose] = useStateD(false);
   const [showTemplates, setShowTemplates] = useStateD(false);
   const [showTransfer, setShowTransfer] = useStateD(false);
+  // Шаблоны нужны сразу: по «/» список должен появляться мгновенно, без похода
+  // в сеть. Модалка шаблонов берёт этот же массив.
+  const [templates, setTemplates] = useStateD([]);
+  const [slashIndex, setSlashIndex] = useStateD(0);
+  const [slashDismissed, setSlashDismissed] = useStateD(false);
+  // Телефон: экран показывает либо список, либо переписку.
+  const [mobileView, setMobileView] = useStateD("list");
+  const [showSearch, setShowSearch] = useStateD(false);
+  const [showClientSheet, setShowClientSheet] = useStateD(false);
+  const [showActionsSheet, setShowActionsSheet] = useStateD(false);
   const scrollRef = useRefD(null);
   const fileInputRef = useRefD(null);
+  const composerRef = useRefD(null);
 
   const active = conversations.find((c) => c.id === activeId) || conversations[0];
+
+  // Тикет могли открыть снаружи (клик по уведомлению, ссылка ?dialog=) — тогда
+  // на телефоне сразу показываем переписку, а не список.
+  useEffectD(() => { if (activeId) setMobileView("chat"); }, [activeId]);
+
+  // Шторки принадлежат конкретному тикету: смена тикета их закрывает.
+  useEffectD(() => { setShowClientSheet(false); setShowActionsSheet(false); }, [active?.id]);
 
   // Sync AI toggle state when active dialog changes; reset composer mode
   useEffectD(() => {
@@ -420,6 +532,79 @@ function DialogsScreen({
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [active?.id, active?.messages?.length]);
+
+  // Шаблоны пер-сервисные: при переходе на тикет другого ВПН-а подгружаем его
+  // набор (плюс общие).
+  useEffectD(() => {
+    const sid = active?.serviceId;
+    if (!sid) { setTemplates([]); return; }
+    let stale = false;
+    window.apiFetch("GET", `/api/templates?service_id=${sid}`)
+      .then((list) => { if (!stale) setTemplates(list || []); })
+      .catch(() => { if (!stale) setTemplates([]); });
+    return () => { stale = true; };
+  }, [active?.serviceId]);
+
+  // ── Автодополнение по слешу ──────────────────────────────────────────────
+  const slashQuery = slashQueryOf(draft, mode);
+  const slashMatches = useMemoD(
+    () => (slashQuery === null ? [] : rankTemplates(templates, slashQuery)),
+    [templates, slashQuery]
+  );
+  // Нет совпадений — панель прячется: иначе она мешала бы отправить сообщение,
+  // которое просто начинается со слеша.
+  const slashOpen = slashQuery !== null && !slashDismissed && slashMatches.length > 0;
+
+  // Смена запроса возвращает выделение на первую строку; уход от слеша снимает
+  // ручное закрытие, чтобы следующий «/» снова открыл панель.
+  useEffectD(() => { setSlashIndex(0); }, [slashQuery]);
+  useEffectD(() => { if (slashQuery === null) setSlashDismissed(false); }, [slashQuery]);
+
+  function applyTemplate(t) {
+    // Слеш ловится только в начале сообщения, поэтому шаблон заменяет весь текст.
+    setDraft(t.text);
+    setSlashDismissed(false);
+    const el = composerRef.current;
+    if (el) {
+      requestAnimationFrame(() => {
+        el.focus();
+        el.selectionStart = el.selectionEnd = el.value.length;
+      });
+    }
+  }
+
+  // На телефоне модалка шаблонов с боковым списком групп не помещается —
+  // кнопка просто ставит «/» и открывает ту же панель автодополнения.
+  function openSlashPanel() {
+    setDraft("/");
+    setSlashDismissed(false);
+    const el = composerRef.current;
+    if (el) requestAnimationFrame(() => { el.focus(); el.selectionStart = el.selectionEnd = 1; });
+  }
+
+  function onComposerKeyDown(e) {
+    // Cmd/Ctrl+Enter отправляет всегда — панель при этом просто закрывается.
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      setSlashDismissed(true);
+      sendMessage();
+      return;
+    }
+    if (!slashOpen) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSlashIndex((i) => (i + 1) % slashMatches.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length);
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      applyTemplate(slashMatches[Math.min(slashIndex, slashMatches.length - 1)]);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setSlashDismissed(true);   // текст остаётся как есть
+    }
+  }
 
   // Sections per view: «Все» — the whole pipeline, «Мои» — only own tickets.
   // «Все» shows 3 main tabs + an overflow menu («ещё») with ИИ and Закрытые.
@@ -578,365 +763,557 @@ function DialogsScreen({
   }
 
 
-  return (
-    <>
-      <div className="flex h-full min-h-0">
-        {/* Left: conversation list */}
-        <aside className="w-[260px] shrink-0 bg-[#13131a] border-r border-[#2a2a3a] flex flex-col min-h-0">
-          <div className="p-3 border-b border-[#2a2a3a] space-y-2.5">
-            {/* Мои / Все */}
-            <div className="flex bg-[#0d0d12] rounded-lg p-0.5 gap-0.5">
-              {[["my", "Мои"], ["all", "Все"]].map(([v, label]) => (
-                <button key={v} onClick={() => switchView(v)}
-                  className={"flex-1 py-1.5 rounded-md text-xs font-medium transition " +
-                    (view === v ? "bg-[#4F8EF7] text-white" : "text-[#6b7280] hover:text-[#f1f1f5]")}>
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="relative">
-              <Icon name="search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#6b7280]" />
-              <input
-                value={searchQ}
-                onChange={(e) => setSearchQ(e.target.value)}
-                placeholder="Поиск по диалогам..."
-                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg pl-9 pr-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50"
-              />
-            </div>
-            <div className="flex gap-1 text-[11px] relative">
-              {(view === "my" ? MY_SECTIONS : ALL_MAIN).map((id) => (
-                <button
-                  key={id}
-                  onClick={() => { setFilter(id); setMoreOpen(false); }}
-                  className={
-                    "flex-1 px-1 py-1.5 rounded-md font-medium transition flex flex-col items-center gap-0.5 " +
-                    (filter === id
-                      ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
-                      : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
-                  }
-                >
-                  <span className="text-sm leading-none">{SECTION_META[id].icon}</span>
-                  <span className="whitespace-nowrap">{SECTION_META[id].label}</span>
-                  <span className="opacity-60">{counts[id]}</span>
-                </button>
-              ))}
-              {view === "all" && (
+  // ── Раскладка ────────────────────────────────────────────────────────────
+  // Куски интерфейса — список, переписка и карточка клиента — одни и те же на
+  // всех ширинах; меняется только их размещение: телефон — drill-down, планшет
+  // — две колонки и карточка шторкой, десктоп — три колонки как раньше.
+  const vp = viewport || { isMobile: false, isTablet: false, isDesktop: true, isCompact: false };
+  const compact = vp.isCompact;
+  const chrome = mobileChrome || {};
+  const chatVisible = vp.isMobile ? (mobileView === "chat" && !!active) : !!active;
+
+  const STATUS_LABEL = {
+    ai: "ИИ", queue: "Очередь", in_progress: "В работе", waiting: "Ожидание", closed: "Закрыт",
+  };
+
+  // Нижняя навигация уступает место переписке и клавиатуре.
+  useEffectD(() => {
+    if (onMobileChatOpen) onMobileChatOpen(!!(vp.isMobile && mobileView === "chat" && active));
+  }, [vp.isMobile, mobileView, active?.id, onMobileChatOpen]);
+
+  function openDialog(id) {
+    setActiveId(id);
+    setMobileView("chat");
+  }
+
+  function copyDialogLink() {
+    if (!active) return;
+    const url = `${window.location.origin}${window.location.pathname}?dialog=${active.id}`;
+    navigator.clipboard.writeText(url)
+      .then(() => showToast("Ссылка скопирована"))
+      .catch(() => showToast("Не удалось скопировать ссылку"));
+  }
+
+  // Действия над тикетом: на десктопе кнопками в шапке, на узких — шторкой.
+  const ticketActions = !active ? [] : [
+    ...(["ai", "queue"].includes(active.status)
+      ? [{ icon: "user", label: "Взять в работу", run: handoffToOperator }] : []),
+    ...(["in_progress", "waiting"].includes(active.status)
+      ? [{ icon: "arrowLeft", label: "Вернуть в очередь", run: reopenDialog }] : []),
+    ...(active.status === "in_progress"
+      ? [{ icon: "clock", label: "В ожидание", run: waitDialog }] : []),
+    ...(active.status !== "closed"
+      ? [{ icon: "arrowRight", label: "Передать оператору", run: () => setShowTransfer(true) }] : []),
+    { icon: "link", label: "Скопировать ссылку", run: copyDialogLink },
+    ...(active.status !== "closed"
+      ? [{ icon: "x", label: "Закрыть диалог", danger: true, run: () => setConfirmClose(true) }] : []),
+  ];
+
+  const searchField = (
+    <div className="relative">
+      <Icon name="search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#6b7280]" />
+      <input
+        value={searchQ}
+        onChange={(e) => setSearchQ(e.target.value)}
+        placeholder="Поиск по диалогам..."
+        className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg pl-9 pr-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50"
+      />
+    </div>
+  );
+
+  // Управление списком на десктопе и планшете: «Мои/Все», поиск, разделы.
+  const listControls = (
+    <div className="p-3 border-b border-[#2a2a3a] space-y-2.5">
+      <div className="flex bg-[#0d0d12] rounded-lg p-0.5 gap-0.5">
+        {[["my", "Мои"], ["all", "Все"]].map(([v, label]) => (
+          <button key={v} onClick={() => switchView(v)}
+            className={"flex-1 py-1.5 rounded-md text-xs font-medium transition " +
+              (view === v ? "bg-[#4F8EF7] text-white" : "text-[#6b7280] hover:text-[#f1f1f5]")}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {searchField}
+      <div className="flex gap-1 text-[11px] relative">
+        {(view === "my" ? MY_SECTIONS : ALL_MAIN).map((id) => (
+          <button
+            key={id}
+            onClick={() => { setFilter(id); setMoreOpen(false); }}
+            className={
+              "flex-1 px-1 py-1.5 rounded-md font-medium transition flex flex-col items-center gap-0.5 " +
+              (filter === id
+                ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
+                : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
+            }
+          >
+            <span className="text-sm leading-none">{SECTION_META[id].icon}</span>
+            <span className="whitespace-nowrap">{SECTION_META[id].label}</span>
+            <span className="opacity-60">{counts[id]}</span>
+          </button>
+        ))}
+        {view === "all" && (
+          <>
+            <button
+              onClick={() => setMoreOpen((v) => !v)}
+              title="Ещё разделы"
+              className={
+                "px-2 py-1.5 rounded-md font-medium transition flex flex-col items-center justify-center gap-0.5 " +
+                (ALL_MORE.includes(filter)
+                  ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
+                  : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
+              }
+            >
+              {ALL_MORE.includes(filter) ? (
                 <>
-                  <button
-                    onClick={() => setMoreOpen((v) => !v)}
-                    title="Ещё разделы"
-                    className={
-                      "px-2 py-1.5 rounded-md font-medium transition flex flex-col items-center justify-center gap-0.5 " +
-                      (ALL_MORE.includes(filter)
-                        ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
-                        : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
-                    }
-                  >
-                    {ALL_MORE.includes(filter) ? (
-                      <>
-                        <span className="text-sm leading-none">{SECTION_META[filter].icon}</span>
-                        <span className="whitespace-nowrap">{SECTION_META[filter].label}</span>
-                        <span className="opacity-60">{counts[filter]}</span>
-                      </>
-                    ) : (
-                      <span className="text-base leading-none px-0.5">⋯</span>
-                    )}
-                  </button>
-                  {moreOpen && (
-                    <>
-                      <div className="fixed inset-0 z-10" onClick={() => setMoreOpen(false)}></div>
-                      <div className="absolute right-0 top-full mt-1 z-20 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg shadow-2xl py-1 min-w-[150px]">
-                        {ALL_MORE.map((id) => (
-                          <button
-                            key={id}
-                            onClick={() => { setFilter(id); setMoreOpen(false); }}
-                            className={
-                              "w-full text-left px-3 py-2 flex items-center gap-2 transition " +
-                              (filter === id ? "text-[#7BA8F9]" : "text-[#d1d1d8] hover:bg-[#2a2a3a]/50")
-                            }
-                          >
-                            <span>{SECTION_META[id].icon}</span>
-                            <span>{SECTION_META[id].label}</span>
-                            <span className="opacity-60 ml-auto">{counts[id]}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
+                  <span className="text-sm leading-none">{SECTION_META[filter].icon}</span>
+                  <span className="whitespace-nowrap">{SECTION_META[filter].label}</span>
+                  <span className="opacity-60">{counts[filter]}</span>
                 </>
+              ) : (
+                <span className="text-base leading-none px-0.5">⋯</span>
               )}
-            </div>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1 scrollbar-thin">
-            {filtered.length === 0 && (
-              <div className="text-center text-xs text-[#6b7280] py-8">Диалоги не найдены</div>
-            )}
-            {filtered.map((c) => (
-              <ConvCard key={c.id} conv={c} active={c.id === activeId} onClick={() => setActiveId(c.id)} />
-            ))}
-          </div>
-        </aside>
-
-        {/* Center: chat */}
-        <section className="flex-1 flex flex-col bg-[#0d0d12] min-w-0 min-h-0">
-          {active && (
-            <>
-              {/* Top bar */}
-              <div className="h-[60px] px-5 border-b border-[#2a2a3a] flex items-center justify-between bg-[#13131a]/40">
-                <div className="flex items-center gap-3 min-w-0">
-                  <Avatar initials={active.initials} color={active.avatarColor} size={36} photoUrl={active.photoUrl} />
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <div className="font-medium text-[#f1f1f5] truncate">{active.name}</div>
-                      <StatusBadge status={active.status} />
-                      {active.status === "waiting" && <WaitingLabel reason={active.waitingReason} />}
-                      <SlaTimer slaSeconds={active.slaSeconds} slaStartedAt={active.slaStartedAt} />
-                    </div>
-                    <div className="text-xs text-[#6b7280]">{active.username} · ID {active.tgId}</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {["ai", "queue"].includes(active.status) && (
+            </button>
+            {moreOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setMoreOpen(false)}></div>
+                <div className="absolute right-0 top-full mt-1 z-20 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg shadow-2xl py-1 min-w-[150px]">
+                  {ALL_MORE.map((id) => (
                     <button
-                      onClick={handoffToOperator}
-                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#A855F7]/15 text-[#C084FC] border border-[#A855F7]/30 hover:bg-[#A855F7]/25 transition flex items-center gap-1.5"
-                    >
-                      <Icon name="user" className="w-3.5 h-3.5" />
-                      Взять в работу
-                    </button>
-                  )}
-                  {["in_progress", "waiting"].includes(active.status) && (
-                    <>
-                      {active.assignedOperator && (
-                        <span className="flex items-center gap-1.5 text-xs text-[#6b7280] px-2">
-                          <Icon name="user" className="w-3.5 h-3.5" />
-                          {active.assignedOperator}
-                        </span>
-                      )}
-                      <button
-                        onClick={reopenDialog}
-                        className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
-                      >
-                        <Icon name="arrowLeft" className="w-3.5 h-3.5" />
-                        Вернуть в очередь
-                      </button>
-                    </>
-                  )}
-                  {active.status === "in_progress" && (
-                    <button
-                      onClick={waitDialog}
-                      title="Перевести в «Ожидание» (клиент ждёт ответ)"
-                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#ef4444]/10 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/20 transition flex items-center gap-1.5"
-                    >
-                      <Icon name="clock" className="w-3.5 h-3.5" />
-                      В ожидание
-                    </button>
-                  )}
-                  {active.status !== "closed" && (
-                    <button
-                      onClick={() => setShowTransfer(true)}
-                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
-                    >
-                      <Icon name="arrowRight" className="w-3.5 h-3.5" />
-                      Передать
-                    </button>
-                  )}
-                  <button
-                    onClick={() => {
-                      const url = `${window.location.origin}${window.location.pathname}?dialog=${active.id}`;
-                      navigator.clipboard.writeText(url)
-                        .then(() => showToast("Ссылка скопирована"))
-                        .catch(() => showToast("Не удалось скопировать ссылку"));
-                    }}
-                    className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded-lg transition"
-                    title="Скопировать ссылку на диалог"
-                  >
-                    <Icon name="link" className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => setConfirmClose(true)}
-                    disabled={active.status === "closed"}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    Закрыть диалог
-                  </button>
-                </div>
-              </div>
-
-              {/* Closed dialog banner */}
-              {active.status === "closed" && (
-                <div className="px-4 py-2.5 bg-[#1a1a18] border-b border-[#2a2a3a] flex items-center gap-3">
-                  {activeDialogForSameUser ? (
-                    <>
-                      <Icon name="bellRing" className="w-4 h-4 text-[#eab308] shrink-0" />
-                      <span className="text-xs text-[#d1a800] flex-1">Пользователь написал в новый чат</span>
-                      <button
-                        onClick={() => setActiveId(activeDialogForSameUser.id)}
-                        className="text-xs px-2.5 py-1 rounded-lg bg-[#eab308]/15 text-[#eab308] hover:bg-[#eab308]/25 transition font-medium shrink-0"
-                      >
-                        Перейти
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <Icon name="x" className="w-4 h-4 text-[#6b7280] shrink-0" />
-                      <span className="text-xs text-[#6b7280] flex-1">Диалог закрыт</span>
-                      <button
-                        onClick={reopenClosed}
-                        className="text-xs px-2.5 py-1 rounded-lg bg-[#4F8EF7]/15 text-[#7BA8F9] hover:bg-[#4F8EF7]/25 transition font-medium shrink-0"
-                      >
-                        Открыть снова
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {/* Messages */}
-              <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-5 space-y-3 scrollbar-thin">
-                {(active.messages || []).length === 0 && (
-                  <div className="text-center text-xs text-[#6b7280] py-8">Загрузка сообщений...</div>
-                )}
-                {(() => {
-                  let lastDay = null;
-                  return (active.messages || []).map((m) => {
-                    let sep = null;
-                    if (m.createdAt) {
-                      const label = fmtDayLabel(m.createdAt);
-                      if (label && label !== lastDay) {
-                        lastDay = label;
-                        sep = <DaySeparator label={label} />;
+                      key={id}
+                      onClick={() => { setFilter(id); setMoreOpen(false); }}
+                      className={
+                        "w-full text-left px-3 py-2 flex items-center gap-2 transition " +
+                        (filter === id ? "text-[#7BA8F9]" : "text-[#d1d1d8] hover:bg-[#2a2a3a]/50")
                       }
-                    }
-                    return (
-                      <React.Fragment key={m.id}>
-                        {sep}
-                        <MessageBubble msg={m} onImageClick={(url) => setLightboxUrl(url)} />
-                      </React.Fragment>
-                    );
-                  });
-                })()}
-              </div>
-
-              {/* Composer */}
-              <div className="border-t border-[#2a2a3a] bg-[#13131a]/40">
-                <input ref={fileInputRef} type="file" className="hidden"
-                  accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.zip,.txt"
-                  onChange={handleFileSelect} />
-                {/* Mode tabs */}
-                <div className="flex border-b border-[#2a2a3a] px-3.5">
-                  {[["message", "Сообщение"], ["comment", "Комментарий"]].map(([m, label]) => (
-                    <button key={m} onClick={() => { setMode(m); if (m === "comment") setPendingFile(null); }}
-                      disabled={active.status === "closed"}
-                      className={"px-3 py-2 text-xs font-medium transition border-b-2 -mb-px disabled:opacity-40 " +
-                        (mode === m
-                          ? (m === "comment" ? "border-[#eab308] text-[#eab308]" : "border-[#4F8EF7] text-[#7BA8F9]")
-                          : "border-transparent text-[#6b7280] hover:text-[#f1f1f5]")}>
-                      {label}
+                    >
+                      <span>{SECTION_META[id].icon}</span>
+                      <span>{SECTION_META[id].label}</span>
+                      <span className="opacity-60 ml-auto">{counts[id]}</span>
                     </button>
                   ))}
                 </div>
-                <div className="p-3.5">
-                  {pendingFile && mode === "message" && (
-                    <div className="mb-2 flex items-center gap-2 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg px-3 py-2">
-                      <Icon name="paperclip" className="w-4 h-4 text-[#4F8EF7] shrink-0" />
-                      <span className="text-xs text-[#f1f1f5] truncate flex-1">{pendingFile.name}</span>
-                      <button onClick={() => setPendingFile(null)} className="text-[#6b7280] hover:text-[#ef4444]"><Icon name="x" className="w-3.5 h-3.5" /></button>
-                    </div>
-                  )}
-                  <div className={"bg-[#1a1a24] border rounded-xl focus-within:border-[#4F8EF7]/50 transition " +
-                    (mode === "comment" ? "border-[#eab308]/30 focus-within:border-[#eab308]/50" : "border-[#2a2a3a]")}>
-                    <textarea
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                          e.preventDefault();
-                          sendMessage();
-                        }
-                      }}
-                      placeholder={
-                        active.status === "closed" ? "Диалог закрыт" :
-                        mode === "comment" ? "Комментарий виден только операторам..." :
-                        "Написать сообщение..."
-                      }
-                      disabled={active.status === "closed"}
-                      rows={2}
-                      className="w-full bg-transparent px-3.5 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none resize-none disabled:opacity-50"
-                    />
-                    <div className="flex items-center justify-between px-2 py-2 border-t border-[#2a2a3a]/60">
-                      <div className="flex items-center gap-1">
-                        {mode === "message" && (
-                          <>
-                            <button
-                              className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"
-                              disabled={active.status === "closed"}
-                              onClick={() => fileInputRef.current?.click()}
-                              title="Прикрепить файл"
-                            >
-                              <Icon name="paperclip" />
-                            </button>
-                            <button
-                              className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"
-                              disabled={active.status === "closed"}
-                              onClick={() => setShowTemplates(true)}
-                              title="Шаблоны сообщений"
-                            >
-                              <Icon name="template" />
-                            </button>
-                            <div className="w-px h-4 bg-[#2a2a3a] mx-1"></div>
-                          </>
-                        )}
-                        <label className="flex items-center gap-2 text-xs text-[#6b7280] cursor-pointer select-none px-2 py-1 hover:text-[#f1f1f5]">
-                          <span>ИИ отвечает</span>
-                          <button
-                            type="button"
-                            onClick={toggleAI}
-                            className={
-                              "relative w-8 h-[18px] rounded-full transition " +
-                              (aiEnabled ? "bg-[#4F8EF7]" : "bg-[#2a2a3a]")
-                            }
-                          >
-                            <span
-                              className={
-                                "absolute top-[2px] w-[14px] h-[14px] bg-white rounded-full transition-all " +
-                                (aiEnabled ? "left-[16px]" : "left-[2px]")
-                              }
-                            ></span>
-                          </button>
-                        </label>
-                      </div>
-                      <button
-                        onClick={sendMessage}
-                        disabled={(mode === "message" ? (!draft.trim() && !pendingFile) : !draft.trim()) || active.status === "closed"}
-                        className={"px-4 py-1.5 rounded-lg text-white text-xs font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 " +
-                          (mode === "comment" ? "bg-[#eab308]/80 hover:bg-[#eab308]" : "bg-[#4F8EF7] hover:bg-[#3d7ce8]")}
-                      >
-                        <Icon name="send" className="w-3.5 h-3.5" />
-                        {mode === "comment" ? "Комментарий" : "Отправить"}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="text-[10px] text-[#6b7280] mt-1.5 ml-1">Cmd/Ctrl + Enter для отправки</div>
-                </div>
-              </div>
-            </>
-          )}
-        </section>
+              </>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
 
-        {/* Right: user info */}
-        <aside className="w-[280px] shrink-0 bg-[#13131a] border-l border-[#2a2a3a] overflow-y-auto scrollbar-thin">
-          {active && (
-            <UserInfoPanel
-              conv={active}
-              showToast={showToast}
-              servers={servers || []}
-              onBillingAction={onBillingAction}
-              onTicketClick={setActiveId}
+  // Телефон: «Мои/Все» отдельным переключателем, разделы — прокручиваемыми
+  // чипами (всё помещается, «ещё» не нужно).
+  const mobileFilterBar = (
+    <div className="shrink-0 flex items-center gap-2 px-2.5 py-2 bg-[#1a1a24] border-b border-[#2a2a3a] overflow-hidden">
+      <div className="shrink-0 flex bg-[#0d0d12] border border-[#2a2a3a] rounded-full p-0.5">
+        {[["my", "Мои"], ["all", "Все"]].map(([v, label]) => (
+          <button key={v} onClick={() => switchView(v)}
+            aria-label={v === "my" ? "Мои тикеты" : "Все тикеты"}
+            className={"min-h-[40px] px-3.5 rounded-full text-xs font-semibold transition " +
+              (view === v ? "bg-[#202030] text-[#f1f1f5]" : "text-[#9095a3]")}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
+        {(view === "my" ? MY_SECTIONS : ALL_SECTIONS).map((id) => (
+          <button key={id} onClick={() => setFilter(id)}
+            aria-label={"Раздел: " + SECTION_META[id].label}
+            className={"shrink-0 min-h-[44px] px-3.5 rounded-full text-[12.5px] font-medium border transition " +
+              (filter === id
+                ? "bg-[#4F8EF7] border-[#4F8EF7] text-white"
+                : "bg-[#13131a] border-[#2a2a3a] text-[#9095a3]")}>
+            {SECTION_META[id].label}
+            {counts[id] > 0 && <span className="ml-1 font-mono opacity-75">{counts[id]}</span>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  const listRows = (
+    <div className={"flex-1 overflow-y-auto scrollbar-thin " + (vp.isMobile ? "" : "p-2 space-y-1")}>
+      {filtered.length === 0 && (
+        <div className="text-center text-xs text-[#6b7280] py-8">Диалоги не найдены</div>
+      )}
+      {filtered.map((c) => (
+        <ConvCard key={c.id} conv={c} active={!vp.isMobile && c.id === activeId}
+                  onClick={() => openDialog(c.id)} showServiceTag={showServiceTag}
+                  flat={vp.isMobile} />
+      ))}
+    </div>
+  );
+
+  // Шапка переписки на десктопе: все действия кнопками.
+  const chatTopBar = active && (
+    <div className="h-[60px] px-5 border-b border-[#2a2a3a] flex items-center justify-between bg-[#13131a]/40">
+      <div className="flex items-center gap-3 min-w-0">
+        <Avatar initials={active.initials} color={active.avatarColor} size={36} photoUrl={active.photoUrl} />
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <div className="font-medium text-[#f1f1f5] truncate">{active.name}</div>
+            <StatusBadge status={active.status} />
+            {active.status === "waiting" && <WaitingLabel reason={active.waitingReason} />}
+            <SlaTimer slaSeconds={active.slaSeconds} slaStartedAt={active.slaStartedAt} />
+          </div>
+          <div className="text-xs text-[#6b7280]">{active.username} · ID {active.tgId}</div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {["ai", "queue"].includes(active.status) && (
+          <button
+            onClick={handoffToOperator}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#A855F7]/15 text-[#C084FC] border border-[#A855F7]/30 hover:bg-[#A855F7]/25 transition flex items-center gap-1.5"
+          >
+            <Icon name="user" className="w-3.5 h-3.5" />
+            Взять в работу
+          </button>
+        )}
+        {["in_progress", "waiting"].includes(active.status) && (
+          <>
+            {active.assignedOperator && (
+              <span className="flex items-center gap-1.5 text-xs text-[#6b7280] px-2">
+                <Icon name="user" className="w-3.5 h-3.5" />
+                {active.assignedOperator}
+              </span>
+            )}
+            <button
+              onClick={reopenDialog}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
+            >
+              <Icon name="arrowLeft" className="w-3.5 h-3.5" />
+              Вернуть в очередь
+            </button>
+          </>
+        )}
+        {active.status === "in_progress" && (
+          <button
+            onClick={waitDialog}
+            title="Перевести в «Ожидание» (клиент ждёт ответ)"
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#ef4444]/10 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/20 transition flex items-center gap-1.5"
+          >
+            <Icon name="clock" className="w-3.5 h-3.5" />
+            В ожидание
+          </button>
+        )}
+        {active.status !== "closed" && (
+          <button
+            onClick={() => setShowTransfer(true)}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
+          >
+            <Icon name="arrowRight" className="w-3.5 h-3.5" />
+            Передать
+          </button>
+        )}
+        <button
+          onClick={copyDialogLink}
+          className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded-lg transition"
+          title="Скопировать ссылку на диалог"
+        >
+          <Icon name="link" className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => setConfirmClose(true)}
+          disabled={active.status === "closed"}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Закрыть диалог
+        </button>
+      </div>
+    </div>
+  );
+
+  // Шапка переписки на телефоне и планшете: «назад», имя, статус и две кнопки —
+  // карточка клиента и меню действий.
+  const chatTopBarCompact = active && (
+    <MobileAppBar
+      title={active.name}
+      subtitle={`${active.username} · ${STATUS_LABEL[active.status] || ""}`}
+      onBack={vp.isMobile ? () => setMobileView("list") : null}
+      leading={<Avatar initials={active.initials} color={active.avatarColor} size={32}
+                       photoUrl={active.photoUrl} />}
+      right={
+        <>
+          <AppBarButton icon="info" label="Карточка клиента" onClick={() => setShowClientSheet(true)} />
+          <AppBarButton icon="dots" label="Действия над тикетом" onClick={() => setShowActionsSheet(true)} />
+        </>
+      }
+    />
+  );
+
+  const closedBanner = active && active.status === "closed" && (
+    <div className="px-4 py-2.5 bg-[#1a1a18] border-b border-[#2a2a3a] flex items-center gap-3">
+      {activeDialogForSameUser ? (
+        <>
+          <Icon name="bellRing" className="w-4 h-4 text-[#eab308] shrink-0" />
+          <span className="text-xs text-[#d1a800] flex-1">Пользователь написал в новый чат</span>
+          <button
+            onClick={() => openDialog(activeDialogForSameUser.id)}
+            className="text-xs px-2.5 py-1 rounded-lg bg-[#eab308]/15 text-[#eab308] hover:bg-[#eab308]/25 transition font-medium shrink-0"
+          >
+            Перейти
+          </button>
+        </>
+      ) : (
+        <>
+          <Icon name="x" className="w-4 h-4 text-[#6b7280] shrink-0" />
+          <span className="text-xs text-[#6b7280] flex-1">Диалог закрыт</span>
+          <button
+            onClick={reopenClosed}
+            className="text-xs px-2.5 py-1 rounded-lg bg-[#4F8EF7]/15 text-[#7BA8F9] hover:bg-[#4F8EF7]/25 transition font-medium shrink-0"
+          >
+            Открыть снова
+          </button>
+        </>
+      )}
+    </div>
+  );
+
+  const messagesPane = active && (
+    <div ref={scrollRef}
+         className={"flex-1 overflow-y-auto space-y-3 scrollbar-thin " + (compact ? "px-3 py-4" : "px-5 py-5")}>
+      {(active.messages || []).length === 0 && (
+        <div className="text-center text-xs text-[#6b7280] py-8">Загрузка сообщений...</div>
+      )}
+      {(() => {
+        let lastDay = null;
+        return (active.messages || []).map((m) => {
+          let sep = null;
+          if (m.createdAt) {
+            const label = fmtDayLabel(m.createdAt);
+            if (label && label !== lastDay) {
+              lastDay = label;
+              sep = <DaySeparator label={label} />;
+            }
+          }
+          return (
+            <React.Fragment key={m.id}>
+              {sep}
+              <MessageBubble msg={m} onImageClick={(url) => setLightboxUrl(url)} compact={compact} />
+            </React.Fragment>
+          );
+        });
+      })()}
+    </div>
+  );
+
+  const composerPane = active && (
+    <div className="border-t border-[#2a2a3a] bg-[#13131a]/40"
+         style={vp.isMobile ? { paddingBottom: "env(safe-area-inset-bottom)" } : undefined}>
+      <input ref={fileInputRef} type="file" className="hidden"
+        accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.zip,.txt"
+        onChange={handleFileSelect} />
+      <div className="flex border-b border-[#2a2a3a] px-3.5">
+        {[["message", "Сообщение"], ["comment", "Комментарий"]].map(([m, label]) => (
+          <button key={m} onClick={() => { setMode(m); if (m === "comment") setPendingFile(null); }}
+            disabled={active.status === "closed"}
+            className={"px-3 py-2 text-xs font-medium transition border-b-2 -mb-px disabled:opacity-40 " +
+              (mode === m
+                ? (m === "comment" ? "border-[#eab308] text-[#eab308]" : "border-[#4F8EF7] text-[#7BA8F9]")
+                : "border-transparent text-[#6b7280] hover:text-[#f1f1f5]")}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className={compact ? "p-2.5" : "p-3.5"}>
+        {pendingFile && mode === "message" && (
+          <div className="mb-2 flex items-center gap-2 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg px-3 py-2">
+            <Icon name="paperclip" className="w-4 h-4 text-[#4F8EF7] shrink-0" />
+            <span className="text-xs text-[#f1f1f5] truncate flex-1">{pendingFile.name}</span>
+            <button onClick={() => setPendingFile(null)} className="text-[#6b7280] hover:text-[#ef4444]"><Icon name="x" className="w-3.5 h-3.5" /></button>
+          </div>
+        )}
+        <div className={"relative bg-[#1a1a24] border rounded-xl focus-within:border-[#4F8EF7]/50 transition " +
+          (mode === "comment" ? "border-[#eab308]/30 focus-within:border-[#eab308]/50" : "border-[#2a2a3a]")}>
+          {slashOpen && (
+            <SlashTemplateList
+              items={slashMatches}
+              activeIndex={slashIndex}
+              onPick={applyTemplate}
+              onHover={setSlashIndex}
+              compact={compact}
             />
           )}
-        </aside>
+          <textarea
+            ref={composerRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onComposerKeyDown}
+            placeholder={
+              active.status === "closed" ? "Диалог закрыт" :
+              mode === "comment" ? "Комментарий виден только операторам..." :
+              "Написать сообщение..."
+            }
+            disabled={active.status === "closed"}
+            rows={compact ? 1 : 2}
+            className="w-full bg-transparent px-3.5 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none resize-none disabled:opacity-50"
+          />
+          <div className="flex items-center justify-between px-2 py-2 border-t border-[#2a2a3a]/60">
+            <div className="flex items-center gap-1">
+              {mode === "message" && (
+                <>
+                  <button
+                    className={(compact ? "w-11 h-11 flex items-center justify-center " : "p-1.5 ") +
+                      "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"}
+                    disabled={active.status === "closed"}
+                    onClick={() => fileInputRef.current?.click()}
+                    title="Прикрепить файл"
+                  >
+                    <Icon name="paperclip" />
+                  </button>
+                  <button
+                    className={(compact ? "w-11 h-11 flex items-center justify-center " : "p-1.5 ") +
+                      "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#0d0d12] rounded transition"}
+                    disabled={active.status === "closed"}
+                    onClick={compact ? openSlashPanel : () => setShowTemplates(true)}
+                    title="Шаблоны сообщений"
+                  >
+                    <Icon name="template" />
+                  </button>
+                  <div className="w-px h-4 bg-[#2a2a3a] mx-1"></div>
+                </>
+              )}
+              <label className="flex items-center gap-2 text-xs text-[#6b7280] cursor-pointer select-none px-2 py-1 hover:text-[#f1f1f5]">
+                <span>ИИ отвечает</span>
+                <button
+                  type="button"
+                  onClick={toggleAI}
+                  className={
+                    "relative w-8 h-[18px] rounded-full transition " +
+                    (aiEnabled ? "bg-[#4F8EF7]" : "bg-[#2a2a3a]")
+                  }
+                >
+                  <span
+                    className={
+                      "absolute top-[2px] w-[14px] h-[14px] bg-white rounded-full transition-all " +
+                      (aiEnabled ? "left-[16px]" : "left-[2px]")
+                    }
+                  ></span>
+                </button>
+              </label>
+            </div>
+            <button
+              onClick={sendMessage}
+              disabled={(mode === "message" ? (!draft.trim() && !pendingFile) : !draft.trim()) || active.status === "closed"}
+              className={"text-white text-xs font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 " +
+                (compact ? "w-11 h-11 rounded-full " : "px-4 py-1.5 rounded-lg ") +
+                (mode === "comment" ? "bg-[#eab308]/80 hover:bg-[#eab308]" : "bg-[#4F8EF7] hover:bg-[#3d7ce8]")}
+              aria-label={mode === "comment" ? "Сохранить комментарий" : "Отправить"}
+            >
+              <Icon name="send" className={compact ? "w-4 h-4" : "w-3.5 h-3.5"} />
+              {!compact && (mode === "comment" ? "Комментарий" : "Отправить")}
+            </button>
+          </div>
+        </div>
+        {!compact && (
+          <div className="text-[10px] text-[#6b7280] mt-1.5 ml-1">
+            Cmd/Ctrl + Enter для отправки
+            {mode === "message" && <span> · <span className="font-mono text-[#7BA8F9]">/</span> — шаблоны</span>}
+          </div>
+        )}
       </div>
+    </div>
+  );
+
+  const infoPanel = active && (
+    <UserInfoPanel
+      key={active.id}
+      conv={active}
+      showToast={showToast}
+      compact={compact}
+      isAdmin={currentOperator?.role === "admin"}
+      onTicketClick={(id) => { setShowClientSheet(false); openDialog(id); }}
+    />
+  );
+
+  // Экран списка на телефоне: шапка сервиса, лента ВПН-ов, фильтры, строки.
+  const mobileListScreen = (
+    <div className="h-full flex flex-col min-h-0">
+      <MobileAppBar
+        title={chrome.currentServiceId == null
+          ? "Все сервисы"
+          : (chrome.services || []).find((s) => s.id === chrome.currentServiceId)?.name || "Диалоги"}
+        subtitle="Диалоги"
+        right={
+          <>
+            <AppBarButton icon="search" label="Поиск"
+                          tone={showSearch || searchQ ? "accent" : "muted"}
+                          onClick={() => { const v = !showSearch; setShowSearch(v); if (!v) setSearchQ(""); }} />
+            <AppBarButton icon="bell" label="Уведомления" badge={chrome.bellBadge} onClick={chrome.onBell} />
+          </>
+        }
+      />
+      <ServiceRail services={chrome.services} currentServiceId={chrome.currentServiceId}
+                   onSelect={chrome.onSelectService} />
+      {mobileFilterBar}
+      {showSearch && <div className="shrink-0 px-2.5 py-2 bg-[#13131a] border-b border-[#2a2a3a]">{searchField}</div>}
+      {listRows}
+    </div>
+  );
+
+  const mobileChatScreen = (
+    <div className="h-full flex flex-col min-h-0 bg-[#0d0d12]">
+      {chatTopBarCompact}
+      {closedBanner}
+      {messagesPane}
+      {composerPane}
+    </div>
+  );
+
+  return (
+    <>
+      {vp.isMobile ? (
+        chatVisible ? mobileChatScreen : mobileListScreen
+      ) : (
+        <div className="flex h-full min-h-0">
+          {/* Left: conversation list */}
+          <aside className="w-[260px] shrink-0 bg-[#13131a] border-r border-[#2a2a3a] flex flex-col min-h-0">
+            {listControls}
+            {listRows}
+          </aside>
+
+          {/* Center: chat */}
+          <section className="flex-1 flex flex-col bg-[#0d0d12] min-w-0 min-h-0">
+            {active && (
+              <>
+                {compact ? chatTopBarCompact : chatTopBar}
+                {closedBanner}
+                {messagesPane}
+                {composerPane}
+              </>
+            )}
+          </section>
+
+          {/* Right: user info — на планшете уезжает в шторку по кнопке ⓘ */}
+          {!compact && (
+            <aside className="w-[320px] shrink-0 bg-[#13131a] border-l border-[#2a2a3a] overflow-y-auto scrollbar-thin">
+              {infoPanel}
+            </aside>
+          )}
+        </div>
+      )}
+
+      {/* Карточка клиента и действия над тикетом на узких экранах */}
+      {compact && (
+        <>
+          <BottomSheet open={showClientSheet} onClose={() => setShowClientSheet(false)}
+                       title={active?.name} subtitle="Карточка клиента">
+            {infoPanel}
+          </BottomSheet>
+          <BottomSheet open={showActionsSheet} onClose={() => setShowActionsSheet(false)}
+                       title={active?.name}
+                       subtitle={active ? STATUS_LABEL[active.status] : null}>
+            {ticketActions.map((a) => (
+              <button key={a.label}
+                onClick={() => { setShowActionsSheet(false); a.run(); }}
+                className={"w-full min-h-[56px] px-[18px] flex items-center gap-3 text-[14.5px] text-left border-b border-[#2a2a3a]/50 last:border-0 active:bg-[#1a1a24] " +
+                  (a.danger ? "text-[#f87171]" : "text-[#f1f1f5]")}>
+                <Icon name={a.icon} className={"w-[19px] h-[19px] shrink-0 " + (a.danger ? "text-[#f87171]" : "text-[#9095a3]")} />
+                {a.label}
+              </button>
+            ))}
+          </BottomSheet>
+        </>
+      )}
 
       {/* Lightbox */}
       {lightboxUrl && (
@@ -973,7 +1350,8 @@ function DialogsScreen({
           </div>
         </div>
       )}
-      {showTemplates && <TemplatePickerModal onSelect={pickTemplate} onClose={() => setShowTemplates(false)} />}
+      {showTemplates && <TemplatePickerModal onSelect={pickTemplate} templates={templates}
+                                             onClose={() => setShowTemplates(false)} />}
       {showTransfer && (
         <TransferModal
           activeDialog={active}
@@ -1034,99 +1412,485 @@ function NotesEditor({ convId, initialValue, showToast }) {
   );
 }
 
-function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClick }) {
-  const [historyOpen, setHistoryOpen] = useStateD(true);
-  const trafficPct = Math.min(100, (conv.traffic.used / conv.traffic.total) * 100);
-  const trafficColor = trafficPct > 85 ? "#ef4444" : trafficPct > 60 ? "#eab308" : "#22c55e";
+// ── Карточка клиента ────────────────────────────────────────────────────────
+// Данные и список доступных действий приходят из /api/dialogs/{id}/customer:
+// какой источник за ними стоит, панель не знает (см. app/customer.py). Формы
+// действий строятся по описанию полей, поэтому новое действие появляется в
+// интерфейсе само, без правки этого файла.
+
+function TrafficBar({ used, total }) {
+  if (!total) {
+    return <div className="text-[#f1f1f5] tabular-nums">{used} <span className="text-[#6b7280]">ГБ · без лимита</span></div>;
+  }
+  const pct = Math.min(100, (used / total) * 100);
+  const color = pct > 85 ? "#ef4444" : pct > 60 ? "#eab308" : "#22c55e";
+  return (
+    <>
+      <div className="flex justify-between items-center mb-1.5">
+        <span className="text-[#6b7280]">Трафик</span>
+        <span className="text-[#f1f1f5] font-medium tabular-nums">
+          {used} <span className="text-[#6b7280]">/ {total} ГБ</span>
+        </span>
+      </div>
+      <div className="h-1.5 bg-[#0d0d12] rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all" style={{ width: pct + "%", background: color }}></div>
+      </div>
+    </>
+  );
+}
+
+function InfoRow({ label, children }) {
+  return (
+    <div className="flex justify-between items-center gap-3 py-0.5">
+      <span className="text-[#6b7280] shrink-0">{label}</span>
+      <span className="text-[#f1f1f5] text-right min-w-0 truncate">{children}</span>
+    </div>
+  );
+}
+
+const TRIAL_LABEL = { none: "не использован", active: "идёт сейчас", used: "использован" };
+
+// Модалка на десктопе, шторка на узком экране — форма одна и та же.
+function ActionShell({ open, onClose, title, subtitle, compact, children }) {
+  if (compact) {
+    return (
+      <BottomSheet open={open} onClose={onClose} title={title} subtitle={subtitle}>
+        <div className="px-[18px] pb-2">{children}</div>
+      </BottomSheet>
+    );
+  }
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+         onClick={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-medium text-sm text-[#f1f1f5] truncate">{title}</div>
+            {subtitle && <div className="text-[11px] text-[#6b7280] truncate">{subtitle}</div>}
+          </div>
+          <button onClick={onClose} className="text-[#6b7280] hover:text-[#f1f1f5] shrink-0">
+            <Icon name="x" className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+// Форма действия по описанию полей из ACTIONS (app/customer.py).
+function ActionForm({ spec, options, keys, preset, busy, onSubmit, onCancel }) {
+  const initial = {};
+  for (const f of spec.fields) {
+    initial[f.name] = preset && preset[f.name] !== undefined
+      ? preset[f.name]
+      : (f.default !== null && f.default !== undefined ? f.default : "");
+  }
+  const [values, setValues] = useStateD(initial);
+  const set = (name, v) => setValues((prev) => ({ ...prev, [name]: v }));
+  const input = "w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50";
 
   return (
-    <div className="p-4 space-y-5">
-      {/* User section */}
-      <section>
-        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">Пользователь</div>
-        <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60">
-          <div className="flex items-center gap-3 mb-3">
-            <Avatar initials={conv.initials} color={conv.avatarColor} size={44} photoUrl={conv.photoUrl} />
-            <div className="min-w-0">
-              <div className="font-medium text-[#f1f1f5] text-sm truncate">{conv.name}</div>
-              <div className="text-xs text-[#6b7280]">{conv.username}</div>
-              <div className="text-[10px] text-[#6b7280]/70 font-mono">ID {conv.tgId}</div>
-            </div>
-          </div>
-          <div className="space-y-2 text-xs">
-            <div className="flex justify-between items-center">
-              <span className="text-[#6b7280]">Тариф</span>
-              <PlanBadge plan={conv.plan} />
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-[#6b7280]">Подписка</span>
-              <SubStatus status={conv.subStatus} />
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-[#6b7280]">След. платёж</span>
-              <span className="text-[#f1f1f5]">{conv.nextPayment}</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-[#6b7280]">Последний платёж</span>
-              <span className="text-[#f1f1f5] tabular-nums">
-                {conv.lastPayment.amount} <span className="text-[#6b7280]">· {conv.lastPayment.date}</span>
-              </span>
-            </div>
-            <div className="pt-2 mt-2 border-t border-[#2a2a3a]/60">
-              <div className="flex justify-between items-center mb-1.5">
-                <span className="text-[#6b7280]">Трафик</span>
-                <span className="text-[#f1f1f5] font-medium tabular-nums">
-                  {conv.traffic.used} <span className="text-[#6b7280]">/ {conv.traffic.total} GB</span>
-                </span>
-              </div>
-              <div className="h-1.5 bg-[#0d0d12] rounded-full overflow-hidden">
-                <div
-                  className="h-full rounded-full transition-all"
-                  style={{ width: trafficPct + "%", background: trafficColor }}
-                ></div>
-              </div>
-            </div>
-          </div>
+    <div className="space-y-3">
+      {spec.confirm && (
+        <div className="text-sm text-[#eab308] bg-[#eab308]/10 border border-[#eab308]/20 rounded-lg px-3 py-2">
+          {spec.confirm}
         </div>
-      </section>
-
-      {/* Rating */}
-      {conv.rating && (
-        <section>
-          <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Оценка поддержки</div>
-          <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60 flex items-center justify-between">
-            <StarRating rating={conv.rating} size="lg" />
-            <span className="text-[11px] text-[#6b7280]">{conv.rating} / 5</span>
-          </div>
-        </section>
       )}
-
-      {/* Notes */}
-      <section>
-        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Заметки</div>
-        <NotesEditor convId={conv.id} initialValue={conv.notes || ""} showToast={showToast} />
-      </section>
-
-      {/* History */}
-      <section>
-        <button
-          onClick={() => setHistoryOpen((v) => !v)}
-          className="w-full flex items-center justify-between mb-2"
-        >
-          <span className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold">
-            История ({(conv.tickets || []).length})
-          </span>
-          <Icon name="chevronDown" className={"w-3.5 h-3.5 text-[#6b7280] transition " + (historyOpen ? "" : "-rotate-90")} />
+      {spec.fields.map((f) => {
+        const preselected = preset && preset[f.name] !== undefined;
+        if (f.type === "key" && preselected) {
+          const k = (keys || []).find((x) => x.id === values[f.name]);
+          return (
+            <div key={f.name}>
+              <label className="block text-xs text-[#6b7280] mb-1.5">{f.label}</label>
+              <div className="text-sm text-[#f1f1f5] bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 truncate">
+                {k ? `${k.name} · ${k.server || "—"}` : values[f.name]}
+              </div>
+            </div>
+          );
+        }
+        const list = f.type === "key"
+          ? (keys || []).map((k) => ({ value: k.id, label: `${k.name} · ${k.server || "—"}` }))
+          : (options && options[f.options]) || [];
+        return (
+          <div key={f.name}>
+            <label className="block text-xs text-[#6b7280] mb-1.5">
+              {f.label}{!f.required && <span className="text-[#3a3a4a]"> · необязательно</span>}
+            </label>
+            {f.type === "textarea" ? (
+              <textarea rows={4} value={values[f.name]} onChange={(e) => set(f.name, e.target.value)}
+                        className={input + " resize-none"} />
+            ) : f.type === "bool" ? (
+              <button type="button" onClick={() => set(f.name, !values[f.name])}
+                      className={"w-full flex items-center justify-between px-3 py-2.5 rounded-lg border text-sm " +
+                        (values[f.name] ? "border-[#4F8EF7]/50 text-[#f1f1f5]" : "border-[#2a2a3a] text-[#6b7280]")}>
+                <span>{values[f.name] ? "Да" : "Нет"}</span>
+                <span className={"relative w-8 h-[18px] rounded-full transition " +
+                  (values[f.name] ? "bg-[#4F8EF7]" : "bg-[#2a2a3a]")}>
+                  <span className={"absolute top-[2px] w-[14px] h-[14px] bg-white rounded-full transition-all " +
+                    (values[f.name] ? "left-[16px]" : "left-[2px]")}></span>
+                </span>
+              </button>
+            ) : (f.type === "select" || f.type === "key") ? (
+              <select value={values[f.name]} onChange={(e) => set(f.name, e.target.value)} className={input}>
+                {!f.required && <option value="">— не указывать —</option>}
+                {list.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            ) : (
+              <input type={f.type === "number" ? "number" : "text"} value={values[f.name]}
+                     onChange={(e) => set(f.name, e.target.value)} className={input} />
+            )}
+            {f.hint && <div className="text-[10px] text-[#6b7280] mt-1">{f.hint}</div>}
+          </div>
+        );
+      })}
+      <div className="flex justify-end gap-2 pt-1">
+        <button onClick={onCancel}
+                className="px-3 py-2 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">
+          Отмена
         </button>
-        {historyOpen && (
+        <button onClick={() => onSubmit(values)} disabled={!!busy}
+                className={"px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-40 " +
+                  (spec.danger
+                    ? "bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30"
+                    : "bg-[#4F8EF7] text-white hover:bg-[#3d7ce8]")}>
+          {busy ? "Выполняем…" : spec.label}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ActionButton({ spec, onClick, small = false }) {
+  return (
+    <button onClick={onClick} title={spec.label}
+            className={"rounded-lg font-medium border transition truncate " +
+              (small ? "px-2.5 py-1.5 text-[11px] " : "px-3 py-2 text-xs ") +
+              (spec.danger
+                ? "border-[#ef4444]/30 text-[#ef4444] hover:bg-[#ef4444]/10"
+                : "border-[#2a2a3a] text-[#d1d1d8] hover:bg-[#1a1a24] hover:text-[#f1f1f5]")}>
+      {spec.label}
+    </button>
+  );
+}
+
+function KeyCard({ item, actions, onAction }) {
+  const expired = item.expiresAt && new Date(item.expiresAt) < new Date();
+  return (
+    <div className="bg-[#1a1a24] rounded-xl p-3 border border-[#2a2a3a]/60 space-y-2">
+      <div className="flex items-center gap-2">
+        <span className={"w-1.5 h-1.5 rounded-full shrink-0 " +
+          (item.active && !expired ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
+        <span className="text-sm text-[#f1f1f5] truncate flex-1">{item.name}</span>
+        <span className={"text-[10px] shrink-0 " + (expired ? "text-[#ef4444]" : "text-[#6b7280]")}>
+          {item.expiresAt || "—"}
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-1.5 text-center">
+        {[["Сервер", item.server || "—"], ["Тариф", item.plan || "—"],
+          ["Устройств", item.devices || 0]].map(([l, v]) => (
+          <div key={l} className="bg-[#0d0d12] rounded-lg px-1.5 py-1">
+            <div className="text-[9.5px] text-[#6b7280] truncate">{l}</div>
+            <div className="text-[11px] text-[#f1f1f5] truncate">{v}</div>
+          </div>
+        ))}
+      </div>
+      <div className="text-[11px]">
+        <TrafficBar used={item.trafficUsed} total={item.trafficLimit} />
+      </div>
+      {actions.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pt-0.5">
+          {actions.map((a) => (
+            <ActionButton key={a.name} spec={a} small onClick={() => onAction(a, { key_id: item.id })} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmin = false }) {
+  const [tab, setTab] = useStateD("profile");
+  const [data, setData] = useStateD(null);
+  const [loading, setLoading] = useStateD(true);
+  const [form, setForm] = useStateD(null);      // {spec, preset}
+  const [busy, setBusy] = useStateD(false);
+
+  const load = React.useCallback(async (refresh) => {
+    setLoading(true);
+    try {
+      const d = await window.apiFetch(
+        "GET", `/api/dialogs/${conv.id}/customer${refresh ? "?refresh=true" : ""}`);
+      setData(d);
+    } catch {
+      setData(null);
+    }
+    setLoading(false);
+  }, [conv.id]);
+
+  useEffectD(() => { setTab("profile"); load(false); }, [load]);
+
+  async function runAction(spec, params) {
+    setBusy(true);
+    try {
+      const res = await window.apiFetch(
+        "POST", `/api/dialogs/${conv.id}/customer/${spec.name}`, params);
+      showToast && showToast(res.message || spec.label);
+      setForm(null);
+      await load(true);
+    } catch (e) {
+      showToast && showToast(e?.detail || "Не удалось выполнить действие", "warn");
+    }
+    setBusy(false);
+  }
+
+  function openAction(spec, preset) {
+    // Действие без полей и без подтверждения выполняется сразу — лишний клик
+    // оператору не нужен.
+    if (spec.fields.length === 0 && !spec.confirm) { runAction(spec, {}); return; }
+    setForm({ spec, preset: preset || {} });
+  }
+
+  const actions = (data && data.actions) || [];
+  const byGroup = (g) => actions.filter((a) => a.group === g);
+  // Действия над конкретным ключом рисуются на его карточке.
+  const keyScoped = byGroup("keys").filter((a) => a.fields.some((f) => f.type === "key"));
+  const keyGlobal = byGroup("keys").filter((a) => !a.fields.some((f) => f.type === "key"));
+
+  const tabs = [
+    { id: "profile",   label: "Профиль" },
+    { id: "keys",      label: "Ключи",    count: data?.keys?.length },
+    { id: "referrals", label: "Рефералы", count: data?.referrals?.length },
+    { id: "history",   label: "История",  count: (conv.tickets || []).length },
+  ];
+
+  return (
+    <div className="flex flex-col min-h-0">
+      {/* Шапка: кто это и откуда данные */}
+      <div className="p-4 pb-3 shrink-0">
+        <div className="flex items-center gap-3">
+          <Avatar initials={conv.initials} color={conv.avatarColor} size={44} photoUrl={conv.photoUrl} />
+          <div className="min-w-0 flex-1">
+            <div className="font-medium text-[#f1f1f5] text-sm truncate">{conv.name}</div>
+            {data?.tgLink ? (
+              <a href={data.tgLink} target="_blank" rel="noreferrer"
+                 className="text-xs text-[#7BA8F9] hover:underline truncate block">
+                {data.username || conv.username}
+              </a>
+            ) : (
+              <div className="text-xs text-[#6b7280] truncate">{conv.username}</div>
+            )}
+            <div className="text-[10px] text-[#6b7280]/70 font-mono">ID {conv.tgId}</div>
+          </div>
+          <button onClick={() => load(true)} disabled={loading} title="Обновить профиль"
+                  className="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] disabled:opacity-40">
+            <Icon name="refresh" className={"w-4 h-4 " + (loading ? "animate-spin" : "")} />
+          </button>
+        </div>
+        {data && (data.isMock || data.stale) && (
+          <div className={"mt-3 flex items-start gap-2 rounded-lg px-2.5 py-2 text-[11px] border " +
+            (data.stale
+              ? "bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]"
+              : "bg-[#f59e0b]/10 border-[#f59e0b]/30 text-[#f59e0b]")}>
+            <span className="shrink-0">⚠</span>
+            <span>{data.message || (data.isMock ? "Тестовые данные (мок)" : "Данные могут устареть")}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Вкладки */}
+      <div className="flex px-2 border-b border-[#2a2a3a] shrink-0 overflow-x-auto no-scrollbar">
+        {tabs.map((t) => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+                  className={"px-2 py-2 text-[11.5px] font-medium border-b-2 -mb-px whitespace-nowrap transition " +
+                    (tab === t.id
+                      ? "border-[#4F8EF7] text-[#7BA8F9]"
+                      : "border-transparent text-[#6b7280] hover:text-[#f1f1f5]")}>
+            {t.label}
+            {t.count > 0 && <span className="ml-1 opacity-60 font-mono">{t.count}</span>}
+          </button>
+        ))}
+      </div>
+
+      <div className="p-4 space-y-4 min-h-0">
+        {loading && !data && (
+          <div className="text-center text-xs text-[#6b7280] py-8">Загрузка профиля…</div>
+        )}
+        {!loading && !data && (
+          <div className="text-center text-xs text-[#6b7280] py-8">Профиль недоступен</div>
+        )}
+
+        {/* ── Профиль ─────────────────────────────────────────────────────── */}
+        {data && tab === "profile" && (
+          <>
+            <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60 space-y-2 text-xs">
+              <InfoRow label="Тариф"><PlanBadge plan={data.plan || conv.plan} /></InfoRow>
+              <InfoRow label="Подписка"><SubStatus status={data.subStatus} /></InfoRow>
+              <InfoRow label="Статус">
+                <span className={data.banned ? "text-[#ef4444]" : "text-[#22c55e]"}>
+                  {data.banned ? "Забанен" : "Активен"}
+                </span>
+              </InfoRow>
+              {data.group && <InfoRow label="Группа">{data.group}</InfoRow>}
+              {data.language && <InfoRow label="Язык в ТГ">{data.language}</InfoRow>}
+              <InfoRow label="Пробный период">{TRIAL_LABEL[data.trial] || data.trial}</InfoRow>
+              <InfoRow label="След. платёж">{data.nextPayment || "—"}</InfoRow>
+              <InfoRow label="Устройств">{data.devices.length || "—"}</InfoRow>
+              <div className="pt-2 mt-1 border-t border-[#2a2a3a]/60">
+                <TrafficBar used={data.traffic.used} total={data.traffic.total} />
+              </div>
+            </div>
+
+            <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60 space-y-2 text-xs">
+              <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-1">
+                Партнёрка
+              </div>
+              <InfoRow label="Партнёр">
+                <span className={data.isPartner ? "text-[#22c55e]" : "text-[#6b7280]"}>
+                  {data.isPartner ? "да" : "нет"}
+                </span>
+              </InfoRow>
+              <InfoRow label="Реф. процент">{data.refPercent}%</InfoRow>
+              <InfoRow label="Реф. баланс">
+                <span className="tabular-nums">{data.refBalance}</span>
+              </InfoRow>
+              {data.refCode && <InfoRow label="Реф. код"><span className="font-mono">{data.refCode}</span></InfoRow>}
+              <InfoRow label="Рефералов">
+                {data.referrals.length} <span className="text-[#6b7280]">· оплатили {data.referralsPaid}</span>
+              </InfoRow>
+              <InfoRow label="Депозиты рефералов">
+                <span className="tabular-nums">{data.referralsDepositsTotal}</span>
+              </InfoRow>
+            </div>
+
+            <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold">
+                  Депозиты
+                </span>
+                <span className="text-[#f1f1f5] font-medium tabular-nums">{data.depositsTotal}</span>
+              </div>
+              {data.deposits.length === 0 && <div className="text-[#6b7280]">Платежей не было</div>}
+              {data.deposits.slice(0, 5).map((p, i) => (
+                <div key={i} className="flex justify-between gap-2">
+                  <span className="text-[#6b7280] truncate">{p.date || "—"}{p.method ? ` · ${p.method}` : ""}</span>
+                  <span className="text-[#f1f1f5] tabular-nums shrink-0">{p.amount} {p.currency}</span>
+                </div>
+              ))}
+            </div>
+
+            {byGroup("profile").length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {byGroup("profile").map((a) => (
+                  <ActionButton key={a.name} spec={a} onClick={() => openAction(a)} />
+                ))}
+              </div>
+            )}
+
+            {conv.rating && (
+              <section>
+                <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Оценка поддержки</div>
+                <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60 flex items-center justify-between">
+                  <StarRating rating={conv.rating} size="lg" />
+                  <span className="text-[11px] text-[#6b7280]">{conv.rating} / 5</span>
+                </div>
+              </section>
+            )}
+
+            <section>
+              <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Заметки</div>
+              <NotesEditor convId={conv.id} initialValue={conv.notes || ""} showToast={showToast} />
+            </section>
+          </>
+        )}
+
+        {/* ── Ключи ───────────────────────────────────────────────────────── */}
+        {data && tab === "keys" && (
+          <>
+            {keyGlobal.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {keyGlobal.map((a) => (
+                  <ActionButton key={a.name} spec={a} onClick={() => openAction(a)} />
+                ))}
+              </div>
+            )}
+            {data.keys.length === 0 && (
+              <div className="text-center text-xs text-[#6b7280] py-6">Ключей нет</div>
+            )}
+            {data.keys.map((k) => (
+              <KeyCard key={k.id} item={k} actions={keyScoped}
+                       onAction={(spec, preset) => openAction(spec, preset)} />
+            ))}
+            {data.devices.length > 0 && (
+              <section>
+                <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Устройства</div>
+                <div className="space-y-1.5">
+                  {data.devices.map((d) => (
+                    <div key={d.id} className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 flex justify-between gap-2 text-xs">
+                      <span className="text-[#f1f1f5] truncate">{d.name}</span>
+                      <span className="text-[#6b7280] shrink-0">{d.lastSeen}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+          </>
+        )}
+
+        {/* ── Рефералы ────────────────────────────────────────────────────── */}
+        {data && tab === "referrals" && (
+          <>
+            <div className="grid grid-cols-3 gap-2">
+              {[["Всего", data.referrals.length], ["Оплатили", data.referralsPaid],
+                ["Депозиты", data.referralsDepositsTotal]].map(([l, v]) => (
+                <div key={l} className="bg-[#1a1a24] rounded-xl px-2 py-2.5 border border-[#2a2a3a]/60 text-center">
+                  <div className="text-base font-semibold text-[#f1f1f5] tabular-nums truncate">{v}</div>
+                  <div className="text-[10px] text-[#6b7280]">{l}</div>
+                </div>
+              ))}
+            </div>
+            {byGroup("referrals").length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {byGroup("referrals").map((a) => (
+                  <ActionButton key={a.name} spec={a} onClick={() => openAction(a)} />
+                ))}
+              </div>
+            )}
+            {data.referrals.length === 0 && (
+              <div className="text-center text-xs text-[#6b7280] py-6">Рефералов нет</div>
+            )}
+            <div className="space-y-1.5">
+              {data.referrals.map((r) => (
+                <div key={r.tgId} className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[#f1f1f5] truncate">{r.name}</span>
+                    <span className={"shrink-0 text-[10px] " + (r.paid ? "text-[#22c55e]" : "text-[#6b7280]")}>
+                      {r.paid ? "оплатил" : "без оплат"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-0.5">
+                    <span className="text-[10px] text-[#6b7280] font-mono truncate">{r.tgId}</span>
+                    <span className="text-[10px] text-[#f1f1f5] tabular-nums shrink-0">{r.depositsTotal}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* ── История обращений ───────────────────────────────────────────── */}
+        {tab === "history" && (
           <div className="space-y-1.5">
             {(conv.tickets || []).length === 0 && (
-              <div className="text-xs text-[#6b7280] italic px-3 py-2">Нет закрытых обращений</div>
+              <div className="text-center text-xs text-[#6b7280] py-6">Нет закрытых обращений</div>
             )}
             {(conv.tickets || []).map((t) => (
               <div key={t.id}
-                onClick={() => t.dialogId && onTicketClick && onTicketClick(t.dialogId)}
-                className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 hover:border-[#4F8EF7]/40 hover:bg-[#1a1a2e] transition cursor-pointer">
+                   onClick={() => t.dialogId && onTicketClick && onTicketClick(t.dialogId)}
+                   className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 hover:border-[#4F8EF7]/40 hover:bg-[#1a1a2e] transition cursor-pointer">
                 <div className="flex items-center justify-between mb-0.5">
                   <span className="text-[10px] font-mono text-[#6b7280]">{t.id}</span>
                   <span className="inline-flex items-center gap-1 text-[10px] text-[#22c55e]">
@@ -1143,7 +1907,26 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClic
             ))}
           </div>
         )}
-      </section>
+
+        {data && data.source && (
+          <div className="text-[10px] text-[#3a3a4a] pt-1">источник: {data.source}</div>
+        )}
+      </div>
+
+      <ActionShell open={!!form} onClose={() => setForm(null)} compact={compact}
+                   title={form?.spec.label} subtitle={conv.name}>
+        {form && (
+          <ActionForm
+            spec={form.spec}
+            preset={form.preset}
+            options={data?.options || {}}
+            keys={data?.keys || []}
+            busy={busy}
+            onSubmit={(values) => runAction(form.spec, values)}
+            onCancel={() => setForm(null)}
+          />
+        )}
+      </ActionShell>
     </div>
   );
 }

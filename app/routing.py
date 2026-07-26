@@ -80,8 +80,10 @@ class RoutingEngine:
 
     # ── Internals ─────────────────────────────────────────────────────────────
 
-    async def _automation(self) -> dict:
-        stored = await self.db.get_setting_json("automation", None) or {}
+    # Вся вкладка «Автоматизация» пер-сервисная: у каждого ВПН-а свои промпты,
+    # стоп-слова, тексты, лимит слотов и грейс офлайна.
+    async def _automation(self, service_id: int) -> dict:
+        stored = await self.db.get_setting_json("automation", None, service_id) or {}
         return {**AUTOMATION_DEFAULTS, **stored}
 
     @staticmethod
@@ -91,24 +93,38 @@ class RoutingEngine:
         val = automation.get(key)
         return int(AUTOMATION_DEFAULTS[key] if val is None else val)
 
-    async def _max_tickets(self, automation: dict = None) -> int:
-        automation = automation or await self._automation()
+    async def _max_tickets(self, service_id: int, automation: dict = None) -> int:
+        automation = automation or await self._automation(service_id)
         return self._cfg_int(automation, "max_tickets_per_operator")
 
-    async def _grace_seconds(self, automation: dict = None) -> int:
-        automation = automation or await self._automation()
+    async def _grace_seconds(self, service_id: int, automation: dict = None) -> int:
+        automation = automation or await self._automation(service_id)
         return self._cfg_int(automation, "offline_grace_seconds")
 
     async def _emit(self, dialog_id: str, sys_text: str = None) -> dict | None:
-        """Optionally record a system message, then broadcast the fresh dialog."""
-        if sys_text:
-            row = await self.db.save_message(dialog_id, "system", sys_text)
-            await self.ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
-                                     "message": fmt_message(row)})
+        """Optionally record a system message, then broadcast the fresh dialog.
+        Оба события уходят только операторам, у которых есть доступ к сервису
+        этого диалога."""
+        row = await self.db.save_message(dialog_id, "system", sys_text) if sys_text else None
         updated = await self.db.get_dialog(dialog_id)
+        service_id = updated["service_id"] if updated else None
+        if row:
+            await self.ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                                     "message": fmt_message(row)}, service_id)
         if updated:
-            await self.ws.broadcast({"type": "dialog_updated", "dialog": fmt_dialog(updated)})
+            await self.ws.broadcast({"type": "dialog_updated", "dialog": fmt_dialog(updated)},
+                                    service_id)
+        await self.emit_counts()
         return updated
+
+    async def emit_counts(self):
+        """Обновить бейджи на пилюлях сервисов у всех вкладок."""
+        try:
+            services = await self.db.get_services()
+            counts = await self.db.get_service_counts([s["id"] for s in services])
+            await self.ws.broadcast_counts(counts)
+        except Exception as e:
+            print(f"[routing.emit_counts] error: {e}")
 
     async def _disable_ai(self, dialog: dict):
         """Turn the AI off for the dialog (no-op if it is already off)."""
@@ -116,13 +132,14 @@ class RoutingEngine:
             return
         dialog_id, chat_id = dialog["dialog_id"], dialog["chat_id"]
         await self.db.update_ai_enabled(dialog_id, False)
-        await self.db.sync_n8n_dialog_ai_status(chat_id, False)
-        await self.n8n.notify_ai_toggled(dialog_id, chat_id, False)
+        await self.db.sync_n8n_dialog_ai_status(chat_id, False, dialog["service_slug"])
+        await self.n8n.notify_ai_toggled(dialog_id, chat_id, False, dialog)
 
     async def _notify_operator_called(self, dialog: dict):
         username = dialog.get("user_username") or dialog["dialog_id"]
         await self.n8n.schedule_notify(
-            "operator_called", {"dialog_id": dialog["dialog_id"], "username": username}
+            "operator_called", {"dialog_id": dialog["dialog_id"], "username": username},
+            dialog,
         )
 
     # ── Transitions ───────────────────────────────────────────────────────────
@@ -138,7 +155,10 @@ class RoutingEngine:
         await self._disable_ai(dialog)
         await self.db.update_operator_called(dialog_id, True)
         suffix = f" — причина: {reason}" if reason else ""
-        op_name = await self.db.assign_dialog(dialog_id, await self._max_tickets())
+        service_id = dialog["service_id"]
+        op_name = await self.db.assign_dialog(
+            dialog_id, await self._max_tickets(service_id), service_id
+        )
         if op_name:
             await self._emit(dialog_id, f"ИИ передал диалог оператору {op_name}{suffix}")
         else:
@@ -156,7 +176,7 @@ class RoutingEngine:
         entirely off, stop-words must not be a separate live channel."""
         if dialog["status"] != "ai" or not text:
             return False
-        automation = await self._automation()
+        automation = await self._automation(dialog["service_id"])
         if not automation.get("auto_handoff_enabled"):
             return False
         keywords = [k.strip().lower() for k in
@@ -248,7 +268,7 @@ class RoutingEngine:
         like a fresh handoff."""
         dialog_id = dialog["dialog_id"]
         op_name = dialog.get("assigned_operator")
-        grace = await self._grace_seconds()
+        grace = await self._grace_seconds(dialog["service_id"])
         if op_name and await self.db.is_operator_within_grace(op_name, grace):
             if drain_after:
                 await self.drain()
@@ -263,7 +283,13 @@ class RoutingEngine:
     async def assign_or_queue(self, dialog_id: str,
                               assigned_msg: str = None, queued_msg: str = None):
         """Try instant assignment; fall back to the queue."""
-        op_name = await self.db.assign_dialog(dialog_id, await self._max_tickets())
+        dialog = await self.db.get_dialog(dialog_id)
+        if not dialog:
+            return None
+        service_id = dialog["service_id"]
+        op_name = await self.db.assign_dialog(
+            dialog_id, await self._max_tickets(service_id), service_id
+        )
         if op_name:
             await self._emit(dialog_id, assigned_msg or f"Диалог назначен оператору {op_name}")
         else:
@@ -283,8 +309,8 @@ class RoutingEngine:
     async def close(self, dialog_id: str, chat_id: str, closed_by: str) -> dict:
         await self.db.move_to_closed(dialog_id)
         updated = await self._emit(dialog_id, "Диалог закрыт оператором")
-        await self.db.sync_n8n_dialog_status(chat_id, "closed")
-        await self.n8n.notify_dialog_closed(dialog_id, chat_id, closed_by)
+        await self.db.sync_n8n_dialog_status(chat_id, "closed", updated["service_slug"])
+        await self.n8n.notify_dialog_closed(dialog_id, chat_id, closed_by, updated)
         await self.drain()  # the freed slot may serve the queue
         return updated
 
@@ -292,7 +318,7 @@ class RoutingEngine:
         """«Открыть снова»: back to the queue, unassigned; AI stays off."""
         await self.db.move_to_queue(dialog_id)
         updated = await self._emit(dialog_id, "Диалог переоткрыт оператором")
-        await self.db.sync_n8n_dialog_status(chat_id, "active")
+        await self.db.sync_n8n_dialog_status(chat_id, "active", updated["service_slug"])
         await self.drain()
         return updated
 
@@ -312,21 +338,39 @@ class RoutingEngine:
         await self.drain()  # the previous operator's slot may have freed
         return updated
 
-    async def release_offline_operator(self, op: dict):
-        """Offline grace expired: the operator's in_progress tickets go back to
-        the queue. Waiting tickets with the blue «ждём ответ» label stay bound
-        (the ball is on the client's side — they wake up on a client reply),
-        but red manual ones («клиент ждёт ответ») are owed an answer and must
-        not stay bound to a gone operator."""
-        for d in await self.db.get_operator_dialogs_by_status(op["name"], "in_progress"):
+    async def _release_operator_tickets(self, op_name: str, service_id: int, reason: str):
+        """Отвязать тикеты оператора в одном сервисе. in_progress уходят в
+        очередь всегда; из waiting — только красные («клиент ждёт ответ»): у
+        синих мяч на стороне клиента, они проснутся сами по его сообщению."""
+        for d in await self.db.get_operator_dialogs_by_status(op_name, "in_progress", service_id):
             await self.db.move_to_queue(d["dialog_id"])
-            await self._emit(d["dialog_id"], "Оператор офлайн — тикет возвращён в очередь")
-        for d in await self.db.get_operator_dialogs_by_status(op["name"], "waiting"):
+            await self._emit(d["dialog_id"], reason)
+        for d in await self.db.get_operator_dialogs_by_status(op_name, "waiting", service_id):
             if d.get("waiting_reason") == WAITING_MANUAL:
                 await self.db.move_to_queue(d["dialog_id"])
-                await self._emit(d["dialog_id"], "Оператор офлайн — тикет возвращён в очередь")
-        # Consume the grace timer: from now on the operator counts as gone.
-        await self.db.set_operator_offline_since(op["id"], False)
+                await self._emit(d["dialog_id"], reason)
+
+    async def release_offline_operator(self, op: dict, service_id: int):
+        """Грейс офлайна истёк — в этом сервисе. Грейс настраивается отдельно у
+        каждого ВПН-а, поэтому один и тот же оператор может быть «ещё вернётся»
+        в одном сервисе и «уже ушёл» в другом; освобождаем только тикеты того
+        сервиса, чей грейс вышел.
+
+        Таймер offline_since при этом НЕ гасим (в отличие от прежней одно-
+        сервисной версии): он общий на оператора и нужен остальным сервисам,
+        у которых грейс длиннее. Повторный проход безвреден — освобождать уже
+        нечего; сбрасывает таймер переподключение оператора."""
+        await self._release_operator_tickets(
+            op["name"], service_id, "Оператор офлайн — тикет возвращён в очередь"
+        )
+
+    async def release_operator_service(self, op_name: str, service_id: int):
+        """У оператора отобрали доступ к сервису — его тикеты в этом сервисе
+        возвращаются в очередь другим операторам."""
+        await self._release_operator_tickets(
+            op_name, service_id, "Доступ оператора к сервису снят — тикет возвращён в очередь"
+        )
+        await self.drain()
 
     async def on_ai_toggled(self, dialog_id: str, ai_enabled: bool):
         """Keep the AI flag and the status model coherent (called after the
@@ -346,27 +390,34 @@ class RoutingEngine:
 
     async def drain(self):
         """Serve as much as capacity allows: first waiting tickets whose client
-        already replied (back to their own operators), then the global queue.
-        Safe to call from anywhere; errors are logged, never raised."""
+        already replied (back to their own operators), then the queue.
+        Раздача идёт по сервисам — у каждого свой лимит слотов и свой круг
+        операторов; порядок «сначала тот, где тикет ждёт дольше всех» не даёт
+        ни одному ВПН-у голодать. Safe to call from anywhere; errors are
+        logged, never raised."""
         try:
-            max_tickets = await self._max_tickets()
-            while True:
-                result = await self.db.claim_pending_return(max_tickets)
-                if not result:
-                    break
-                await self._emit(
-                    result["dialog"]["dialog_id"],
-                    f"Клиент ответил — тикет возвращён оператору {result['op_name']}",
-                )
-            while True:
-                result = await self.db.claim_next_queued(max_tickets)
-                if not result:
-                    break
-                dialog = result["dialog"]
-                dialog_id = dialog["dialog_id"]
-                # Defensive: legacy queued rows predating the handoff-time AI-off.
-                await self._disable_ai(dialog)
-                await self._emit(dialog_id, f"Диалог назначен оператору {result['op_name']}")
+            for service_id in await self.db.get_service_ids_with_pending():
+                max_tickets = await self._max_tickets(service_id)
+                while True:
+                    result = await self.db.claim_pending_return(max_tickets, service_id)
+                    if not result:
+                        break
+                    await self._emit(
+                        result["dialog"]["dialog_id"],
+                        f"Клиент ответил — тикет возвращён оператору {result['op_name']}",
+                    )
+                while True:
+                    result = await self.db.claim_next_queued(max_tickets, service_id)
+                    if not result:
+                        break
+                    dialog_id = result["dialog"]["dialog_id"]
+                    # Defensive: legacy queued rows predating the handoff-time AI-off.
+                    # Перечитываем — claim_* возвращает голую строку dialogs,
+                    # без слага сервиса, который нужен синхронизации с n8n.
+                    fresh = await self.db.get_dialog(dialog_id)
+                    if fresh:
+                        await self._disable_ai(fresh)
+                    await self._emit(dialog_id, f"Диалог назначен оператору {result['op_name']}")
         except Exception as e:
             print(f"[routing.drain] error: {e}")
 
@@ -380,9 +431,11 @@ class RoutingEngine:
         while True:
             await asyncio.sleep(interval)
             try:
-                grace = await self._grace_seconds()
-                for op in await self.db.get_offline_expired_operators(grace):
-                    await self.release_offline_operator(op)
+                # Грейс свой у каждого сервиса — обходим сервисы, а не операторов.
+                for service in await self.db.get_services():
+                    grace = await self._grace_seconds(service["id"])
+                    for op in await self.db.get_offline_expired_operators(grace):
+                        await self.release_offline_operator(op, service["id"])
             except asyncio.CancelledError:
                 raise
             except Exception as e:

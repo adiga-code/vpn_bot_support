@@ -11,7 +11,10 @@
       "name": "Webhook исходящих",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [1200, 1920],
+      "position": [
+        1200,
+        1920
+      ],
       "webhookId": "vpn-bot-outgoing"
     },
     {
@@ -22,7 +25,10 @@
       "name": "Распарсить JSON1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1424, 1920]
+      "position": [
+        1424,
+        1920
+      ]
     },
     {
       "parameters": {
@@ -132,7 +138,10 @@
       "name": "Switch по type1",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
-      "position": [1872, 1888]
+      "position": [
+        1872,
+        1888
+      ]
     },
     {
       "parameters": {
@@ -142,7 +151,10 @@
       "name": "Подготовить файл1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2096, 1248]
+      "position": [
+        2096,
+        1248
+      ]
     },
     {
       "parameters": {
@@ -159,7 +171,10 @@
       "name": "Отправить ответ оператора1",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [2320, 1248]
+      "position": [
+        2320,
+        1248
+      ]
     },
     {
       "parameters": {
@@ -189,12 +204,15 @@
       "name": "С клавиатурой?1",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [2096, 1536]
+      "position": [
+        2096,
+        1536
+      ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "url": "=https://api.telegram.org/bot{{ $vars['TELEGRAM_BOT_TOKEN_' + String($json.service || 'gruvpn').toUpperCase().replace(/-/g, '_')] || $vars.TELEGRAM_BOT_TOKEN }}/sendMessage",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ chat_id: String($json.chat_id), text: $json.text, reply_markup: { inline_keyboard: $json.keyboard } }) }}",
@@ -204,7 +222,10 @@
       "name": "TG sendMessage с кнопками1",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2320, 1440]
+      "position": [
+        2320,
+        1440
+      ]
     },
     {
       "parameters": {
@@ -214,7 +235,10 @@
       "name": "Нормализовать text→message1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2320, 1632]
+      "position": [
+        2320,
+        1632
+      ]
     },
     {
       "parameters": {
@@ -231,17 +255,23 @@
       "name": "Отправить текст пользователю1",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [2544, 1632]
+      "position": [
+        2544,
+        1632
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const d = $input.first().json;\nconst event = d.event;\nconst texts = {\n  new_dialog:      () => `📩 Новый диалог\\nПользователь: ${d.username || d.dialog_id}`,\n  operator_called: () => `🆘 Вызов оператора\\nПользователь: ${d.username || d.dialog_id}`,\n  dialog_closed:   () => `✅ Диалог закрыт\\nОператор: ${d.operator_name || '—'}\\nID: ${d.dialog_id}`,\n  ai_toggled:      () => `🤖 ИИ ${d.ai_enabled ? 'включён ✅' : 'выключен ❌'}\\nДиалог: ${d.dialog_id}`,\n  server_down:     () => `🔴 Сервер vpn_bot недоступен!`,\n};\nconst text = texts[event] ? texts[event]() : `[${event}] ${JSON.stringify(d)}`;\nreturn [{ json: { text } }];"
+        "jsCode": "const d = $input.first().json;\nconst event = d.event;\nconst texts = {\n  new_dialog:      () => `📩 Новый диалог\\nПользователь: ${d.username || d.dialog_id}`,\n  operator_called: () => `🆘 Вызов оператора\\nПользователь: ${d.username || d.dialog_id}`,\n  dialog_closed:   () => `✅ Диалог закрыт\\nОператор: ${d.operator_name || '—'}\\nID: ${d.dialog_id}`,\n  ai_toggled:      () => `🤖 ИИ ${d.ai_enabled ? 'включён ✅' : 'выключен ❌'}\\nДиалог: ${d.dialog_id}`,\n  server_down:     () => `🔴 Сервер недоступен: ${d.server_name || '—'}${d.location ? ' (' + d.location + ')' : ''}\\n${d.service_name ? 'Сервис: ' + d.service_name + '\\n' : ''}${d.reason ? 'Причина: ' + d.reason : ''}`,\n  bot_down:        () => `🤖 Бот не отвечает: ${d.server_name || '—'}\\n${d.service_name ? 'Сервис: ' + d.service_name + '\\n' : ''}${d.reason ? 'Причина: ' + d.reason : ''}`,\n};\nconst text = texts[event] ? texts[event]() : `[${event}] ${JSON.stringify(d)}`;\nreturn [{ json: { text } }];"
       },
       "id": "2fd9235f-8a99-4d7d-9cce-fc8389894a5d",
       "name": "Форматировать уведомление1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2096, 1824]
+      "position": [
+        2096,
+        1824
+      ]
     },
     {
       "parameters": {
@@ -253,7 +283,10 @@
       "name": "Получить tg_id операторов1",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [2320, 1824],
+      "position": [
+        2320,
+        1824
+      ],
       "credentials": {
         "postgres": {
           "id": "5tWDSrTUFp4DiJlP",
@@ -273,7 +306,10 @@
       "name": "Отправить оператору1",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [2544, 1824],
+      "position": [
+        2544,
+        1824
+      ],
       "webhookId": "87bf632c-43a5-4725-a605-c292ccdece13",
       "credentials": {
         "telegramApi": {
@@ -301,7 +337,10 @@
       "name": "Billing API1",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2064, 2512]
+      "position": [
+        2064,
+        2512
+      ]
     },
     {
       "parameters": {
@@ -311,7 +350,10 @@
       "name": "Подготовить ответ биллинга1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2288, 2512]
+      "position": [
+        2288,
+        2512
+      ]
     },
     {
       "parameters": {
@@ -328,7 +370,10 @@
       "name": "Отправить результат биллинга1",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [2512, 2512]
+      "position": [
+        2512,
+        2512
+      ]
     },
     {
       "parameters": {
@@ -358,19 +403,25 @@
       "name": "Закрытие диалога?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [2096, 2016]
+      "position": [
+        2096,
+        2016
+      ]
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE n8n_dialogs SET status='closed' WHERE user_id={{ $json.chat_id }}",
+        "query": "=UPDATE n8n_dialogs SET status='closed' WHERE user_id={{ $json.chat_id }} AND service='{{ $json.service || 'gruvpn' }}'",
         "options": {}
       },
       "id": "66509a78-8a56-461b-ba21-334188efe260",
       "name": "Закрыть диалог в n8n_dialogs",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [2320, 2016],
+      "position": [
+        2320,
+        2016
+      ],
       "credentials": {
         "postgres": {
           "id": "5tWDSrTUFp4DiJlP",
@@ -406,19 +457,25 @@
       "name": "ИИ переключён?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [2144, 2192]
+      "position": [
+        2144,
+        2192
+      ]
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE n8n_dialogs SET ai_status={{ $json.ai_enabled }} WHERE user_id={{ $json.chat_id }} AND status='active'",
+        "query": "=UPDATE n8n_dialogs SET ai_status={{ $json.ai_enabled }} WHERE user_id={{ $json.chat_id }} AND status='active' AND service='{{ $json.service || 'gruvpn' }}'",
         "options": {}
       },
       "id": "f8c962f8-6ea0-4948-8c8e-9e5d96677b7d",
       "name": "Обновить ai_status",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [2368, 2224],
+      "position": [
+        2368,
+        2224
+      ],
       "credentials": {
         "postgres": {
           "id": "5tWDSrTUFp4DiJlP",
