@@ -923,17 +923,6 @@
         }
       }
 
-      async function handleBillingAction(dialog_id, action, params) {
-        try {
-          await apiPost(`/api/dialogs/${dialog_id}/billing/${action}`, params || {});
-          const labels = { renew: "Подписка продлена", buy_traffic: "Трафик докуплен", reset_key: "Ключ сброшен" };
-          showToast(labels[action] || "Готово");
-        } catch (e) {
-          console.error("Billing action failed:", e);
-          showToast("Ошибка выполнения действия");
-        }
-      }
-
       // ── Render ────────────────────────────────────────────────────────────
 
       if (authState === "loading") {
@@ -1036,10 +1025,8 @@
                 onHandoff={handleHandoff}
                 onReopen={handleReopen}
                 onWait={handleWait}
-                onBillingAction={handleBillingAction}
                 currentOperator={currentOperator}
                 operators={opsState}
-                servers={[]}
                 showServiceTag={currentServiceId === null}
                 viewport={viewport}
                 mobileChrome={mobileChrome}

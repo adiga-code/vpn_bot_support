@@ -132,7 +132,8 @@ def build_provider(name: str, service: dict, config: dict = None) -> HealthProvi
 def load_plugins(package: str = "app.providers") -> list[str]:
     """Импортировать все модули из app/providers/ — свой источник данных
     подключается просто файлом в этом каталоге, без правки кода приложения.
-    Модуль сам вызывает register_provider() при импорте."""
+    Модуль сам вызывает register_provider() либо register_customer_provider()
+    при импорте: каталог общий для мониторинга и карточки клиента."""
     import importlib
     import pkgutil
 
@@ -148,9 +149,9 @@ def load_plugins(package: str = "app.providers") -> list[str]:
             importlib.import_module(f"{package}.{mod.name}")
             loaded.append(mod.name)
         except Exception as e:
-            print(f"[health] плагин {mod.name} не загружен: {e}")
+            print(f"[providers] плагин {mod.name} не загружен: {e}")
     if loaded:
-        print(f"[health] подключены свои провайдеры: {', '.join(loaded)}")
+        print(f"[providers] подключены свои источники: {', '.join(loaded)}")
     return loaded
 
 

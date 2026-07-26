@@ -56,6 +56,8 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       hint: "статьи для ответов ИИ" },
     { id: "automation", label: "Автоматизация", icon: "zap",       adminOnly: true,  scope: "service",
       hint: "эскалация, оценки, лимиты" },
+    { id: "customer",   label: "Клиенты",       icon: "user",      adminOnly: true,  scope: "service",
+      hint: "источник профиля и действий" },
     { id: "sounds",     label: "Звуки",         icon: "bellRing",  adminOnly: true,  scope: "common",
       hint: "новое сообщение, вызов оператора" },
     { id: "broadcast",  label: "Рассылка",      icon: "megaphone", adminOnly: true,  scope: "service",
@@ -101,6 +103,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       {section === "ai"            && <AISection showToast={showToast} service={svc} />}
       {section === "kb"            && <KBSection service={svc} />}
       {section === "automation"    && <AutomationSection showToast={showToast} service={svc} />}
+      {section === "customer"      && <CustomerSection showToast={showToast} service={svc} />}
       {section === "sounds"        && <SoundsSection showToast={showToast} />}
       {section === "broadcast"     && <BroadcastSection showToast={showToast} service={svc} />}
       {section === "templates"     && <TemplatesSection showToast={showToast} service={svc} />}
@@ -388,6 +391,171 @@ function OperatorsSection({ operators, services = [], setOperators, showToast, o
             {operators.length === 0 && <tr><td colSpan={6} className="px-5 py-8 text-center text-xs text-[#6b7280]">Нет операторов</td></tr>}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Секция «Клиенты»: откуда панель берёт профиль клиента ────────────────────
+// Список источников приходит из реестра app.customer — свой провайдер
+// появляется здесь сам, достаточно положить файл в app/providers/.
+
+function CustomerSection({ showToast, service }) {
+  const [cfg, setCfg] = useStateT(null);
+  const [configText, setConfigText] = useStateT("{}");
+  const [saving, setSaving] = useStateT(false);
+  const [err, setErr] = useStateT(null);
+
+  useEffectT(() => {
+    setCfg(null);
+    setErr(null);
+    window.apiFetch("GET", "/api/settings/customer" + svcQuery(service))
+      .then((d) => {
+        setCfg(d);
+        setConfigText(JSON.stringify(d.config || {}, null, 2));
+      })
+      .catch(() => setCfg(null));
+  }, [service?.id]);
+
+  async function save(next) {
+    setSaving(true);
+    try {
+      await window.apiFetch("PUT", "/api/settings/customer" + svcQuery(service), {
+        provider: next.provider, config: next.config, cacheTtl: next.cacheTtl,
+      });
+      showToast("Источник данных о клиентах сохранён");
+      setErr(null);
+    } catch (e) {
+      showToast("Ошибка сохранения");
+    }
+    setSaving(false);
+  }
+
+  function pickProvider(name) {
+    const next = { ...cfg, provider: name };
+    setCfg(next);
+    save(next);
+  }
+
+  function saveConfig() {
+    let parsed;
+    try {
+      parsed = JSON.parse(configText || "{}");
+    } catch (e) {
+      setErr("Это не похоже на JSON: " + e.message);
+      return;
+    }
+    const next = { ...cfg, config: parsed };
+    setCfg(next);
+    save(next);
+  }
+
+  if (!cfg) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+
+  const current = (cfg.available || []).find((p) => p.name === cfg.provider);
+  const supported = new Set(current?.actions || []);
+  const disabled = new Set((cfg.config || {}).disable || []);
+
+  return (
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
+      <div>
+        <h1 className="text-xl font-semibold text-[#f1f1f5]">Клиенты</h1>
+        <div className="text-xs text-[#6b7280] mt-0.5">
+          Откуда карточка клиента берёт профиль и куда уходят действия над аккаунтом —
+          у каждого ВПН-сервиса свой источник
+        </div>
+      </div>
+
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-4 space-y-3">
+        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold">
+          Источник данных · {cfg.serviceName}
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {(cfg.available || []).map((p) => {
+            const on = cfg.provider === p.name;
+            return (
+              <button key={p.name} disabled={saving} onClick={() => pickProvider(p.name)}
+                title={p.description}
+                className={"px-3 py-1.5 rounded-md text-xs font-medium border transition disabled:opacity-40 " +
+                  (on ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
+                      : "text-[#6b7280] border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24]/60")}>
+                {p.name}{p.isMock ? " (мок)" : ""}
+              </button>
+            );
+          })}
+        </div>
+        {current && <div className="text-[11px] text-[#6b7280]">{current.description}</div>}
+        {current?.isMock && (
+          <div className="text-[11px] text-[#f59e0b] bg-[#f59e0b]/10 border border-[#f59e0b]/30 rounded-lg px-3 py-2">
+            Сейчас показываются выдуманные данные. Чтобы подключить свою API,
+            выберите <code className="text-[#7BA8F9]">http</code> и опишите адреса ниже,
+            либо положите свой провайдер файлом в <code className="text-[#7BA8F9]">app/providers/</code>.
+          </div>
+        )}
+      </div>
+
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold">
+            Конфигурация источника
+          </div>
+          <label className="flex items-center gap-2 text-xs text-[#6b7280]">
+            Кэш профиля, сек
+            <input type="number" min="0" value={cfg.cacheTtl}
+              onChange={(e) => setCfg({ ...cfg, cacheTtl: Number(e.target.value) })}
+              onBlur={() => save(cfg)}
+              className="w-20 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-2 py-1 text-xs text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50" />
+          </label>
+        </div>
+        <textarea value={configText} onChange={(e) => setConfigText(e.target.value)} rows={10}
+          spellCheck={false}
+          className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 text-xs font-mono text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 resize-y scrollbar-thin" />
+        {err && (
+          <div className="text-xs text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-3 py-2">
+            {err}
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-[10px] text-[#6b7280]">
+            Для <code className="text-[#7BA8F9]">http</code>: base_url, token, paths и mapping —
+            см. README, «Карточка клиента: подключение своего API».
+          </div>
+          <button onClick={saveConfig} disabled={saving}
+            className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold transition disabled:opacity-40">
+            Сохранить конфигурацию
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-4">
+        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">
+          Действия над клиентом
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+          {(cfg.catalog || []).map((a) => {
+            const off = !supported.has(a.name) || disabled.has(a.name);
+            return (
+              <div key={a.name}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#0d0d12] border border-[#2a2a3a]/60">
+                <span className={"w-1.5 h-1.5 rounded-full shrink-0 " + (off ? "bg-zinc-600" : "bg-[#22c55e]")}></span>
+                <span className={"text-xs truncate flex-1 " + (off ? "text-[#6b7280]" : "text-[#f1f1f5]")}>
+                  {a.label}
+                </span>
+                {a.danger && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#ef4444]/15 text-[#ef4444] shrink-0">
+                    админ
+                  </span>
+                )}
+                <span className="text-[10px] text-[#3a3a4a] font-mono shrink-0">{a.name}</span>
+              </div>
+            );
+          })}
+        </div>
+        <div className="text-[10px] text-[#6b7280] mt-3 leading-relaxed">
+          Зелёным — то, что умеет выбранный источник; такие кнопки видны оператору в карточке
+          клиента. Погасить лишнее можно списком <code className="text-[#7BA8F9]">disable</code> в
+          конфигурации. Помеченные «админ» доступны только администратору.
+        </div>
       </div>
     </div>
   );

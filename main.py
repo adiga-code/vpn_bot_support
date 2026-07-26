@@ -6,8 +6,8 @@ import redis.asyncio as aioredis
 
 from app.ai_client import make_chat_client
 from app.auth import hash_password
-from app.billing import make_billing_provider
 from app.config import Settings
+from app.customer import CustomerService
 from app.database import DatabaseManager
 from app.health import ServiceHealthMonitor, load_plugins
 from app.n8n_client import N8NClient
@@ -16,9 +16,10 @@ from app.routing import RoutingEngine
 from app.web_server import build_app
 from app.ws_manager import WebSocketManager
 
-# Импорт ради регистрации провайдеров мониторинга в реестре app.health.
+# Импорт ради регистрации провайдеров в реестрах app.health и app.customer.
 # Свой источник данных кладётся файлом в app/providers/ — см. README.
 import app.bots  # noqa: F401
+import app.customers  # noqa: F401
 import app.infra  # noqa: F401
 import app.servers  # noqa: F401
 
@@ -69,7 +70,6 @@ async def main():
 
     ws_manager = WebSocketManager()
     n8n_client = N8NClient(settings, rmq, redis, db)
-    billing = make_billing_provider(settings.BILLING_API_URL, settings.BILLING_API_TOKEN)
 
     # ── Уведомление о падении сервера или бота ────────────────────────────────
     # Уходит боту того ВПН-а, чей компонент лёг, а не всем подряд.
@@ -88,11 +88,12 @@ async def main():
     load_plugins()
 
     health_monitor = ServiceHealthMonitor(db, on_component_down=on_component_down)
+    customers = CustomerService(db)
 
     chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
     routing = RoutingEngine(db, ws_manager, n8n_client)
     consumer = RabbitMQConsumer(rmq, db, ws_manager, n8n_client, routing, chat_client)
-    app = build_app(settings, db, ws_manager, n8n_client, routing, billing, health_monitor)
+    app = build_app(settings, db, ws_manager, n8n_client, routing, customers, health_monitor)
 
     # ── HTTP server ───────────────────────────────────────────────────────────
     config = uvicorn.Config(

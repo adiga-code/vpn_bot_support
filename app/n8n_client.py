@@ -51,7 +51,6 @@ class N8NClient:
       manager_message  — operator reply to user (text/file)
       operator_notify  — notification to the operator group (event field varies)
       send_to_user     — proactive message to user, optional inline keyboard
-      billing_action   — billing command for user
     """
 
     def __init__(
@@ -280,14 +279,3 @@ class N8NClient:
         ]
         return await self.send_to_user(chat_id, text, keyboard, service)
 
-    # ── Billing ───────────────────────────────────────────────────────────────
-
-    async def send_billing_action(
-        self, dialog_id: str, chat_id: str, action: str, service: dict = None,
-    ) -> bool:
-        return await self._push({
-            "type": "billing_action",
-            "dialog_id": dialog_id,
-            "chat_id": chat_id,
-            "action": action,
-        }, service)

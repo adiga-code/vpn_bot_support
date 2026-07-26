@@ -425,6 +425,7 @@ class DatabaseManager:
         )
 
         await self._migrate_monitoring(conn)
+        await self._migrate_customer(conn)
 
     async def _migrate_monitoring(self, conn):
         """Мониторинг серверов был глобальным (SERVERS в .env) — переносим его в
@@ -462,6 +463,45 @@ class DatabaseManager:
             print(f"[migrate] monitoring: провайдер серверов '{provider}' у сервиса id={row['id']}")
         await conn.execute(
             "INSERT INTO settings (key, value, service_id) VALUES ('monitoring_v1','1',$1) "
+            "ON CONFLICT DO NOTHING",
+            GLOBAL_SERVICE_ID,
+        )
+
+    async def _migrate_customer(self, conn):
+        """Прежний биллинг настраивался глобально (BILLING_API_URL в .env) и умел
+        три действия. Он поглощён пер-сервисной настройкой `customer`: переносим
+        адрес и токен в первый сервис, чтобы установка с настроенным биллингом не
+        откатилась на мок."""
+        flag = await conn.fetchval(
+            "SELECT value FROM settings WHERE key='customer_v1' AND service_id=$1",
+            GLOBAL_SERVICE_ID,
+        )
+        if flag:
+            return
+        url = (self.settings.BILLING_API_URL or "").strip()
+        row = await conn.fetchrow("SELECT id FROM services ORDER BY sort_order, id LIMIT 1")
+        if url and row:
+            customer = {
+                "provider": "http",
+                "config": {"base_url": url, "token": self.settings.BILLING_API_TOKEN or "",
+                           # Прежний биллинг умел только эти три действия —
+                           # остальные кнопки не показываем, пока админ не
+                           # проверит, что его API их поддерживает.
+                           "paths": {
+                               "renew": "POST /subscriptions/renew",
+                               "buy_traffic": "POST /subscriptions/buy_traffic",
+                               "reset_key": "POST /keys/reset",
+                           }},
+                "cacheTtl": 60,
+            }
+            await conn.execute(
+                "INSERT INTO settings (key, value, service_id) VALUES ('customer', $1, $2) "
+                "ON CONFLICT (key, service_id) DO NOTHING",
+                json.dumps(customer, ensure_ascii=False), row["id"],
+            )
+            print(f"[migrate] customer: биллинг перенесён в сервис id={row['id']}")
+        await conn.execute(
+            "INSERT INTO settings (key, value, service_id) VALUES ('customer_v1','1',$1) "
             "ON CONFLICT DO NOTHING",
             GLOBAL_SERVICE_ID,
         )

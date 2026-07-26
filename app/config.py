@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     # ── n8n webhook для исходящих событий ────────────────────────────────────
     # Если задан — исходящие события (manager_message / send_to_user /
-    # operator_notify / billing_action) отправляются POST-ом на этот Webhook
+    # operator_notify) отправляются POST-ом на этот Webhook
     # вместо очереди RabbitMQ vpn_bot.outgoing, например:
     #   N8N_WEBHOOK_URL=https://n8n.example.com/webhook/vpn-bot-outgoing
     # RabbitMQ остаётся резервным каналом: если вебхук недоступен после
@@ -81,8 +81,10 @@ class Settings(BaseSettings):
     # ── Qdrant ────────────────────────────────────────────────────────────────
     QDRANT_URL: str = "http://qdrant:6333"
 
-    # ── Billing API ───────────────────────────────────────────────────────────
-    # Leave empty to fall back to StubBillingProvider
+    # ── Прежний биллинг (устарело) ────────────────────────────────────────────
+    # Читается один раз при первом запуске и переносится в пер-сервисную
+    # настройку `customer` (см. app/customer.py и README). Новые установки
+    # задают источник в «Настройки → Клиенты», а не здесь.
     BILLING_API_URL: str = ""
     BILLING_API_TOKEN: str = ""
 

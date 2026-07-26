@@ -482,9 +482,8 @@ function DialogsScreen({
   conversations, setConversations,
   activeId, setActiveId,
   showToast,
-  onReply, onToggleAI, onClose, onHandoff, onReopen, onWait, onBillingAction,
+  onReply, onToggleAI, onClose, onHandoff, onReopen, onWait,
   currentOperator, operators,
-  servers,
   showServiceTag = false,
   viewport, mobileChrome, onMobileChatOpen,
 }) {
@@ -1217,10 +1216,11 @@ function DialogsScreen({
 
   const infoPanel = active && (
     <UserInfoPanel
+      key={active.id}
       conv={active}
       showToast={showToast}
-      servers={servers || []}
-      onBillingAction={onBillingAction}
+      compact={compact}
+      isAdmin={currentOperator?.role === "admin"}
       onTicketClick={(id) => { setShowClientSheet(false); openDialog(id); }}
     />
   );
@@ -1285,7 +1285,7 @@ function DialogsScreen({
 
           {/* Right: user info — на планшете уезжает в шторку по кнопке ⓘ */}
           {!compact && (
-            <aside className="w-[280px] shrink-0 bg-[#13131a] border-l border-[#2a2a3a] overflow-y-auto scrollbar-thin">
+            <aside className="w-[320px] shrink-0 bg-[#13131a] border-l border-[#2a2a3a] overflow-y-auto scrollbar-thin">
               {infoPanel}
             </aside>
           )}
@@ -1412,99 +1412,485 @@ function NotesEditor({ convId, initialValue, showToast }) {
   );
 }
 
-function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClick }) {
-  const [historyOpen, setHistoryOpen] = useStateD(true);
-  const trafficPct = Math.min(100, (conv.traffic.used / conv.traffic.total) * 100);
-  const trafficColor = trafficPct > 85 ? "#ef4444" : trafficPct > 60 ? "#eab308" : "#22c55e";
+// ── Карточка клиента ────────────────────────────────────────────────────────
+// Данные и список доступных действий приходят из /api/dialogs/{id}/customer:
+// какой источник за ними стоит, панель не знает (см. app/customer.py). Формы
+// действий строятся по описанию полей, поэтому новое действие появляется в
+// интерфейсе само, без правки этого файла.
+
+function TrafficBar({ used, total }) {
+  if (!total) {
+    return <div className="text-[#f1f1f5] tabular-nums">{used} <span className="text-[#6b7280]">ГБ · без лимита</span></div>;
+  }
+  const pct = Math.min(100, (used / total) * 100);
+  const color = pct > 85 ? "#ef4444" : pct > 60 ? "#eab308" : "#22c55e";
+  return (
+    <>
+      <div className="flex justify-between items-center mb-1.5">
+        <span className="text-[#6b7280]">Трафик</span>
+        <span className="text-[#f1f1f5] font-medium tabular-nums">
+          {used} <span className="text-[#6b7280]">/ {total} ГБ</span>
+        </span>
+      </div>
+      <div className="h-1.5 bg-[#0d0d12] rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all" style={{ width: pct + "%", background: color }}></div>
+      </div>
+    </>
+  );
+}
+
+function InfoRow({ label, children }) {
+  return (
+    <div className="flex justify-between items-center gap-3 py-0.5">
+      <span className="text-[#6b7280] shrink-0">{label}</span>
+      <span className="text-[#f1f1f5] text-right min-w-0 truncate">{children}</span>
+    </div>
+  );
+}
+
+const TRIAL_LABEL = { none: "не использован", active: "идёт сейчас", used: "использован" };
+
+// Модалка на десктопе, шторка на узком экране — форма одна и та же.
+function ActionShell({ open, onClose, title, subtitle, compact, children }) {
+  if (compact) {
+    return (
+      <BottomSheet open={open} onClose={onClose} title={title} subtitle={subtitle}>
+        <div className="px-[18px] pb-2">{children}</div>
+      </BottomSheet>
+    );
+  }
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+         onClick={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-medium text-sm text-[#f1f1f5] truncate">{title}</div>
+            {subtitle && <div className="text-[11px] text-[#6b7280] truncate">{subtitle}</div>}
+          </div>
+          <button onClick={onClose} className="text-[#6b7280] hover:text-[#f1f1f5] shrink-0">
+            <Icon name="x" className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+// Форма действия по описанию полей из ACTIONS (app/customer.py).
+function ActionForm({ spec, options, keys, preset, busy, onSubmit, onCancel }) {
+  const initial = {};
+  for (const f of spec.fields) {
+    initial[f.name] = preset && preset[f.name] !== undefined
+      ? preset[f.name]
+      : (f.default !== null && f.default !== undefined ? f.default : "");
+  }
+  const [values, setValues] = useStateD(initial);
+  const set = (name, v) => setValues((prev) => ({ ...prev, [name]: v }));
+  const input = "w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50";
 
   return (
-    <div className="p-4 space-y-5">
-      {/* User section */}
-      <section>
-        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">Пользователь</div>
-        <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60">
-          <div className="flex items-center gap-3 mb-3">
-            <Avatar initials={conv.initials} color={conv.avatarColor} size={44} photoUrl={conv.photoUrl} />
-            <div className="min-w-0">
-              <div className="font-medium text-[#f1f1f5] text-sm truncate">{conv.name}</div>
-              <div className="text-xs text-[#6b7280]">{conv.username}</div>
-              <div className="text-[10px] text-[#6b7280]/70 font-mono">ID {conv.tgId}</div>
-            </div>
-          </div>
-          <div className="space-y-2 text-xs">
-            <div className="flex justify-between items-center">
-              <span className="text-[#6b7280]">Тариф</span>
-              <PlanBadge plan={conv.plan} />
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-[#6b7280]">Подписка</span>
-              <SubStatus status={conv.subStatus} />
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-[#6b7280]">След. платёж</span>
-              <span className="text-[#f1f1f5]">{conv.nextPayment}</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-[#6b7280]">Последний платёж</span>
-              <span className="text-[#f1f1f5] tabular-nums">
-                {conv.lastPayment.amount} <span className="text-[#6b7280]">· {conv.lastPayment.date}</span>
-              </span>
-            </div>
-            <div className="pt-2 mt-2 border-t border-[#2a2a3a]/60">
-              <div className="flex justify-between items-center mb-1.5">
-                <span className="text-[#6b7280]">Трафик</span>
-                <span className="text-[#f1f1f5] font-medium tabular-nums">
-                  {conv.traffic.used} <span className="text-[#6b7280]">/ {conv.traffic.total} GB</span>
-                </span>
-              </div>
-              <div className="h-1.5 bg-[#0d0d12] rounded-full overflow-hidden">
-                <div
-                  className="h-full rounded-full transition-all"
-                  style={{ width: trafficPct + "%", background: trafficColor }}
-                ></div>
-              </div>
-            </div>
-          </div>
+    <div className="space-y-3">
+      {spec.confirm && (
+        <div className="text-sm text-[#eab308] bg-[#eab308]/10 border border-[#eab308]/20 rounded-lg px-3 py-2">
+          {spec.confirm}
         </div>
-      </section>
-
-      {/* Rating */}
-      {conv.rating && (
-        <section>
-          <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Оценка поддержки</div>
-          <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60 flex items-center justify-between">
-            <StarRating rating={conv.rating} size="lg" />
-            <span className="text-[11px] text-[#6b7280]">{conv.rating} / 5</span>
-          </div>
-        </section>
       )}
-
-      {/* Notes */}
-      <section>
-        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Заметки</div>
-        <NotesEditor convId={conv.id} initialValue={conv.notes || ""} showToast={showToast} />
-      </section>
-
-      {/* History */}
-      <section>
-        <button
-          onClick={() => setHistoryOpen((v) => !v)}
-          className="w-full flex items-center justify-between mb-2"
-        >
-          <span className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold">
-            История ({(conv.tickets || []).length})
-          </span>
-          <Icon name="chevronDown" className={"w-3.5 h-3.5 text-[#6b7280] transition " + (historyOpen ? "" : "-rotate-90")} />
+      {spec.fields.map((f) => {
+        const preselected = preset && preset[f.name] !== undefined;
+        if (f.type === "key" && preselected) {
+          const k = (keys || []).find((x) => x.id === values[f.name]);
+          return (
+            <div key={f.name}>
+              <label className="block text-xs text-[#6b7280] mb-1.5">{f.label}</label>
+              <div className="text-sm text-[#f1f1f5] bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 truncate">
+                {k ? `${k.name} · ${k.server || "—"}` : values[f.name]}
+              </div>
+            </div>
+          );
+        }
+        const list = f.type === "key"
+          ? (keys || []).map((k) => ({ value: k.id, label: `${k.name} · ${k.server || "—"}` }))
+          : (options && options[f.options]) || [];
+        return (
+          <div key={f.name}>
+            <label className="block text-xs text-[#6b7280] mb-1.5">
+              {f.label}{!f.required && <span className="text-[#3a3a4a]"> · необязательно</span>}
+            </label>
+            {f.type === "textarea" ? (
+              <textarea rows={4} value={values[f.name]} onChange={(e) => set(f.name, e.target.value)}
+                        className={input + " resize-none"} />
+            ) : f.type === "bool" ? (
+              <button type="button" onClick={() => set(f.name, !values[f.name])}
+                      className={"w-full flex items-center justify-between px-3 py-2.5 rounded-lg border text-sm " +
+                        (values[f.name] ? "border-[#4F8EF7]/50 text-[#f1f1f5]" : "border-[#2a2a3a] text-[#6b7280]")}>
+                <span>{values[f.name] ? "Да" : "Нет"}</span>
+                <span className={"relative w-8 h-[18px] rounded-full transition " +
+                  (values[f.name] ? "bg-[#4F8EF7]" : "bg-[#2a2a3a]")}>
+                  <span className={"absolute top-[2px] w-[14px] h-[14px] bg-white rounded-full transition-all " +
+                    (values[f.name] ? "left-[16px]" : "left-[2px]")}></span>
+                </span>
+              </button>
+            ) : (f.type === "select" || f.type === "key") ? (
+              <select value={values[f.name]} onChange={(e) => set(f.name, e.target.value)} className={input}>
+                {!f.required && <option value="">— не указывать —</option>}
+                {list.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            ) : (
+              <input type={f.type === "number" ? "number" : "text"} value={values[f.name]}
+                     onChange={(e) => set(f.name, e.target.value)} className={input} />
+            )}
+            {f.hint && <div className="text-[10px] text-[#6b7280] mt-1">{f.hint}</div>}
+          </div>
+        );
+      })}
+      <div className="flex justify-end gap-2 pt-1">
+        <button onClick={onCancel}
+                className="px-3 py-2 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">
+          Отмена
         </button>
-        {historyOpen && (
+        <button onClick={() => onSubmit(values)} disabled={!!busy}
+                className={"px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-40 " +
+                  (spec.danger
+                    ? "bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30"
+                    : "bg-[#4F8EF7] text-white hover:bg-[#3d7ce8]")}>
+          {busy ? "Выполняем…" : spec.label}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ActionButton({ spec, onClick, small = false }) {
+  return (
+    <button onClick={onClick} title={spec.label}
+            className={"rounded-lg font-medium border transition truncate " +
+              (small ? "px-2.5 py-1.5 text-[11px] " : "px-3 py-2 text-xs ") +
+              (spec.danger
+                ? "border-[#ef4444]/30 text-[#ef4444] hover:bg-[#ef4444]/10"
+                : "border-[#2a2a3a] text-[#d1d1d8] hover:bg-[#1a1a24] hover:text-[#f1f1f5]")}>
+      {spec.label}
+    </button>
+  );
+}
+
+function KeyCard({ item, actions, onAction }) {
+  const expired = item.expiresAt && new Date(item.expiresAt) < new Date();
+  return (
+    <div className="bg-[#1a1a24] rounded-xl p-3 border border-[#2a2a3a]/60 space-y-2">
+      <div className="flex items-center gap-2">
+        <span className={"w-1.5 h-1.5 rounded-full shrink-0 " +
+          (item.active && !expired ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
+        <span className="text-sm text-[#f1f1f5] truncate flex-1">{item.name}</span>
+        <span className={"text-[10px] shrink-0 " + (expired ? "text-[#ef4444]" : "text-[#6b7280]")}>
+          {item.expiresAt || "—"}
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-1.5 text-center">
+        {[["Сервер", item.server || "—"], ["Тариф", item.plan || "—"],
+          ["Устройств", item.devices || 0]].map(([l, v]) => (
+          <div key={l} className="bg-[#0d0d12] rounded-lg px-1.5 py-1">
+            <div className="text-[9.5px] text-[#6b7280] truncate">{l}</div>
+            <div className="text-[11px] text-[#f1f1f5] truncate">{v}</div>
+          </div>
+        ))}
+      </div>
+      <div className="text-[11px]">
+        <TrafficBar used={item.trafficUsed} total={item.trafficLimit} />
+      </div>
+      {actions.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pt-0.5">
+          {actions.map((a) => (
+            <ActionButton key={a.name} spec={a} small onClick={() => onAction(a, { key_id: item.id })} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmin = false }) {
+  const [tab, setTab] = useStateD("profile");
+  const [data, setData] = useStateD(null);
+  const [loading, setLoading] = useStateD(true);
+  const [form, setForm] = useStateD(null);      // {spec, preset}
+  const [busy, setBusy] = useStateD(false);
+
+  const load = React.useCallback(async (refresh) => {
+    setLoading(true);
+    try {
+      const d = await window.apiFetch(
+        "GET", `/api/dialogs/${conv.id}/customer${refresh ? "?refresh=true" : ""}`);
+      setData(d);
+    } catch {
+      setData(null);
+    }
+    setLoading(false);
+  }, [conv.id]);
+
+  useEffectD(() => { setTab("profile"); load(false); }, [load]);
+
+  async function runAction(spec, params) {
+    setBusy(true);
+    try {
+      const res = await window.apiFetch(
+        "POST", `/api/dialogs/${conv.id}/customer/${spec.name}`, params);
+      showToast && showToast(res.message || spec.label);
+      setForm(null);
+      await load(true);
+    } catch (e) {
+      showToast && showToast(e?.detail || "Не удалось выполнить действие", "warn");
+    }
+    setBusy(false);
+  }
+
+  function openAction(spec, preset) {
+    // Действие без полей и без подтверждения выполняется сразу — лишний клик
+    // оператору не нужен.
+    if (spec.fields.length === 0 && !spec.confirm) { runAction(spec, {}); return; }
+    setForm({ spec, preset: preset || {} });
+  }
+
+  const actions = (data && data.actions) || [];
+  const byGroup = (g) => actions.filter((a) => a.group === g);
+  // Действия над конкретным ключом рисуются на его карточке.
+  const keyScoped = byGroup("keys").filter((a) => a.fields.some((f) => f.type === "key"));
+  const keyGlobal = byGroup("keys").filter((a) => !a.fields.some((f) => f.type === "key"));
+
+  const tabs = [
+    { id: "profile",   label: "Профиль" },
+    { id: "keys",      label: "Ключи",    count: data?.keys?.length },
+    { id: "referrals", label: "Рефералы", count: data?.referrals?.length },
+    { id: "history",   label: "История",  count: (conv.tickets || []).length },
+  ];
+
+  return (
+    <div className="flex flex-col min-h-0">
+      {/* Шапка: кто это и откуда данные */}
+      <div className="p-4 pb-3 shrink-0">
+        <div className="flex items-center gap-3">
+          <Avatar initials={conv.initials} color={conv.avatarColor} size={44} photoUrl={conv.photoUrl} />
+          <div className="min-w-0 flex-1">
+            <div className="font-medium text-[#f1f1f5] text-sm truncate">{conv.name}</div>
+            {data?.tgLink ? (
+              <a href={data.tgLink} target="_blank" rel="noreferrer"
+                 className="text-xs text-[#7BA8F9] hover:underline truncate block">
+                {data.username || conv.username}
+              </a>
+            ) : (
+              <div className="text-xs text-[#6b7280] truncate">{conv.username}</div>
+            )}
+            <div className="text-[10px] text-[#6b7280]/70 font-mono">ID {conv.tgId}</div>
+          </div>
+          <button onClick={() => load(true)} disabled={loading} title="Обновить профиль"
+                  className="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] disabled:opacity-40">
+            <Icon name="refresh" className={"w-4 h-4 " + (loading ? "animate-spin" : "")} />
+          </button>
+        </div>
+        {data && (data.isMock || data.stale) && (
+          <div className={"mt-3 flex items-start gap-2 rounded-lg px-2.5 py-2 text-[11px] border " +
+            (data.stale
+              ? "bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]"
+              : "bg-[#f59e0b]/10 border-[#f59e0b]/30 text-[#f59e0b]")}>
+            <span className="shrink-0">⚠</span>
+            <span>{data.message || (data.isMock ? "Тестовые данные (мок)" : "Данные могут устареть")}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Вкладки */}
+      <div className="flex px-2 border-b border-[#2a2a3a] shrink-0 overflow-x-auto no-scrollbar">
+        {tabs.map((t) => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+                  className={"px-2 py-2 text-[11.5px] font-medium border-b-2 -mb-px whitespace-nowrap transition " +
+                    (tab === t.id
+                      ? "border-[#4F8EF7] text-[#7BA8F9]"
+                      : "border-transparent text-[#6b7280] hover:text-[#f1f1f5]")}>
+            {t.label}
+            {t.count > 0 && <span className="ml-1 opacity-60 font-mono">{t.count}</span>}
+          </button>
+        ))}
+      </div>
+
+      <div className="p-4 space-y-4 min-h-0">
+        {loading && !data && (
+          <div className="text-center text-xs text-[#6b7280] py-8">Загрузка профиля…</div>
+        )}
+        {!loading && !data && (
+          <div className="text-center text-xs text-[#6b7280] py-8">Профиль недоступен</div>
+        )}
+
+        {/* ── Профиль ─────────────────────────────────────────────────────── */}
+        {data && tab === "profile" && (
+          <>
+            <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60 space-y-2 text-xs">
+              <InfoRow label="Тариф"><PlanBadge plan={data.plan || conv.plan} /></InfoRow>
+              <InfoRow label="Подписка"><SubStatus status={data.subStatus} /></InfoRow>
+              <InfoRow label="Статус">
+                <span className={data.banned ? "text-[#ef4444]" : "text-[#22c55e]"}>
+                  {data.banned ? "Забанен" : "Активен"}
+                </span>
+              </InfoRow>
+              {data.group && <InfoRow label="Группа">{data.group}</InfoRow>}
+              {data.language && <InfoRow label="Язык в ТГ">{data.language}</InfoRow>}
+              <InfoRow label="Пробный период">{TRIAL_LABEL[data.trial] || data.trial}</InfoRow>
+              <InfoRow label="След. платёж">{data.nextPayment || "—"}</InfoRow>
+              <InfoRow label="Устройств">{data.devices.length || "—"}</InfoRow>
+              <div className="pt-2 mt-1 border-t border-[#2a2a3a]/60">
+                <TrafficBar used={data.traffic.used} total={data.traffic.total} />
+              </div>
+            </div>
+
+            <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60 space-y-2 text-xs">
+              <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-1">
+                Партнёрка
+              </div>
+              <InfoRow label="Партнёр">
+                <span className={data.isPartner ? "text-[#22c55e]" : "text-[#6b7280]"}>
+                  {data.isPartner ? "да" : "нет"}
+                </span>
+              </InfoRow>
+              <InfoRow label="Реф. процент">{data.refPercent}%</InfoRow>
+              <InfoRow label="Реф. баланс">
+                <span className="tabular-nums">{data.refBalance}</span>
+              </InfoRow>
+              {data.refCode && <InfoRow label="Реф. код"><span className="font-mono">{data.refCode}</span></InfoRow>}
+              <InfoRow label="Рефералов">
+                {data.referrals.length} <span className="text-[#6b7280]">· оплатили {data.referralsPaid}</span>
+              </InfoRow>
+              <InfoRow label="Депозиты рефералов">
+                <span className="tabular-nums">{data.referralsDepositsTotal}</span>
+              </InfoRow>
+            </div>
+
+            <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold">
+                  Депозиты
+                </span>
+                <span className="text-[#f1f1f5] font-medium tabular-nums">{data.depositsTotal}</span>
+              </div>
+              {data.deposits.length === 0 && <div className="text-[#6b7280]">Платежей не было</div>}
+              {data.deposits.slice(0, 5).map((p, i) => (
+                <div key={i} className="flex justify-between gap-2">
+                  <span className="text-[#6b7280] truncate">{p.date || "—"}{p.method ? ` · ${p.method}` : ""}</span>
+                  <span className="text-[#f1f1f5] tabular-nums shrink-0">{p.amount} {p.currency}</span>
+                </div>
+              ))}
+            </div>
+
+            {byGroup("profile").length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {byGroup("profile").map((a) => (
+                  <ActionButton key={a.name} spec={a} onClick={() => openAction(a)} />
+                ))}
+              </div>
+            )}
+
+            {conv.rating && (
+              <section>
+                <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Оценка поддержки</div>
+                <div className="bg-[#1a1a24] rounded-xl p-3.5 border border-[#2a2a3a]/60 flex items-center justify-between">
+                  <StarRating rating={conv.rating} size="lg" />
+                  <span className="text-[11px] text-[#6b7280]">{conv.rating} / 5</span>
+                </div>
+              </section>
+            )}
+
+            <section>
+              <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Заметки</div>
+              <NotesEditor convId={conv.id} initialValue={conv.notes || ""} showToast={showToast} />
+            </section>
+          </>
+        )}
+
+        {/* ── Ключи ───────────────────────────────────────────────────────── */}
+        {data && tab === "keys" && (
+          <>
+            {keyGlobal.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {keyGlobal.map((a) => (
+                  <ActionButton key={a.name} spec={a} onClick={() => openAction(a)} />
+                ))}
+              </div>
+            )}
+            {data.keys.length === 0 && (
+              <div className="text-center text-xs text-[#6b7280] py-6">Ключей нет</div>
+            )}
+            {data.keys.map((k) => (
+              <KeyCard key={k.id} item={k} actions={keyScoped}
+                       onAction={(spec, preset) => openAction(spec, preset)} />
+            ))}
+            {data.devices.length > 0 && (
+              <section>
+                <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-2">Устройства</div>
+                <div className="space-y-1.5">
+                  {data.devices.map((d) => (
+                    <div key={d.id} className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 flex justify-between gap-2 text-xs">
+                      <span className="text-[#f1f1f5] truncate">{d.name}</span>
+                      <span className="text-[#6b7280] shrink-0">{d.lastSeen}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+          </>
+        )}
+
+        {/* ── Рефералы ────────────────────────────────────────────────────── */}
+        {data && tab === "referrals" && (
+          <>
+            <div className="grid grid-cols-3 gap-2">
+              {[["Всего", data.referrals.length], ["Оплатили", data.referralsPaid],
+                ["Депозиты", data.referralsDepositsTotal]].map(([l, v]) => (
+                <div key={l} className="bg-[#1a1a24] rounded-xl px-2 py-2.5 border border-[#2a2a3a]/60 text-center">
+                  <div className="text-base font-semibold text-[#f1f1f5] tabular-nums truncate">{v}</div>
+                  <div className="text-[10px] text-[#6b7280]">{l}</div>
+                </div>
+              ))}
+            </div>
+            {byGroup("referrals").length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {byGroup("referrals").map((a) => (
+                  <ActionButton key={a.name} spec={a} onClick={() => openAction(a)} />
+                ))}
+              </div>
+            )}
+            {data.referrals.length === 0 && (
+              <div className="text-center text-xs text-[#6b7280] py-6">Рефералов нет</div>
+            )}
+            <div className="space-y-1.5">
+              {data.referrals.map((r) => (
+                <div key={r.tgId} className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[#f1f1f5] truncate">{r.name}</span>
+                    <span className={"shrink-0 text-[10px] " + (r.paid ? "text-[#22c55e]" : "text-[#6b7280]")}>
+                      {r.paid ? "оплатил" : "без оплат"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-0.5">
+                    <span className="text-[10px] text-[#6b7280] font-mono truncate">{r.tgId}</span>
+                    <span className="text-[10px] text-[#f1f1f5] tabular-nums shrink-0">{r.depositsTotal}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* ── История обращений ───────────────────────────────────────────── */}
+        {tab === "history" && (
           <div className="space-y-1.5">
             {(conv.tickets || []).length === 0 && (
-              <div className="text-xs text-[#6b7280] italic px-3 py-2">Нет закрытых обращений</div>
+              <div className="text-center text-xs text-[#6b7280] py-6">Нет закрытых обращений</div>
             )}
             {(conv.tickets || []).map((t) => (
               <div key={t.id}
-                onClick={() => t.dialogId && onTicketClick && onTicketClick(t.dialogId)}
-                className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 hover:border-[#4F8EF7]/40 hover:bg-[#1a1a2e] transition cursor-pointer">
+                   onClick={() => t.dialogId && onTicketClick && onTicketClick(t.dialogId)}
+                   className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 hover:border-[#4F8EF7]/40 hover:bg-[#1a1a2e] transition cursor-pointer">
                 <div className="flex items-center justify-between mb-0.5">
                   <span className="text-[10px] font-mono text-[#6b7280]">{t.id}</span>
                   <span className="inline-flex items-center gap-1 text-[10px] text-[#22c55e]">
@@ -1521,7 +1907,26 @@ function UserInfoPanel({ conv, showToast, servers, onBillingAction, onTicketClic
             ))}
           </div>
         )}
-      </section>
+
+        {data && data.source && (
+          <div className="text-[10px] text-[#3a3a4a] pt-1">источник: {data.source}</div>
+        )}
+      </div>
+
+      <ActionShell open={!!form} onClose={() => setForm(null)} compact={compact}
+                   title={form?.spec.label} subtitle={conv.name}>
+        {form && (
+          <ActionForm
+            spec={form.spec}
+            preset={form.preset}
+            options={data?.options || {}}
+            keys={data?.keys || []}
+            busy={busy}
+            onSubmit={(values) => runAction(form.spec, values)}
+            onCancel={() => setForm(null)}
+          />
+        )}
+      </ActionShell>
     </div>
   );
 }

@@ -11,7 +11,6 @@ from pydantic import BaseModel
 
 from app.ai_client import make_chat_client, make_kb_chat_client
 from app.auth import create_token, decode_token, hash_password, verify_password
-from app.billing import BillingProvider
 from app.config import Settings
 from app.database import DatabaseManager, validate_slug as _validate_slug
 from app.kb import delete_from_qdrant, process_document
@@ -25,6 +24,14 @@ from app.serializers import (
 from app.storage import make_storage
 from app.summarizer import summarize_dialog
 from app.n8n_client import N8NClient
+from app.customer import (
+    ACTIONS as _CUSTOMER_ACTIONS,
+    ACTIONS_BY_NAME as _CUSTOMER_ACTIONS_BY_NAME,
+    CUSTOMER_DEFAULTS,
+    DANGEROUS as _CUSTOMER_DANGEROUS,
+    CustomerService,
+    known_customer_providers,
+)
 from app.health import MONITORING_DEFAULTS, ServiceHealthMonitor, known_providers
 from app.ws_manager import WebSocketManager
 
@@ -182,6 +189,14 @@ class MonitoringBody(BaseModel):
     bots: MonitoringSourceBody
 
 
+class CustomerBody(BaseModel):
+    """Пер-сервисный источник данных о клиентах. Имя провайдера — из реестра
+    app.customer; config целиком отдаётся провайдеру, его форму знает только он."""
+    provider: str = "mock"
+    config: dict = {}
+    cacheTtl: int = 60
+
+
 # ── App factory ───────────────────────────────────────────────────────────────
 
 def build_app(
@@ -190,7 +205,7 @@ def build_app(
     ws: WebSocketManager,
     n8n: N8NClient,
     routing: RoutingEngine,
-    billing: BillingProvider,
+    customers: CustomerService,
     health: ServiceHealthMonitor,
 ) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
@@ -581,15 +596,73 @@ def build_app(
         except Exception as e:
             print(f"[summarizer] bg error: {e}")
 
-    @app.post("/api/dialogs/{dialog_id}/billing/{action}")
-    async def billing_action(dialog_id: str, action: str, body: dict = Body(default={}), operator: dict = Depends(require_auth)):
-        if action not in ("renew", "buy_traffic", "reset_key"):
-            raise HTTPException(400, f"Unknown action: {action}")
+    # ── Карточка клиента ──────────────────────────────────────────────────────
+    # Профиль и управление аккаунтом живут во внешней API; панель знает только
+    # канонический вид (app/customer.py) и никогда не падает из-за чужого
+    # сервиса — при недоступности отдаётся снапшот с пометкой stale.
+
+    @app.get("/api/dialogs/{dialog_id}/customer")
+    async def get_customer(dialog_id: str, refresh: bool = False,
+                           operator: dict = Depends(require_auth)):
         dialog = await require_dialog(dialog_id, operator)
-        result = await billing.execute(action, dialog["chat_id"], dialog_id, params=body)
+        service = await db.get_service(dialog["service_id"])
+        profile = await customers.profile(service, dialog, refresh=refresh)
+        supported = set(await customers.supports(service))
+        is_admin = operator["role"] == "admin"
+        # Кнопку, которой нет у источника или прав, панель просто не рисует.
+        actions = [a.to_dict() for a in _CUSTOMER_ACTIONS
+                   if a.name in supported and (is_admin or not a.danger)]
+        return {**profile.to_dict(), "actions": actions,
+                "options": await customers.options(service, dialog)}
+
+    @app.post("/api/dialogs/{dialog_id}/customer/{action}")
+    async def customer_action(dialog_id: str, action: str, body: dict = Body(default={}),
+                              operator: dict = Depends(require_auth)):
+        spec = _CUSTOMER_ACTIONS_BY_NAME.get(action)
+        if not spec:
+            raise HTTPException(400, f"Неизвестное действие: {action}")
+        if action in _CUSTOMER_DANGEROUS and operator["role"] != "admin":
+            raise HTTPException(403, "Действие доступно только администратору")
+        dialog = await require_dialog(dialog_id, operator)
+        service = await db.get_service(dialog["service_id"])
+        result = await customers.execute(service, dialog, action, body or {})
         if not result.ok:
             raise HTTPException(502, result.message)
-        return {"ok": True, "message": result.message}
+        # След в переписке: кто и что сделал с аккаунтом клиента. Отдельная
+        # таблица не нужна — история тикета и есть журнал.
+        msg_row = await db.save_message(
+            dialog_id, "system",
+            f"{operator['name']}: {result.message or spec.label}",
+        )
+        if msg_row:
+            await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                                "message": _fmt_message(msg_row)}, dialog["service_id"])
+        return {"ok": True, "message": result.message, "data": result.data or {}}
+
+    @app.get("/api/settings/customer")
+    async def get_customer_settings(service_id: Optional[int] = None,
+                                    operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
+        stored = await db.get_setting_json("customer", None, service["id"]) or {}
+        return {**CUSTOMER_DEFAULTS, **stored,
+                "serviceId": service["id"], "serviceName": service["name"],
+                # Реестр источников — админка строит выбор по нему, поэтому свой
+                # провайдер появляется в UI сам собой.
+                "available": known_customer_providers(),
+                "catalog": [a.to_dict() for a in _CUSTOMER_ACTIONS]}
+
+    @app.put("/api/settings/customer")
+    async def save_customer_settings(body: CustomerBody, service_id: Optional[int] = None,
+                                     operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
+        await db.set_setting_json("customer", body.model_dump(), service["id"])
+        # Пересоздать провайдера и выкинуть кэш, не дожидаясь истечения TTL.
+        customers.invalidate(service["id"])
+        return {"ok": True}
 
     # ── File upload ───────────────────────────────────────────────────────────
 

@@ -9,6 +9,7 @@
 - [Архитектура](#архитектура)
 - [Несколько ВПН-сервисов в одной панели](#несколько-впн-сервисов-в-одной-панели)
 - [Мониторинг: серверы и боты](#мониторинг-серверы-и-боты)
+- [Карточка клиента: подключение своего API](#карточка-клиента-подключение-своего-api)
 - [Панель на телефоне](#панель-на-телефоне)
 - [Компоненты системы](#компоненты-системы)
 - [Поток данных](#поток-данных)
@@ -89,7 +90,6 @@
 │                             │  vpn_bot:notifications  │              │
 │                             │  vpn_bot:ai_toggled     │              │
 │                             │  vpn_bot:dialog_closed  │              │
-│                             │  vpn_bot:billing        │              │
 │                             └────────────────────────┘              │
 └─────────────────────────────────────────────────────────────────────┘
                              │
@@ -306,6 +306,106 @@ n8n — **боту того ВПН-а**, чей компонент лёг. Ув�
 
 ---
 
+## Карточка клиента: подключение своего API
+
+Правая колонка в «Диалогах» показывает профиль клиента и даёт управлять его
+аккаунтом: ключи, рефералы, бан, реф.баланс, сообщение в основного бота (тот,
+что выдаёт ключи, а не бот техподдержки). Данные и действия живут во внешней
+системе — панель знает только канонический вид, описанный в `app/customer.py`.
+
+Источник задаётся **на каждый ВПН-сервис** в «Настройки → Клиенты». По
+умолчанию — `mock`: выдуманные данные, помеченные в интерфейсе, чтобы панель
+работала до интеграции.
+
+### Что видит и делает оператор
+
+| Вкладка | Содержимое |
+|---------|------------|
+| Профиль | ссылка на ник, tg id, язык, статус, группа, тариф, подписка, пробный период, партнёр, реф.процент, реф.баланс, реф.код, депозиты, трафик |
+| Ключи | ключ: сервер, тариф, срок, трафик, устройства; выдать / заменить / удалить / ±дни |
+| Рефералы | список приглашённых, сколько оплатили, сумма их депозитов; привязать по tg id и отвязать |
+| История | прошлые обращения клиента |
+
+Опасные действия — **бан, разбан, «сделать партнёром», изменение реф.баланса и
+удаление ключа** — доступны только роли `admin`; агент их не видит. Каждое
+выполненное действие пишется в переписку системным сообщением («кто и что
+сделал»), так что журнал — это история тикета.
+
+### Вариант 1: свой REST без единой строчки кода
+
+Выберите источник `http` и опишите его в JSON-конфиге настройки:
+
+```json
+{
+  "base_url": "https://infra.example.com",
+  "token": "секрет",
+  "auth_header": "Authorization",
+  "service_param": "service",
+  "paths":   { "profile": "GET /v2/users/{chat_id}" },
+  "mapping": { "plan": "tariff", "ref_balance": "referral_balance" },
+  "keys_mapping":      { "expires_at": "valid_until" },
+  "referrals_mapping": { "tg_id": "telegram_id" },
+  "deposits_field": "payments",
+  "deposits_mapping": { "amount": "sum" },
+  "disable": ["set_partner"]
+}
+```
+
+- `paths` — если ваши адреса отличаются от умолчаний. Формат `МЕТОД /путь`,
+  подставляются `{chat_id}`, `{key_id}`, `{tg_id}`. Полный список умолчаний —
+  `_DEFAULT_PATHS` в `app/customers.py`.
+- `mapping` и `*_mapping` — соответствие «наше поле → ваше»; подгонять API под
+  панель не нужно.
+- `disable` — что ваша система не умеет: такие кнопки оператору не показываются.
+
+Ответ профиля может быть завёрнут в `data` / `user` / `customer` / `result` —
+обёртка разворачивается сама.
+
+### Вариант 2: свой провайдер файлом
+
+Когда логика сложнее маппинга — положите модуль в `app/providers/`, он
+подхватится при старте. Реализуйте `fetch()` и только те действия, которые
+поддерживает ваша система: список кнопок в интерфейсе строится по
+переопределённым методам.
+
+```python
+from app.customer import ActionResult, CustomerProfile, CustomerProvider, KeyInfo, register_customer_provider
+
+class MyCrmProvider(CustomerProvider):
+    """Моя CRM: профиль клиента и управление ключами."""
+    source = "mycrm"
+
+    async def fetch(self, chat_id: str) -> CustomerProfile: ...
+    async def options(self, chat_id: str) -> dict: ...      # серверы и тарифы для форм
+    async def key_issue(self, chat_id, days=30, server="", plan=""): ...
+
+register_customer_provider("mycrm", MyCrmProvider)
+```
+
+Действия в контракте: `key_issue`, `key_add_time` (отрицательные дни убавляют
+срок), `key_replace`, `key_delete`, `referral_link`, `referral_unlink`, `ban`,
+`unban`, `set_partner`, `set_ref_balance`, `send_message`, `renew_subscription`,
+`buy_traffic`, `reset_key`. Формы под них панель строит по описанию полей в
+`ACTIONS` — новое действие добавляется правкой только бэкенда.
+
+### Устойчивость
+
+Профиль кэшируется на `cacheTtl` секунд (по умолчанию 60) и сбрасывается после
+любого успешного действия. Если внешняя API недоступна или источник не
+зарегистрирован, тикет всё равно открывается: панель показывает снапшот из
+нашей БД (то, что прислал n8n вместе с сообщениями) с пометкой «данные могут
+устареть» и причиной.
+
+### Миграция
+
+Прежний глобальный биллинг (`BILLING_API_URL` / `BILLING_API_TOKEN` в `.env`,
+модуль `app/billing.py`, эндпоинт `POST /api/dialogs/{id}/billing/{action}`)
+поглощён этим контрактом. При первом запуске адрес и токен переносятся в
+настройку `customer` первого сервиса с провайдером `http` (флаг `customer_v1`),
+три прежних действия остаются доступными.
+
+---
+
 ## Панель на телефоне
 
 Отдельной мобильной сборки нет: те же `app/static/*.jsx`, раскладка ветвится по
@@ -404,7 +504,8 @@ vpn_bot_support/
 ├── app/
 │   ├── ai_client.py        # Фабрика LLM-клиентов (openai / gemini)
 │   ├── auth.py             # Хэширование паролей, cookie-сессии
-│   ├── billing.py          # Биллинг-провайдеры (OOP, легко заменить)
+│   ├── customer.py         # Карточка клиента: контракт CustomerProvider + реестр
+│   ├── customers.py        # Готовые источники клиентов: mock и http
 │   ├── classifier.py       # LLM-классификатор входящих сообщений
 │   ├── config.py           # Все настройки (читает .env)
 │   ├── database.py         # PostgreSQL: схема + миграции
@@ -765,16 +866,6 @@ Switch: file_type
 | `ai_toggled` | `dialog_id`, `ai_enabled` | Включён/выключен AI |
 | `server_down` | `server_name`, `location` | VPN-сервер недоступен |
 
-**Команда биллинга:**
-```json
-{
-  "type": "billing_action",
-  "dialog_id": "42",
-  "chat_id": "123456789",
-  "action": "renew_subscription"
-}
-```
-
 ### Расписание уведомлений
 
 `schedule_notify` — уведомления с учётом рабочих часов:
@@ -906,7 +997,8 @@ Telegram inline-кнопки посылают `callback_query` — добави�
 | POST | `/api/dialogs/{id}/transfer` | Передать другому оператору |
 | POST | `/api/dialogs/{id}/reopen` | Переоткрыть закрытый диалог |
 | POST | `/api/dialogs/{id}/close` | Закрыть диалог (опционально — запросить оценку) |
-| POST | `/api/dialogs/{id}/billing/{action}` | Биллинг: `renew` \| `traffic` \| `reset_key` |
+| GET  | `/api/dialogs/{id}/customer` | Профиль клиента, доступные действия и списки для форм |
+| POST | `/api/dialogs/{id}/customer/{action}` | Действие над аккаунтом (опасные — только админ) |
 
 ### Операторы
 
@@ -1040,14 +1132,13 @@ Telegram-файлы нельзя отобразить в браузере по `
 
 ### Первый администратор
 
-Три действия: **Продлить подписку**, **Докупить трафик**, **Сбросить ключ**.
+Действия над аккаунтом клиента вынесены в отдельный контракт — см.
+[Карточка клиента: подключение своего API](#карточка-клиента-подключение-своего-api).
+Источник задаётся на каждый ВПН-сервис в «Настройки → Клиенты», а не
+переменными окружения.
 
-### Подключить API
-
-```env
-BILLING_API_URL=https://billing.example.com/api
-BILLING_API_TOKEN=your_secret_token
-```
+Прежние `BILLING_API_URL` / `BILLING_API_TOKEN` из `.env` при первом запуске
+переносятся в настройку `customer` первого сервиса и больше не читаются.
 
 | Переменная | По умолчанию | Описание |
 |-----------|-------------|---------|
@@ -1062,13 +1153,15 @@ BILLING_API_TOKEN=your_secret_token
 ### Публичный URL и файлы
 
 ```python
-# app/billing.py
-class MyBilling(HttpBillingProvider):
-    async def reset_key(self, chat_id: str, dialog_id: str) -> BillingResult:
-        return await self._post(f"/vpn/users/{chat_id}/new-key", {})
+# app/providers/mycrm.py — подхватывается при старте, править приложение не нужно
+class MyCrmProvider(CustomerProvider):
+    source = "mycrm"
+    async def reset_key(self, chat_id: str) -> ActionResult:
+        return await post(f"/vpn/users/{chat_id}/new-key", {})
 ```
 
-Если `BILLING_API_URL` пустой — автоматически `StubBillingProvider` (только логи).
+Если источник не выбран — работает `mock` с выдуманными данными, помеченными в
+интерфейсе.
 
 ---
 
@@ -1083,7 +1176,8 @@ vpn_bot_support/
 │   ├── ws_manager.py      # WebSocket broadcast + онлайн-статус операторов
 │   ├── n8n_client.py      # PUBLISH событий в Redis → n8n
 │   ├── auth.py            # bcrypt хэширование + JWT (30 дней)
-│   ├── billing.py         # Биллинговый API (HttpBillingProvider или Stub)
+│   ├── customer.py        # Карточка клиента: контракт, реестр, кэш и фолбэк
+│   ├── customers.py       # Источники клиентов: MockCustomerProvider, HttpCustomerProvider
 │   ├── servers.py         # Мониторинг VPN-серверов (TCP/HTTP/Stub)
 │   ├── ai_client.py       # OpenAI / Gemini wrapper
 │   ├── classifier.py      # AI-классификация категории сообщения
@@ -1144,7 +1238,8 @@ JWT токен передаётся в заголовке `Authorization: Bearer
 | POST | `/api/dialogs/{id}/toggle_ai` | Вкл/выкл AI для диалога |
 | POST | `/api/dialogs/{id}/handoff` | Передать оператору (выкл AI) |
 | POST | `/api/dialogs/{id}/close` | Закрыть диалог |
-| POST | `/api/dialogs/{id}/billing/{action}` | `renew` / `buy_traffic` / `reset_key` |
+| GET  | `/api/dialogs/{id}/customer` | Профиль клиента + действия |
+| POST | `/api/dialogs/{id}/customer/{action}` | `key_issue` / `ban` / `set_ref_balance` / … |
 
 ### Файлы
 
