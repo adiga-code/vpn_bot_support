@@ -1419,8 +1419,17 @@ function NotesEditor({ convId, initialValue, showToast }) {
 // интерфейсе само, без правки этого файла.
 
 function TrafficBar({ used, total }) {
+  // Безлимит — тоже с подписью: иначе число висит без контекста, в отличие от
+  // остальных строк карточки.
   if (!total) {
-    return <div className="text-[#f1f1f5] tabular-nums">{used} <span className="text-[#6b7280]">ГБ · без лимита</span></div>;
+    return (
+      <div className="flex justify-between items-center gap-3">
+        <span className="text-[#6b7280]">Трафик</span>
+        <span className="text-[#f1f1f5] font-medium tabular-nums">
+          {used} <span className="text-[#6b7280] font-normal">ГБ · без лимита</span>
+        </span>
+      </div>
+    );
   }
   const pct = Math.min(100, (used / total) * 100);
   const color = pct > 85 ? "#ef4444" : pct > 60 ? "#eab308" : "#22c55e";
@@ -1702,10 +1711,10 @@ function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmi
       </div>
 
       {/* Вкладки */}
-      <div className="flex px-2 border-b border-[#2a2a3a] shrink-0 overflow-x-auto no-scrollbar">
+      <div className="flex px-1 border-b border-[#2a2a3a] shrink-0 overflow-x-auto no-scrollbar">
         {tabs.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)}
-                  className={"px-2 py-2 text-[11.5px] font-medium border-b-2 -mb-px whitespace-nowrap transition " +
+                  className={"shrink-0 px-2 py-2 text-xs font-medium border-b-2 -mb-px whitespace-nowrap transition " +
                     (tab === t.id
                       ? "border-[#4F8EF7] text-[#7BA8F9]"
                       : "border-transparent text-[#6b7280] hover:text-[#f1f1f5]")}>

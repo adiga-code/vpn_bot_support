@@ -315,8 +315,11 @@ function OperatorsSection({ operators, services = [], setOperators, showToast, o
         ))}
       </div>
 
+      {/* overflow-x-auto, а не hidden: на планшете таблица шире колонки, и
+          скрытые колонки иначе не достать. */}
       <div className="hidden sm:block bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto scrollbar-thin">
+        <table className="w-full text-sm min-w-[640px]">
           <thead>
             <tr className="text-[10px] uppercase tracking-wider text-[#6b7280] border-b border-[#2a2a3a]/60">
               <th className="text-left px-5 py-3 font-medium">Имя</th>
@@ -391,6 +394,7 @@ function OperatorsSection({ operators, services = [], setOperators, showToast, o
             {operators.length === 0 && <tr><td colSpan={6} className="px-5 py-8 text-center text-xs text-[#6b7280]">Нет операторов</td></tr>}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
@@ -658,8 +662,11 @@ function ServicesSection({ showToast, onChanged }) {
         ))}
       </div>
 
+      {/* overflow-x-auto, а не hidden: на планшете таблица шире колонки, и
+          скрытые колонки иначе не достать. */}
       <div className="hidden sm:block bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto scrollbar-thin">
+        <table className="w-full text-sm min-w-[640px]">
           <thead>
             <tr className="text-[10px] uppercase tracking-wider text-[#6b7280] border-b border-[#2a2a3a]/60">
               <th className="text-left px-5 py-3 font-medium">Название</th>
@@ -702,6 +709,7 @@ function ServicesSection({ showToast, onChanged }) {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
 
       <div className="text-[11px] text-[#6b7280] leading-relaxed bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-4">
