@@ -315,13 +315,15 @@ function StatisticsScreen({ serviceId = null, mobileChrome = null }) {
             <div className="text-xs text-[#6b7280] mt-0.5">данные за выбранный период</div>
           </div>
           <div className="flex items-center gap-3 min-w-0 overflow-x-auto no-scrollbar">
-            <div className="bg-[#13131a] border border-[#2a2a3a] rounded-lg p-1 flex gap-0.5">
+            {/* shrink-0 обязателен: без него флекс-дети сжимаются раньше, чем
+                включится прокрутка, и whitespace-nowrap обрезает подписи. */}
+            <div className="shrink-0 bg-[#13131a] border border-[#2a2a3a] rounded-lg p-1 flex gap-0.5">
               {ranges.map((r) => (
                 <button
                   key={r.id}
                   onClick={() => setRange(r.id)}
                   className={
-                    "px-3 rounded-md text-xs font-medium transition whitespace-nowrap " +
+                    "shrink-0 px-3 rounded-md text-xs font-medium transition whitespace-nowrap " +
                     (chrome ? "min-h-[40px] " : "py-1.5 ") +
                     (range === r.id ? "bg-[#4F8EF7] text-white" : "text-[#6b7280] hover:text-[#f1f1f5]")
                   }
