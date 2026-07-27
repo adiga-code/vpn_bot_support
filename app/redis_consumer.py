@@ -215,6 +215,14 @@ class RedisConsumer:
                     updated = await self.db.get_dialog(dialog_id)
                     if updated:
                         await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+                        # Edit the rating prompt in place (drops the star buttons)
+                        # when the callback carried the message_id.
+                        chat_id = updated.get("chat_id") or data.get("chat_id")
+                        message_id = data.get("message_id")
+                        if chat_id and message_id:
+                            automation = await self.db.get_setting_json("automation", {})
+                            thanks = automation.get("rating_thanks_text") or "Спасибо за оценку! 🙏"
+                            await self.n8n.edit_message(str(chat_id), message_id, thanks)
                 except ValueError:
                     pass
 

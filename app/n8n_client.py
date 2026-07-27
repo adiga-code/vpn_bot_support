@@ -228,6 +228,17 @@ class N8NClient:
             payload["keyboard"] = keyboard
         return await self._push(payload)
 
+    async def edit_message(self, chat_id: str, message_id, text: str) -> bool:
+        """Edit an existing Telegram message in place (Telegram editMessageText).
+        Not sending reply_markup drops any inline keyboard — e.g. the rating
+        stars become a plain «thank you» once tapped, instead of a new message."""
+        return await self._push({
+            "type": "edit_message",
+            "chat_id": str(chat_id),
+            "message_id": message_id,
+            "text": text,
+        })
+
     async def send_operator_button(self, chat_id: str, dialog_id: str) -> bool:
         keyboard = [[{"text": "👨‍💼 Позвать оператора", "callback_data": f"call_op:{dialog_id}"}]]
         return await self.send_to_user(chat_id, "Нужна помощь живого оператора? 👇", keyboard)

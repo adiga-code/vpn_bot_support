@@ -233,7 +233,15 @@ class RabbitMQConsumer:
                         if chat_id:
                             automation = await self.db.get_setting_json("automation", {})
                             thanks = automation.get("rating_thanks_text") or "Спасибо за оценку! 🙏"
-                            await self.n8n.send_to_user(str(chat_id), thanks)
+                            # Edit the rating prompt in place (drops the star
+                            # buttons) instead of sending a new message. Falls
+                            # back to a fresh message if the callback carried no
+                            # message_id.
+                            message_id = data.get("message_id")
+                            if message_id:
+                                await self.n8n.edit_message(str(chat_id), message_id, thanks)
+                            else:
+                                await self.n8n.send_to_user(str(chat_id), thanks)
                 except ValueError:
                     pass
 
