@@ -749,6 +749,44 @@
       ],
       "id": "5dc5657a-69db-407b-a7df-5f45cc8de057",
       "name": "Форматировать историю1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/sendChatAction",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: String($('AI').first().json.chat_id), action: 'typing' }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2432,
+        2016
+      ],
+      "id": "c1a2b3c4-0010-4a00-9000-000000000010",
+      "name": "TG печатает",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/sendChatAction",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: String($('AI').first().json.chat_id), action: 'typing' }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        448,
+        1936
+      ],
+      "id": "c1a2b3c4-0011-4a00-9000-000000000011",
+      "name": "TG печатает 2",
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -757,6 +795,11 @@
         [
           {
             "node": "Switch",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "TG печатает",
             "type": "main",
             "index": 0
           }
@@ -1035,7 +1078,7 @@
         ],
         [
           {
-            "node": "AI Agent",
+            "node": "TG печатает 2",
             "type": "main",
             "index": 0
           }
@@ -1047,6 +1090,17 @@
         [
           {
             "node": "Redis1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TG печатает 2": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
             "type": "main",
             "index": 0
           }

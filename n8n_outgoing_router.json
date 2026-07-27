@@ -10,7 +10,10 @@
       "name": "Сигнал от бота",
       "type": "n8n-nodes-base.redisTrigger",
       "typeVersion": 1,
-      "position": [0, 200],
+      "position": [
+        0,
+        200
+      ],
       "credentials": {
         "redis": {
           "id": "hit3nIMoTAWeW4Gi",
@@ -33,7 +36,10 @@
       "name": "Fallback каждые 3 мин",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [0, 400]
+      "position": [
+        0,
+        400
+      ]
     },
     {
       "parameters": {
@@ -44,7 +50,10 @@
       "name": "Redis lPop",
       "type": "n8n-nodes-base.redis",
       "typeVersion": 1,
-      "position": [220, 300],
+      "position": [
+        220,
+        300
+      ],
       "credentials": {
         "redis": {
           "id": "hit3nIMoTAWeW4Gi",
@@ -80,7 +89,10 @@
       "name": "Есть данные?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [440, 300]
+      "position": [
+        440,
+        300
+      ]
     },
     {
       "parameters": {
@@ -90,7 +102,10 @@
       "name": "Распарсить JSON",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [660, 200]
+      "position": [
+        660,
+        200
+      ]
     },
     {
       "parameters": {
@@ -187,6 +202,30 @@
               },
               "renameOutput": true,
               "outputKey": "billing_action"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "sw-r5-edit",
+                    "leftValue": "={{ $json.type }}",
+                    "rightValue": "edit_message",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "edit_message"
             }
           ]
         },
@@ -196,7 +235,10 @@
       "name": "Switch по type",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
-      "position": [880, 200]
+      "position": [
+        880,
+        200
+      ]
     },
     {
       "parameters": {
@@ -206,7 +248,10 @@
       "name": "Подготовить файл",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1100, 60]
+      "position": [
+        1100,
+        60
+      ]
     },
     {
       "parameters": {
@@ -217,7 +262,10 @@
       "name": "Отправить ответ оператора",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [1320, 60]
+      "position": [
+        1320,
+        60
+      ]
     },
     {
       "parameters": {
@@ -246,7 +294,10 @@
       "name": "С клавиатурой?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1100, 230]
+      "position": [
+        1100,
+        230
+      ]
     },
     {
       "parameters": {
@@ -261,7 +312,10 @@
       "name": "TG sendMessage с кнопками",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1320, 130]
+      "position": [
+        1320,
+        130
+      ]
     },
     {
       "parameters": {
@@ -271,7 +325,10 @@
       "name": "Нормализовать text→message",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1320, 330]
+      "position": [
+        1320,
+        330
+      ]
     },
     {
       "parameters": {
@@ -282,7 +339,10 @@
       "name": "Отправить текст пользователю",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [1540, 330]
+      "position": [
+        1540,
+        330
+      ]
     },
     {
       "parameters": {
@@ -292,7 +352,10 @@
       "name": "Форматировать уведомление",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1100, 400]
+      "position": [
+        1100,
+        400
+      ]
     },
     {
       "parameters": {
@@ -304,7 +367,10 @@
       "name": "Получить tg_id операторов",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [1320, 400],
+      "position": [
+        1320,
+        400
+      ],
       "credentials": {
         "postgres": {
           "id": "5tWDSrTUFp4DiJlP",
@@ -322,7 +388,10 @@
       "name": "Отправить оператору",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [1540, 400],
+      "position": [
+        1540,
+        400
+      ],
       "credentials": {
         "telegramApi": {
           "id": "drGmrRpP856vKvMY",
@@ -349,7 +418,10 @@
       "name": "Billing API",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1100, 540]
+      "position": [
+        1100,
+        540
+      ]
     },
     {
       "parameters": {
@@ -359,7 +431,10 @@
       "name": "Подготовить ответ биллинга",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1320, 540]
+      "position": [
+        1320,
+        540
+      ]
     },
     {
       "parameters": {
@@ -370,7 +445,10 @@
       "name": "Отправить результат биллинга",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [1540, 540]
+      "position": [
+        1540,
+        540
+      ]
     },
     {
       "parameters": {
@@ -399,7 +477,10 @@
       "name": "Закрытие диалога?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1100, 660]
+      "position": [
+        1100,
+        660
+      ]
     },
     {
       "parameters": {
@@ -411,7 +492,10 @@
       "name": "Закрыть диалог в n8n_dialogs",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [1320, 660],
+      "position": [
+        1320,
+        660
+      ],
       "credentials": {
         "postgres": {
           "id": "5tWDSrTUFp4DiJlP",
@@ -446,7 +530,10 @@
       "name": "ИИ переключён?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1100, 790]
+      "position": [
+        1100,
+        790
+      ]
     },
     {
       "parameters": {
@@ -458,100 +545,248 @@
       "name": "Обновить ai_status",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [1320, 790],
+      "position": [
+        1320,
+        790
+      ],
       "credentials": {
         "postgres": {
           "id": "5tWDSrTUFp4DiJlP",
           "name": "Postgres account"
         }
       }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/editMessageText",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: String($json.chat_id), message_id: $json.message_id, text: $json.text }) }}",
+        "options": {}
+      },
+      "id": "3e5a28a0-fba0-4618-ac38-fb9134380ec3",
+      "name": "TG editMessageText",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1328,
+        1100
+      ]
     }
   ],
   "connections": {
     "Сигнал от бота": {
       "main": [
-        [{"node": "Redis lPop", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Redis lPop",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Fallback каждые 3 мин": {
       "main": [
-        [{"node": "Redis lPop", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Redis lPop",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Redis lPop": {
       "main": [
-        [{"node": "Есть данные?", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Есть данные?",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Есть данные?": {
       "main": [
-        [{"node": "Распарсить JSON", "type": "main", "index": 0}],
+        [
+          {
+            "node": "Распарсить JSON",
+            "type": "main",
+            "index": 0
+          }
+        ],
         []
       ]
     },
     "Распарсить JSON": {
       "main": [
-        [{"node": "Switch по type", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Switch по type",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Switch по type": {
       "main": [
-        [{"node": "Подготовить файл", "type": "main", "index": 0}],
-        [{"node": "С клавиатурой?", "type": "main", "index": 0}],
         [
-          {"node": "Форматировать уведомление", "type": "main", "index": 0},
-          {"node": "Закрытие диалога?", "type": "main", "index": 0},
-          {"node": "ИИ переключён?", "type": "main", "index": 0}
+          {
+            "node": "Подготовить файл",
+            "type": "main",
+            "index": 0
+          }
         ],
-        [{"node": "Billing API", "type": "main", "index": 0}]
+        [
+          {
+            "node": "С клавиатурой?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Форматировать уведомление",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Закрытие диалога?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "ИИ переключён?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Billing API",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "TG editMessageText",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Подготовить файл": {
       "main": [
-        [{"node": "Отправить ответ оператора", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Отправить ответ оператора",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "С клавиатурой?": {
       "main": [
-        [{"node": "TG sendMessage с кнопками", "type": "main", "index": 0}],
-        [{"node": "Нормализовать text→message", "type": "main", "index": 0}]
+        [
+          {
+            "node": "TG sendMessage с кнопками",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Нормализовать text→message",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Нормализовать text→message": {
       "main": [
-        [{"node": "Отправить текст пользователю", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Отправить текст пользователю",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Форматировать уведомление": {
       "main": [
-        [{"node": "Получить tg_id операторов", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Получить tg_id операторов",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Получить tg_id операторов": {
       "main": [
-        [{"node": "Отправить оператору", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Отправить оператору",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Закрытие диалога?": {
       "main": [
-        [{"node": "Закрыть диалог в n8n_dialogs", "type": "main", "index": 0}],
+        [
+          {
+            "node": "Закрыть диалог в n8n_dialogs",
+            "type": "main",
+            "index": 0
+          }
+        ],
         []
       ]
     },
     "ИИ переключён?": {
       "main": [
-        [{"node": "Обновить ai_status", "type": "main", "index": 0}],
+        [
+          {
+            "node": "Обновить ai_status",
+            "type": "main",
+            "index": 0
+          }
+        ],
         []
       ]
     },
     "Billing API": {
       "main": [
-        [{"node": "Подготовить ответ биллинга", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Подготовить ответ биллинга",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Подготовить ответ биллинга": {
       "main": [
-        [{"node": "Отправить результат биллинга", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Отправить результат биллинга",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },

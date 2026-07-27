@@ -11,7 +11,10 @@
       "name": "Webhook исходящих",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [1200, 1920],
+      "position": [
+        1200,
+        1920
+      ],
       "webhookId": "vpn-bot-outgoing"
     },
     {
@@ -22,7 +25,10 @@
       "name": "Распарсить JSON1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1424, 1920]
+      "position": [
+        1424,
+        1920
+      ]
     },
     {
       "parameters": {
@@ -123,6 +129,30 @@
               },
               "renameOutput": true,
               "outputKey": "billing_action"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "sw-r5-edit",
+                    "leftValue": "={{ $json.type }}",
+                    "rightValue": "edit_message",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "edit_message"
             }
           ]
         },
@@ -132,7 +162,10 @@
       "name": "Switch по type1",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
-      "position": [1872, 1888]
+      "position": [
+        1872,
+        1888
+      ]
     },
     {
       "parameters": {
@@ -142,7 +175,10 @@
       "name": "Подготовить файл1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2096, 1248]
+      "position": [
+        2096,
+        1248
+      ]
     },
     {
       "parameters": {
@@ -159,7 +195,10 @@
       "name": "Отправить ответ оператора1",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [2320, 1248]
+      "position": [
+        2320,
+        1248
+      ]
     },
     {
       "parameters": {
@@ -189,7 +228,10 @@
       "name": "С клавиатурой?1",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [2096, 1536]
+      "position": [
+        2096,
+        1536
+      ]
     },
     {
       "parameters": {
@@ -204,7 +246,10 @@
       "name": "TG sendMessage с кнопками1",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2320, 1440]
+      "position": [
+        2320,
+        1440
+      ]
     },
     {
       "parameters": {
@@ -214,7 +259,10 @@
       "name": "Нормализовать text→message1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2320, 1632]
+      "position": [
+        2320,
+        1632
+      ]
     },
     {
       "parameters": {
@@ -231,7 +279,10 @@
       "name": "Отправить текст пользователю1",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [2544, 1632]
+      "position": [
+        2544,
+        1632
+      ]
     },
     {
       "parameters": {
@@ -241,7 +292,10 @@
       "name": "Форматировать уведомление1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2096, 1824]
+      "position": [
+        2096,
+        1824
+      ]
     },
     {
       "parameters": {
@@ -253,7 +307,10 @@
       "name": "Получить tg_id операторов1",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [2320, 1824],
+      "position": [
+        2320,
+        1824
+      ],
       "credentials": {
         "postgres": {
           "id": "5tWDSrTUFp4DiJlP",
@@ -273,7 +330,10 @@
       "name": "Отправить оператору1",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [2544, 1824],
+      "position": [
+        2544,
+        1824
+      ],
       "webhookId": "87bf632c-43a5-4725-a605-c292ccdece13",
       "credentials": {
         "telegramApi": {
@@ -301,7 +361,10 @@
       "name": "Billing API1",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2064, 2512]
+      "position": [
+        2064,
+        2512
+      ]
     },
     {
       "parameters": {
@@ -311,7 +374,10 @@
       "name": "Подготовить ответ биллинга1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2288, 2512]
+      "position": [
+        2288,
+        2512
+      ]
     },
     {
       "parameters": {
@@ -328,7 +394,10 @@
       "name": "Отправить результат биллинга1",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [2512, 2512]
+      "position": [
+        2512,
+        2512
+      ]
     },
     {
       "parameters": {
@@ -358,7 +427,10 @@
       "name": "Закрытие диалога?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [2096, 2016]
+      "position": [
+        2096,
+        2016
+      ]
     },
     {
       "parameters": {
@@ -370,7 +442,10 @@
       "name": "Закрыть диалог в n8n_dialogs",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [2320, 2016],
+      "position": [
+        2320,
+        2016
+      ],
       "credentials": {
         "postgres": {
           "id": "5tWDSrTUFp4DiJlP",
@@ -406,7 +481,10 @@
       "name": "ИИ переключён?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [2144, 2192]
+      "position": [
+        2144,
+        2192
+      ]
     },
     {
       "parameters": {
@@ -418,13 +496,34 @@
       "name": "Обновить ai_status",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [2368, 2224],
+      "position": [
+        2368,
+        2224
+      ],
       "credentials": {
         "postgres": {
           "id": "5tWDSrTUFp4DiJlP",
           "name": "Postgres account"
         }
       }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/editMessageText",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: String($json.chat_id), message_id: $json.message_id, text: $json.text }) }}",
+        "options": {}
+      },
+      "id": "04d0f67e-7ab0-44a4-8bf0-edce11543ce0",
+      "name": "TG editMessageText1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2320,
+        2788
+      ]
     }
   ],
   "connections": {
@@ -486,6 +585,13 @@
         [
           {
             "node": "Billing API1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "TG editMessageText1",
             "type": "main",
             "index": 0
           }
