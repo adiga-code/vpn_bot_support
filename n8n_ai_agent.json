@@ -89,7 +89,7 @@
           "mode": "list",
           "cachedResultName": "kb"
         },
-        "topK": 5,
+        "topK": 8,
         "options": {},
         "prompt": "={{ $('Приведение к 1 формату').first().json.prompt }}"
       },
@@ -789,7 +789,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Вход: результаты Qdrant (load) — по одному айтему на найденный чанк, с .score и содержимым.\nconst items = $input.all();\nlet maxScore = 0;\nconst ctx = [];\nfor (const it of items) {\n  const j = it.json || {};\n  const s = typeof j.score === 'number' ? j.score : 0;\n  if (s > maxScore) maxScore = s;\n  const doc = j.document || j;\n  const content = doc.pageContent || doc.content || '';\n  if (content) ctx.push(content);\n}\n// ПОРОГ релевантности: подобрать по maxScore из логов (cosine, обычно 0.3–0.5).\nconst THRESHOLD = 0.35;\nreturn [{ json: {\n  maxScore,\n  found: maxScore >= THRESHOLD ? 1 : 0,\n  context: ctx.join('\\n\\n---\\n\\n')\n} }];"
+        "jsCode": "// Вход: результаты Qdrant (load) — по айтему на найденный чанк, с .score.\nconst THRESHOLD = 0.35;   // порог релевантности (cosine); подобрать по maxScore\nconst MAX_CTX  = 6;        // сколько чанков максимум класть в контекст\nconst scored = $input.all().map((it) => {\n  const j = it.json || {};\n  const doc = j.document || j;\n  return { score: typeof j.score === 'number' ? j.score : 0,\n           content: doc.pageContent || doc.content || '' };\n}).filter(x => x.content);\nscored.sort((a, b) => b.score - a.score);\nconst maxScore = scored.length ? scored[0].score : 0;\n// В контекст — только релевантные чанки (>= порога), не весь top-K.\nconst kept = scored.filter(x => x.score >= THRESHOLD).slice(0, MAX_CTX);\nreturn [{ json: {\n  maxScore,\n  found: kept.length > 0 ? 1 : 0,\n  usedChunks: kept.length,\n  context: kept.map(x => x.content).join('\\n\\n---\\n\\n')\n} }];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
