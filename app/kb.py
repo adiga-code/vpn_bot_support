@@ -101,33 +101,37 @@ def _guess_category(title: str, keywords: list[str]) -> str:
     return "faq"
 
 
+def _extract_keywords(block: str) -> list[str]:
+    """Pull the «Запросы: a; b; c» search phrases out of a section, tolerating
+    markdown bold/emphasis around the label (e.g. «**Запросы:**»)."""
+    m = re.search(r"(?mi)^\s*[*_]*Запросы:[*_]*\s*(.+?)\s*$", block)
+    if not m:
+        return []
+    return [k.strip(" .*_") for k in m.group(1).split(";") if k.strip(" .*_")]
+
+
 def parse_markdown_sections(text: str) -> list[dict] | None:
     """Deterministically split a structured markdown document into KB chunks.
 
-    Expects sections delimited by "## " headers, optionally with a
-    "Запросы: ..." line of user search phrases that becomes the keywords.
-    Returns None when the document has fewer than two sections, so the
-    caller can fall back to LLM chunking for unstructured documents.
+    Each "## " topic is split further by its "### " sub-sections, so a chunk
+    covers one narrow scenario instead of a whole bloated topic — this makes
+    vector search match precisely. Every chunk keeps its parent "## " title as
+    context and inherits the topic's "**Запросы:**" search phrases (the label
+    may be bold). A "## " section without "### " sub-sections stays a single
+    chunk (legacy behaviour). Returns None when the document has fewer than two
+    "## " sections, so the caller falls back to LLM chunking.
     """
     parts = re.split(r"(?m)^##\s+", text)
     if len(parts) < 3:  # parts[0] is the preamble before the first header
         return None
     seen: set[str] = set()
     chunks = []
-    for part in parts[1:]:
-        header, _, body = part.partition("\n")
-        header = header.strip()
-        num_match = re.match(r"^(\d+)[.)]?\s*", header)
-        title = header[num_match.end():].strip() if num_match else header
-        body = re.sub(r"\n-{3,}\s*$", "", body.strip())
+
+    def add(title: str, body: str, keywords: list[str]):
+        body = re.sub(r"\n-{3,}\s*$", "", (body or "").strip())
         if len(body) < 20:
-            continue
-        keywords = []
-        kw_match = re.search(r"(?m)^Запросы:\s*(.+)$", body)
-        if kw_match:
-            keywords = [k.strip(" .") for k in kw_match.group(1).split(";") if k.strip(" .")]
-        prefix = f"{num_match.group(1)}-" if num_match else ""
-        slug = _make_slug(prefix + title, seen)
+            return
+        slug = _make_slug(title, seen)
         chunks.append({
             "id":       slug,
             "title":    title,
@@ -135,6 +139,30 @@ def parse_markdown_sections(text: str) -> list[dict] | None:
             "keywords": keywords,
             "content":  f"{title}\n\n{body}",
         })
+
+    for part in parts[1:]:
+        header, _, section_body = part.partition("\n")
+        header = header.strip()
+        num_match = re.match(r"^\d+[.)]?\s*", header)
+        parent_title = header[num_match.end():].strip() if num_match else header
+        parent_kw = _extract_keywords(section_body)
+
+        sub_parts = re.split(r"(?m)^###\s+", section_body)
+        subs = sub_parts[1:]
+        if not subs:
+            # No sub-sections — keep the whole topic as one chunk.
+            add(parent_title, section_body, parent_kw)
+            continue
+        # Text before the first "### " (definitions / the Запросы line) → its
+        # own chunk, minus the Запросы line itself.
+        intro = re.sub(r"(?mi)^\s*[*_]*Запросы:.*$", "", sub_parts[0]).strip()
+        if len(intro) >= 20:
+            add(parent_title, intro, parent_kw)
+        for sp in subs:
+            sub_header, _, sub_body = sp.partition("\n")
+            sub_header = re.sub(r"^\d+(?:\.\d+)*[.)]?\s*", "", sub_header.strip())
+            sub_title = (f"{parent_title} — {sub_header}").strip(" —") if sub_header else parent_title
+            add(sub_title, sub_body, parent_kw + _extract_keywords(sub_body))
     return chunks or None
 
 

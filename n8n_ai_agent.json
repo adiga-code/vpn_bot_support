@@ -41,7 +41,7 @@
         "promptType": "define",
         "text": "={{ $('Приведение к 1 формату').first().json.prompt }}",
         "options": {
-          "systemMessage": "={{ $('Code in JavaScript').first().json.ai_prompt }}\n\nИстория диалога (для контекста, не источник фактов):\n{{ $('Форматировать историю1').first().json.historyText }}"
+          "systemMessage": "={{ $('Code in JavaScript').first().json.ai_prompt }}\n\nКОНТЕКСТ ИЗ БАЗЫ ЗНАНИЙ (единственный источник фактов; если прямого ответа здесь нет — верни ровно [HANDOFF]):\n{{ $('Оценка релевантности').first().json.context }}\n\nИстория диалога (для понимания контекста, не источник фактов):\n{{ $('Форматировать историю1').first().json.historyText }}"
         }
       },
       "type": "@n8n/n8n-nodes-langchain.agent",
@@ -82,26 +82,25 @@
     },
     {
       "parameters": {
-        "mode": "retrieve-as-tool",
-        "toolDescription": "Поиск по базе знаний поддержки GruVPN: инструкции подключения, диагностика проблем, белые списки, оплата и продление, FAQ. Вызывай перед каждым ответом на вопрос пользователя. Query: проблема формулировкой пользователя, на русском (например: «YouTube не работает на iPhone»).",
+        "mode": "load",
         "qdrantCollection": {
           "__rl": true,
           "value": "kb",
           "mode": "list",
           "cachedResultName": "kb"
         },
-        "topK": 5,
-        "options": {}
+        "topK": 8,
+        "options": {},
+        "prompt": "={{ $('Приведение к 1 формату').first().json.prompt }}"
       },
       "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
       "typeVersion": 1.3,
       "position": [
-        864,
-        2192
+        80,
+        1968
       ],
       "id": "a97dadae-f594-491a-8c38-3ea670714b64",
       "name": "Qdrant Vector Store2",
-      "rewireOutputLogTo": "ai_tool",
       "credentials": {
         "qdrantApi": {
           "id": "Q4QxrSlzWGuaPIrG",
@@ -787,6 +786,53 @@
       "id": "c1a2b3c4-0011-4a00-9000-000000000011",
       "name": "TG печатает 2",
       "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Вход: результаты Qdrant (load) — по айтему на найденный чанк, с .score.\nconst THRESHOLD = 0.35;   // порог релевантности (cosine); подобрать по maxScore\nconst MAX_CTX  = 6;        // сколько чанков максимум класть в контекст\nconst scored = $input.all().map((it) => {\n  const j = it.json || {};\n  const doc = j.document || j;\n  return { score: typeof j.score === 'number' ? j.score : 0,\n           content: doc.pageContent || doc.content || '' };\n}).filter(x => x.content);\nscored.sort((a, b) => b.score - a.score);\nconst maxScore = scored.length ? scored[0].score : 0;\n// В контекст — только релевантные чанки (>= порога), не весь top-K.\nconst kept = scored.filter(x => x.score >= THRESHOLD).slice(0, MAX_CTX);\nreturn [{ json: {\n  maxScore,\n  found: kept.length > 0 ? 1 : 0,\n  usedChunks: kept.length,\n  context: kept.map(x => x.content).join('\\n\\n---\\n\\n')\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        1968
+      ],
+      "id": "fc6b96f3-ec2b-4632-8370-c57725c215de",
+      "name": "Оценка релевантности"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "90e78c69-9b62-44a4-bae5-b6e0e18a404b",
+              "leftValue": "={{ $json.found }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        1936
+      ],
+      "id": "bf606096-5bbd-4183-94da-7fd9a6f4127e",
+      "name": "Есть контекст?"
     }
   ],
   "connections": {
@@ -823,17 +869,6 @@
           {
             "node": "AI Agent",
             "type": "ai_languageModel",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Qdrant Vector Store2": {
-      "ai_tool": [
-        [
-          {
-            "node": "AI Agent",
-            "type": "ai_tool",
             "index": 0
           }
         ]
@@ -1100,7 +1135,47 @@
       "main": [
         [
           {
+            "node": "Qdrant Vector Store2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qdrant Vector Store2": {
+      "main": [
+        [
+          {
+            "node": "Оценка релевантности",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Оценка релевантности": {
+      "main": [
+        [
+          {
+            "node": "Есть контекст?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Есть контекст?": {
+      "main": [
+        [
+          {
             "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ответ хендофф",
             "type": "main",
             "index": 0
           }
