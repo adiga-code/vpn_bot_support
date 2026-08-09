@@ -799,40 +799,6 @@
       ],
       "id": "fc6b96f3-ec2b-4632-8370-c57725c215de",
       "name": "Оценка релевантности"
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "loose",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "id": "90e78c69-9b62-44a4-bae5-b6e0e18a404b",
-              "leftValue": "={{ $json.found }}",
-              "rightValue": 1,
-              "operator": {
-                "type": "number",
-                "operation": "gte"
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "looseTypeValidation": true,
-        "options": {}
-      },
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        520,
-        1936
-      ],
-      "id": "bf606096-5bbd-4183-94da-7fd9a6f4127e",
-      "name": "Есть контекст?"
     }
   ],
   "connections": {
@@ -1157,25 +1123,7 @@
       "main": [
         [
           {
-            "node": "Есть контекст?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Есть контекст?": {
-      "main": [
-        [
-          {
             "node": "AI Agent",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Ответ хендофф",
             "type": "main",
             "index": 0
           }
