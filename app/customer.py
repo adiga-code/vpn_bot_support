@@ -13,6 +13,7 @@ register_customer_provider(). Ни оркестратор, ни API, ни фро
 по этому описанию, поэтому новое действие добавляется правкой одного бэкенда.
 """
 import asyncio
+import contextvars
 import json
 import time
 from abc import ABC, abstractmethod
@@ -26,6 +27,13 @@ CUSTOMER_DEFAULTS = {
     "config": {},
     "cacheTtl": 60,
 }
+
+
+# Имя оператора текущего действия. ContextVar, а не поле объекта: провайдер
+# кэшируется на сервис и общий для всех, поэтому два одновременных действия
+# разных операторов затирали бы друг другу имя — и в чужой аудит уехало бы не
+# то. У ContextVar значение своё в каждой asyncio-задаче.
+_OPERATOR: contextvars.ContextVar[str] = contextvars.ContextVar("operator", default="")
 
 
 def _now_iso() -> str:
@@ -191,7 +199,7 @@ class ActionResult:
 class ActionField:
     name: str
     label: str
-    type: str = "number"            # number | text | textarea | select | key
+    type: str = "number"            # number | text | textarea | select | bool | key | device
     default: object = None
     options: str = ""               # ключ из provider.options(): servers | plans
     required: bool = True
@@ -237,6 +245,29 @@ ACTIONS: list[ActionSpec] = [
     ]),
     ActionSpec("key_delete", "key_delete", "Удалить ключ", group="keys", danger=True,
                confirm="Ключ будет удалён безвозвратно. Удалить?", fields=[
+        ActionField("key_id", "Ключ", "key"),
+    ]),
+    ActionSpec("key_enable", "key_enable", "Включить ключ", group="keys", fields=[
+        ActionField("key_id", "Ключ", "key"),
+    ]),
+    ActionSpec("key_disable", "key_disable", "Выключить ключ", group="keys",
+               confirm="Клиент потеряет доступ по этому ключу. Выключить?", fields=[
+        ActionField("key_id", "Ключ", "key"),
+    ]),
+    ActionSpec("key_move", "key_move", "Сменить локацию", group="keys",
+               confirm="Ссылка подписки изменится — клиенту придётся взять новую в боте.",
+               fields=[
+        ActionField("key_id", "Ключ", "key"),
+        ActionField("server_id", "Куда перенести", "select", options="servers"),
+    ]),
+    ActionSpec("device_unlink", "device_unlink", "Отвязать устройство", group="keys",
+               fields=[
+        ActionField("key_id", "Ключ", "key"),
+        ActionField("hwid", "Устройство", "device"),
+    ]),
+    ActionSpec("devices_reset", "devices_reset", "Сбросить все устройства", group="keys",
+               confirm="Все привязки слетят, клиенту придётся подключиться заново.",
+               fields=[
         ActionField("key_id", "Ключ", "key"),
     ]),
     # ── Рефералы ─────────────────────────────────────────────────────────────
@@ -322,6 +353,11 @@ class CustomerProvider(ABC):
         self.service = service or {}
         self.config = config or {}
 
+    @property
+    def operator(self) -> str:
+        """Имя залогиненного в панели человека для текущего действия."""
+        return _OPERATOR.get()
+
     # ── Чтение ────────────────────────────────────────────────────────────────
 
     @abstractmethod
@@ -343,6 +379,11 @@ class CustomerProvider(ABC):
     async def key_add_time(self, chat_id: str, key_id: str, days: int = 0) -> ActionResult: raise NotSupported
     async def key_replace(self, chat_id: str, key_id: str) -> ActionResult: raise NotSupported
     async def key_delete(self, chat_id: str, key_id: str) -> ActionResult: raise NotSupported
+    async def key_enable(self, chat_id: str, key_id: str) -> ActionResult: raise NotSupported
+    async def key_disable(self, chat_id: str, key_id: str) -> ActionResult: raise NotSupported
+    async def key_move(self, chat_id: str, key_id: str, server_id: str = "") -> ActionResult: raise NotSupported
+    async def device_unlink(self, chat_id: str, key_id: str, hwid: str = "") -> ActionResult: raise NotSupported
+    async def devices_reset(self, chat_id: str, key_id: str) -> ActionResult: raise NotSupported
     async def referral_link(self, chat_id: str, tg_id: str) -> ActionResult: raise NotSupported
     async def referral_unlink(self, chat_id: str, tg_id: str) -> ActionResult: raise NotSupported
     async def ban(self, chat_id: str, reason: str = "") -> ActionResult: raise NotSupported
@@ -370,17 +411,30 @@ class CustomerProvider(ABC):
         off = set(self.config.get("disable") or [])
         return [n for n in self.implemented_actions() if n not in off]
 
-    async def execute(self, action: str, chat_id: str, params: dict = None) -> ActionResult:
+    async def execute(self, action: str, chat_id: str, params: dict = None,
+                      operator: str = "") -> ActionResult:
+        """`operator` — имя залогиненного в панели человека. Внешние API часто
+        ведут свой журнал и хотят знать, кто именно нажал кнопку; провайдеры,
+        которым это не нужно, просто игнорируют поле."""
+        _OPERATOR.set(operator)
         spec = ACTIONS_BY_NAME.get(action)
         if not spec:
             return ActionResult(ok=False, message=f"Неизвестное действие: {action}")
         if action not in self.supports():
             return ActionResult(ok=False, message=f"Источник «{self.source}» не умеет «{spec.label}»")
+        # _coerce вне try: его ValueError — это «не заполнено поле», и его
+        # отдельно ловит CustomerService, чтобы показать оператору как есть.
         kwargs = _coerce(spec, params or {})
         try:
             return await getattr(self, spec.method)(chat_id, **kwargs)
         except NotSupported:
             return ActionResult(ok=False, message=f"Источник «{self.source}» не умеет «{spec.label}»")
+        except Exception as e:
+            # Действие обязано ВЕРНУТЬ результат, а не упасть: отказ внешней
+            # API («недостаточно средств», «ключ уже на этом сервере») — это
+            # нормальный ответ оператору, а не сбой панели.
+            print(f"[{self.source}] {action}: {e}")
+            return ActionResult(ok=False, message=str(e)[:200])
 
 
 def _coerce(spec: ActionSpec, params: dict) -> dict:
@@ -557,14 +611,14 @@ class CustomerService:
     # ── Действия ──────────────────────────────────────────────────────────────
 
     async def execute(self, service: dict, dialog: dict, action: str,
-                      params: dict) -> ActionResult:
+                      params: dict, operator: str = "") -> ActionResult:
         provider = await self.provider_for(service)
         if not provider:
             name = (await self.settings(service["id"])).get("provider") or "—"
             return ActionResult(ok=False, message=f"Источник «{name}» не зарегистрирован")
         chat_id = str(dialog["chat_id"])
         try:
-            result = await provider.execute(action, chat_id, params)
+            result = await provider.execute(action, chat_id, params, operator=operator)
         except ValueError as e:                      # не прошла валидация формы
             return ActionResult(ok=False, message=str(e))
         except Exception as e:

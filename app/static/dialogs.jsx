@@ -1490,7 +1490,7 @@ function ActionShell({ open, onClose, title, subtitle, compact, children }) {
 }
 
 // Форма действия по описанию полей из ACTIONS (app/customer.py).
-function ActionForm({ spec, options, keys, preset, busy, onSubmit, onCancel }) {
+function ActionForm({ spec, options, keys, devices, preset, busy, onSubmit, onCancel }) {
   const initial = {};
   for (const f of spec.fields) {
     initial[f.name] = preset && preset[f.name] !== undefined
@@ -1523,6 +1523,8 @@ function ActionForm({ spec, options, keys, preset, busy, onSubmit, onCancel }) {
         }
         const list = f.type === "key"
           ? (keys || []).map((k) => ({ value: k.id, label: `${k.name} · ${k.server || "—"}` }))
+          : f.type === "device"
+          ? (devices || []).map((d) => ({ value: d.id, label: d.name }))
           : (options && options[f.options]) || [];
         return (
           <div key={f.name}>
@@ -1543,7 +1545,7 @@ function ActionForm({ spec, options, keys, preset, busy, onSubmit, onCancel }) {
                     (values[f.name] ? "left-[16px]" : "left-[2px]")}></span>
                 </span>
               </button>
-            ) : (f.type === "select" || f.type === "key") ? (
+            ) : (f.type === "select" || f.type === "key" || f.type === "device") ? (
               <select value={values[f.name]} onChange={(e) => set(f.name, e.target.value)} className={input}>
                 {!f.required && <option value="">— не указывать —</option>}
                 {list.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -1930,6 +1932,7 @@ function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmi
             preset={form.preset}
             options={data?.options || {}}
             keys={data?.keys || []}
+            devices={data?.devices || []}
             busy={busy}
             onSubmit={(values) => runAction(form.spec, values)}
             onCancel={() => setForm(null)}
