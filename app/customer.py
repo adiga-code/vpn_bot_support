@@ -53,7 +53,7 @@ class KeyInfo:
     expires_at: str = ""            # ISO или как отдала API — показываем как есть
     traffic_used: float = 0.0       # ГБ
     traffic_limit: float = 0.0      # ГБ, 0 — без лимита
-    devices: int = 0
+    devices: int | None = 0         # None — источник не знает; в карточке «—»
     active: bool = True
 
     def to_dict(self) -> dict:

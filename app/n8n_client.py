@@ -28,14 +28,16 @@ QUEUE_OUTGOING = "vpn_bot.outgoing"
 QUEUE_PENDING  = "vpn_bot.pending_notifications"
 
 
-def service_ctx(source: dict | None) -> tuple[str, str]:
-    """(slug, webhook_url) сервиса — из строки диалога (service_slug) либо из
-    строки самого сервиса (slug). Пустой slug означает «сервис неизвестен»:
-    такое сообщение уйдёт без маршрутизации, на дефолтный вебхук."""
+def service_ctx(source: dict | None) -> tuple[str, str, str]:
+    """(slug, webhook_url, business_id) сервиса — из строки диалога
+    (service_slug) либо из строки самого сервиса (slug). Пустой slug означает
+    «сервис неизвестен»: такое сообщение уйдёт без маршрутизации, на дефолтный
+    вебхук."""
     if not source:
-        return "", ""
+        return "", "", ""
     slug = source.get("service_slug") or source.get("slug") or ""
-    return slug, source.get("n8n_webhook_url") or ""
+    return (slug, source.get("n8n_webhook_url") or "",
+            source.get("business_connection_id") or "")
 
 
 class N8NClient:
@@ -84,9 +86,14 @@ class N8NClient:
         after retries, falls back to RabbitMQ (очередь общая, разбор по полю
         `service`).
         """
-        slug, service_url = service_ctx(service)
+        slug, service_url, business_id = service_ctx(service)
         if slug:
             payload = {**payload, "service": slug}
+        # Ответ в business-чат Telegram принимает только вместе с
+        # business_connection_id — без него n8n не сможет отправить сообщение
+        # от имени аккаунта поддержки.
+        if business_id:
+            payload = {**payload, "business_id": business_id}
         url = service_url or self.settings.N8N_WEBHOOK_URL
         if url:
             if await self._push_webhook(payload, url):
@@ -182,13 +189,14 @@ class N8NClient:
         """Schedule-aware: queues off-hours, flushes at start of working day.
         Расписание своё у каждого сервиса."""
         try:
-            slug, url = service_ctx(service)
+            slug, url, business_id = service_ctx(service)
             service_id = (service or {}).get("service_id") or (service or {}).get("id")
             if not await self._is_within_schedule(service_id):
                 ch = await self._get_channel()
                 body = {"type": event_type, **payload}
                 if slug:
-                    body["_service"] = {"slug": slug, "n8n_webhook_url": url}
+                    body["_service"] = {"slug": slug, "n8n_webhook_url": url,
+                                        "business_connection_id": business_id}
                 await ch.default_exchange.publish(
                     aio_pika.Message(
                         body=json.dumps(body, ensure_ascii=False).encode(),

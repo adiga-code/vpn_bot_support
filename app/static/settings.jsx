@@ -47,7 +47,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
     { id: "operators",  label: "Операторы",     icon: "operators", adminOnly: true,  scope: "common",
       hint: "команда, роли, доступ к ВПН" },
     { id: "services",   label: "Сервисы",       icon: "server",    adminOnly: true,  scope: "common",
-      hint: "список ВПН-ов, слаги, вебхуки" },
+      hint: "подключить ВПН: API, токен, business_id" },
     { id: "profile",    label: "Профиль",       icon: "user",      adminOnly: false, scope: "common",
       hint: "имя, пароль, уведомления" },
     { id: "ai",         label: "ИИ-настройки",  icon: "sparkles",  adminOnly: true,  scope: "service",
@@ -56,8 +56,11 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       hint: "статьи для ответов ИИ" },
     { id: "automation", label: "Автоматизация", icon: "zap",       adminOnly: true,  scope: "service",
       hint: "эскалация, оценки, лимиты" },
-    { id: "customer",   label: "Клиенты",       icon: "user",      adminOnly: true,  scope: "service",
-      hint: "источник профиля и действий" },
+    // advanced: URL и токен теперь спрашивают прямо в форме сервиса, поэтому
+    // сюда заходят редко — только чтобы выбрать другой источник или погасить
+    // отдельные кнопки. В меню уезжает вниз, под разделитель.
+    { id: "customer",   label: "Источник данных", icon: "user",    adminOnly: true,  scope: "service",
+      advanced: true, hint: "нужно, только если это не Support API бота" },
     { id: "sounds",     label: "Звуки",         icon: "bellRing",  adminOnly: true,  scope: "common",
       hint: "новое сообщение, вызов оператора" },
     { id: "broadcast",  label: "Рассылка",      icon: "megaphone", adminOnly: true,  scope: "service",
@@ -145,8 +148,9 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       );
     }
     const groups = [
-      { title: "Этот сервис", items: sections.filter((x) => x.scope === "service") },
-      { title: "Общее",       items: sections.filter((x) => x.scope === "common")  },
+      { title: "Этот сервис", items: sections.filter((x) => x.scope === "service" && !x.advanced) },
+      { title: "Общее",       items: sections.filter((x) => x.scope === "common"  && !x.advanced) },
+      { title: "Дополнительно", items: sections.filter((x) => x.advanced) },
     ].filter((g) => g.items.length);
     return (
       <div className="h-full flex flex-col min-h-0 bg-[#0d0d12]">
@@ -204,10 +208,23 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       <aside className="w-[240px] shrink-0 bg-[#13131a] border-r border-[#2a2a3a] p-4">
         <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3 px-2">Настройки</div>
         <nav className="space-y-0.5">
-          {sections.map((s) => (
+          {sections.filter((s) => !s.advanced).map((s) => (
             <button key={s.id} onClick={() => setSection(s.id)}
               className={"w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition " +
                 (section === s.id ? "bg-[#4F8EF7]/15 text-[#7BA8F9]" : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}>
+              <Icon name={s.icon} className="w-4 h-4" />
+              {s.label}
+            </button>
+          ))}
+          {sections.some((s) => s.advanced) && (
+            <div className="text-[10px] uppercase tracking-wider text-[#3a3a4a] font-semibold pt-4 pb-1 px-3">
+              Дополнительно
+            </div>
+          )}
+          {sections.filter((s) => s.advanced).map((s) => (
+            <button key={s.id} onClick={() => setSection(s.id)} title={s.hint}
+              className={"w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition " +
+                (section === s.id ? "bg-[#4F8EF7]/15 text-[#7BA8F9]" : "text-[#4a4a5a] hover:text-[#d1d1d8] hover:bg-[#1a1a24]")}>
               <Icon name={s.icon} className="w-4 h-4" />
               {s.label}
             </button>
@@ -463,10 +480,10 @@ function CustomerSection({ showToast, service }) {
   return (
     <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
-        <h1 className="text-xl font-semibold text-[#f1f1f5]">Клиенты</h1>
+        <h1 className="text-xl font-semibold text-[#f1f1f5]">Источник данных о клиентах</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">
-          Откуда карточка клиента берёт профиль и куда уходят действия над аккаунтом —
-          у каждого ВПН-сервиса свой источник
+          Адрес и токен Support API спрашивают прямо в форме сервиса — сюда
+          заходят, только чтобы выбрать другой источник или погасить лишние кнопки
         </div>
       </div>
 
@@ -620,7 +637,8 @@ function ServicesSection({ showToast, onChanged }) {
         <div>
           <h1 className="text-xl font-semibold text-[#f1f1f5]">ВПН-сервисы</h1>
           <div className="text-xs text-[#6b7280] mt-0.5">
-            У каждого свои диалоги, база знаний, промпты, шаблоны и рассылки
+            Название, адрес API бота, токен и business_id — этого достаточно,
+            чтобы сервис заработал
           </div>
         </div>
         <button onClick={() => setModal({})}
@@ -644,12 +662,14 @@ function ServicesSection({ showToast, onChanged }) {
                 className="w-11 h-11 shrink-0 flex items-center justify-center text-[#6b7280] active:text-[#ef4444] rounded-lg"><Icon name="trash" className="w-4 h-4" /></button>
             </div>
             <div className="mt-2 space-y-1 text-[11px]">
+              <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">API</span>
+                <span className="font-mono text-[#d1d1d8] truncate">
+                  {s.apiBaseUrl || <span className="text-[#ef4444]">не задан</span>}</span></div>
+              <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">business_id</span>
+                <span className="font-mono text-[#d1d1d8] truncate">
+                  {s.businessId || <span className="text-[#f59e0b]">не задан</span>}</span></div>
               <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">Слаг</span>
                 <span className="font-mono text-[#d1d1d8] truncate">{s.slug}</span></div>
-              <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">Qdrant</span>
-                <span className="font-mono text-[#d1d1d8] truncate">{s.qdrantCollection}</span></div>
-              <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">Вебхук n8n</span>
-                <span className="text-[#d1d1d8] truncate">{s.n8nWebhookUrl || "общий"}</span></div>
               <div className="flex gap-2 items-center"><span className="text-[#6b7280] w-[86px] shrink-0">Статус</span>
                 <span className="inline-flex items-center gap-1.5">
                   <span className={"w-1.5 h-1.5 rounded-full " + (s.isActive ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
@@ -670,9 +690,9 @@ function ServicesSection({ showToast, onChanged }) {
           <thead>
             <tr className="text-[10px] uppercase tracking-wider text-[#6b7280] border-b border-[#2a2a3a]/60">
               <th className="text-left px-5 py-3 font-medium">Название</th>
+              <th className="text-left px-3 py-3 font-medium">API бота</th>
+              <th className="text-left px-3 py-3 font-medium">business_id</th>
               <th className="text-left px-3 py-3 font-medium">Слаг</th>
-              <th className="text-left px-3 py-3 font-medium">Коллекция Qdrant</th>
-              <th className="text-left px-3 py-3 font-medium">Вебхук n8n</th>
               <th className="text-left px-3 py-3 font-medium">Статус</th>
               <th className="text-right px-5 py-3 font-medium w-[120px]">Действия</th>
             </tr>
@@ -686,11 +706,13 @@ function ServicesSection({ showToast, onChanged }) {
                     <span className="font-medium text-[#f1f1f5]">{s.emoji ? s.emoji + " " : ""}{s.name}</span>
                   </div>
                 </td>
-                <td className="px-3 py-3 font-mono text-xs text-[#6b7280]">{s.slug}</td>
-                <td className="px-3 py-3 font-mono text-xs text-[#6b7280]">{s.qdrantCollection}</td>
-                <td className="px-3 py-3 text-xs text-[#6b7280] max-w-[200px] truncate">
-                  {s.n8nWebhookUrl || <span className="text-[#3a3a4a]">общий</span>}
+                <td className="px-3 py-3 font-mono text-xs text-[#6b7280] max-w-[220px] truncate">
+                  {s.apiBaseUrl || <span className="text-[#ef4444]">не задан</span>}
                 </td>
+                <td className="px-3 py-3 font-mono text-xs text-[#6b7280] max-w-[180px] truncate">
+                  {s.businessId || <span className="text-[#f59e0b]">не задан</span>}
+                </td>
+                <td className="px-3 py-3 font-mono text-xs text-[#6b7280]">{s.slug}</td>
                 <td className="px-3 py-3">
                   <span className="inline-flex items-center gap-1.5 text-xs">
                     <span className={"w-1.5 h-1.5 rounded-full " + (s.isActive ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
@@ -744,6 +766,9 @@ function ServicesSection({ showToast, onChanged }) {
   );
 }
 
+// Подключение ВПН-сервиса. На виду только то, что нельзя не заполнить:
+// название, адрес и токен Support API, business_id аккаунта поддержки.
+// Слаг, цвет, эмодзи и вебхук n8n заполняются сами и лежат под «Дополнительно».
 function ServiceModal({ editing, onSave, onClose }) {
   const [name,  setName]  = useStateT(editing?.name  || "");
   const [slug,  setSlug]  = useStateT(editing?.slug  || "");
@@ -751,6 +776,11 @@ function ServiceModal({ editing, onSave, onClose }) {
   const [emoji, setEmoji] = useStateT(editing?.emoji || "");
   const [hook,  setHook]  = useStateT(editing?.n8nWebhookUrl || "");
   const [active, setActive] = useStateT(editing ? editing.isActive : true);
+  const [apiUrl, setApiUrl] = useStateT(editing?.apiBaseUrl || "");
+  const [token, setToken] = useStateT("");
+  const [business, setBusiness] = useStateT(editing?.businessId || "");
+  const [more, setMore] = useStateT(false);
+  const [check, setCheck] = useStateT(null);      // null | "…" | {ok, ...}
 
   // Слаг сам предлагается из названия, но остаётся редактируемым.
   function changeName(v) {
@@ -762,6 +792,20 @@ function ServiceModal({ editing, onSave, onClose }) {
     return v.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 31);
   }
 
+  // Проверка идёт до сохранения: опечатку в токене лучше увидеть здесь, чем
+  // на первом клиенте. Токен при правке может быть пустым — сервер тогда
+  // проверяет сохранённым.
+  async function testConnection() {
+    setCheck("…");
+    try {
+      const r = await window.apiFetch("POST", "/api/services/test-connection",
+                                      { base_url: apiUrl.trim(), token: token.trim() });
+      setCheck(r);
+    } catch (e) {
+      setCheck({ ok: false, error: e?.detail || "Не удалось проверить" });
+    }
+  }
+
   function submit(e) {
     e?.preventDefault();
     if (!name.trim()) return;
@@ -769,6 +813,8 @@ function ServiceModal({ editing, onSave, onClose }) {
     onSave({
       id: editing?.id, name: name.trim(), slug: finalSlug, color,
       emoji: emoji.trim() || null, n8n_webhook_url: hook.trim(), is_active: active,
+      business_id: business.trim(),
+      api_base_url: apiUrl.trim(), api_token: token.trim(),
     });
   }
 
@@ -779,50 +825,108 @@ function ServiceModal({ editing, onSave, onClose }) {
           <div className="font-semibold text-[#f1f1f5]">{editing ? "Редактировать сервис" : "Новый ВПН-сервис"}</div>
           <button type="button" onClick={onClose} className="p-1 text-[#6b7280] hover:text-[#f1f1f5] rounded"><Icon name="x" /></button>
         </div>
-        <div className="p-5 space-y-4">
-          <div className="grid grid-cols-[1fr_80px] gap-3">
-            <div>
-              <label className="block text-xs text-[#6b7280] mb-1.5">Название</label>
-              <input autoFocus value={name} onChange={(e) => changeName(e.target.value)} placeholder="NordFlow"
-                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
-            </div>
-            <div>
-              <label className="block text-xs text-[#6b7280] mb-1.5">Эмодзи</label>
-              <input value={emoji} onChange={(e) => setEmoji(e.target.value)} placeholder="🛡"
-                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 text-center" />
-            </div>
+        <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto scrollbar-thin">
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Название</label>
+            <input autoFocus value={name} onChange={(e) => changeName(e.target.value)} placeholder="NordFlow"
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
           </div>
+
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Адрес API бота</label>
+            <input value={apiUrl} onChange={(e) => { setApiUrl(e.target.value); setCheck(null); }}
+              placeholder="https://host/nemoivpn/api/v1"
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+          </div>
+
           <div>
             <label className="block text-xs text-[#6b7280] mb-1.5">
-              Слаг {editing && <span className="text-[#3a3a4a]">— неизменяем: зашит в n8n, Redis и ID диалогов</span>}
+              Токен {editing && editing.hasApiToken && !token &&
+                <span className="text-[#22c55e]">— сохранён, оставьте пустым, чтобы не менять</span>}
             </label>
-            <input value={editing ? editing.slug : slug} disabled={!!editing}
-              onChange={(e) => setSlug(slugify(e.target.value))} placeholder="nordflow"
-              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono disabled:opacity-50" />
-            {!editing && (
-              <div className="text-[10px] text-[#6b7280] mt-1">
-                Коллекция Qdrant: <span className="font-mono text-[#7BA8F9]">kb_{slug || "…"}</span> ·
-                префикс ID диалогов: <span className="font-mono text-[#7BA8F9]">{slug || "…"}_</span>
+            <input type="password" value={token} onChange={(e) => { setToken(e.target.value); setCheck(null); }}
+              placeholder={editing && editing.hasApiToken ? "••••••••" : "токен этого бота"}
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+          </div>
+
+          <div>
+            <button type="button" onClick={testConnection} disabled={!apiUrl.trim() || check === "…"}
+              className="px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40">
+              {check === "…" ? "Проверяем…" : "Проверить подключение"}
+            </button>
+            {check && check !== "…" && (
+              <div className={"mt-2 rounded-lg px-3 py-2 text-[11px] border " + (check.ok
+                ? "bg-[#22c55e]/10 border-[#22c55e]/25 text-[#22c55e]"
+                : "bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]")}>
+                {check.ok
+                  ? <>Связь есть: <b>{check.botName || check.botId}</b>
+                      <span className="opacity-70"> · {check.botId}</span>
+                      {check.scopes?.length ? <span className="opacity-70"> · {check.scopes.join(", ")}</span> : null}</>
+                  : check.error}
               </div>
             )}
           </div>
+
           <div>
-            <label className="block text-xs text-[#6b7280] mb-1.5">Цвет</label>
-            <div className="flex flex-wrap gap-2">
-              {SERVICE_COLORS.map((c) => (
-                <button key={c} type="button" onClick={() => setColor(c)}
-                  className={"w-7 h-7 rounded-lg transition " + (color === c ? "ring-2 ring-offset-2 ring-offset-[#13131a] ring-white/60" : "")}
-                  style={{ background: c }}></button>
-              ))}
+            <label className="block text-xs text-[#6b7280] mb-1.5">business_id</label>
+            <input value={business} onChange={(e) => setBusiness(e.target.value)}
+              placeholder="business_connection_id аккаунта поддержки"
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+            <div className="text-[10px] text-[#6b7280] mt-1">
+              По нему панель узнаёт, чей это тикет. Приходит от Telegram, когда бот
+              подключён к аккаунту поддержки этого ВПН-а.
             </div>
           </div>
-          <div>
-            <label className="block text-xs text-[#6b7280] mb-1.5">
-              Вебхук n8n <span className="text-[#3a3a4a]">— если у сервиса отдельный инстанс n8n; пусто = общий</span>
-            </label>
-            <input value={hook} onChange={(e) => setHook(e.target.value)} placeholder="https://n8n.example.com/webhook/..."
-              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
-          </div>
+
+          <button type="button" onClick={() => setMore((v) => !v)}
+            className="w-full flex items-center gap-1.5 text-[11px] text-[#6b7280] hover:text-[#d1d1d8] pt-1">
+            <Icon name={more ? "chevronDown" : "chevronRight"} className="w-3.5 h-3.5" />
+            Дополнительно {!more && <span className="text-[#3a3a4a]">— заполнено автоматически</span>}
+          </button>
+
+          {more && (
+            <div className="space-y-4 border-l-2 border-[#2a2a3a] pl-3">
+              <div className="grid grid-cols-[1fr_80px] gap-3">
+                <div>
+                  <label className="block text-xs text-[#6b7280] mb-1.5">
+                    Слаг {editing && <span className="text-[#3a3a4a]">— неизменяем</span>}
+                  </label>
+                  <input value={editing ? editing.slug : slug} disabled={!!editing}
+                    onChange={(e) => setSlug(slugify(e.target.value))} placeholder="nordflow"
+                    className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono disabled:opacity-50" />
+                </div>
+                <div>
+                  <label className="block text-xs text-[#6b7280] mb-1.5">Эмодзи</label>
+                  <input value={emoji} onChange={(e) => setEmoji(e.target.value)} placeholder="🛡"
+                    className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 text-center" />
+                </div>
+              </div>
+              {!editing && (
+                <div className="text-[10px] text-[#6b7280] -mt-2">
+                  Коллекция Qdrant: <span className="font-mono text-[#7BA8F9]">kb_{slug || "…"}</span> ·
+                  префикс ID диалогов: <span className="font-mono text-[#7BA8F9]">{slug || "…"}_</span>
+                </div>
+              )}
+              <div>
+                <label className="block text-xs text-[#6b7280] mb-1.5">Цвет</label>
+                <div className="flex flex-wrap gap-2">
+                  {SERVICE_COLORS.map((c) => (
+                    <button key={c} type="button" onClick={() => setColor(c)}
+                      className={"w-7 h-7 rounded-lg transition " + (color === c ? "ring-2 ring-offset-2 ring-offset-[#13131a] ring-white/60" : "")}
+                      style={{ background: c }}></button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-[#6b7280] mb-1.5">
+                  Вебхук n8n <span className="text-[#3a3a4a]">— пусто = общий</span>
+                </label>
+                <input value={hook} onChange={(e) => setHook(e.target.value)} placeholder="https://n8n.example.com/webhook/..."
+                  className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+              </div>
+            </div>
+          )}
+
           {editing && (
             <div className="flex items-center justify-between">
               <div>

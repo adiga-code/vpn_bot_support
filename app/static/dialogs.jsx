@@ -1602,7 +1602,8 @@ function KeyCard({ item, actions, onAction }) {
       </div>
       <div className="grid grid-cols-3 gap-1.5 text-center">
         {[["Сервер", item.server || "—"], ["Тариф", item.plan || "—"],
-          ["Устройств", item.devices || 0]].map(([l, v]) => (
+          // null — источник не считал устройства по этому ключу; ноль значит ноль
+          ["Устройств", item.devices ?? "—"]].map(([l, v]) => (
           <div key={l} className="bg-[#0d0d12] rounded-lg px-1.5 py-1">
             <div className="text-[9.5px] text-[#6b7280] truncate">{l}</div>
             <div className="text-[11px] text-[#f1f1f5] truncate">{v}</div>

@@ -326,6 +326,21 @@ class DatabaseManager:
                 created_at        TIMESTAMPTZ DEFAULT NOW()
             )
         """)
+        # business_connection_id — то, что Telegram присылает с каждым
+        # сообщением из подключённого к боту аккаунта поддержки. По нему панель
+        # понимает, какому ВПН-у принадлежит тикет, поэтому в n8n больше не
+        # нужен слаг в переменной.
+        await conn.execute(
+            "ALTER TABLE services ADD COLUMN IF NOT EXISTS "
+            "business_connection_id TEXT NOT NULL DEFAULT ''"
+        )
+        # Индекс частичный: пустая строка у сервисов без business-аккаунта
+        # встречается сколько угодно раз, а занятый id — ровно один раз, иначе
+        # сообщения одного аккаунта уехали бы в два ВПН-а.
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS services_business_connection_id_key
+            ON services (business_connection_id) WHERE business_connection_id <> ''
+        """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS operator_services (
                 operator_id INTEGER NOT NULL REFERENCES operators(id) ON DELETE CASCADE,
@@ -523,9 +538,19 @@ class DatabaseManager:
         row = await self.pool.fetchrow("SELECT * FROM services WHERE slug=$1", slug)
         return dict(row) if row else None
 
+    async def get_service_by_business_id(self, business_id: str) -> Optional[dict]:
+        """Сервис по business_connection_id аккаунта поддержки. Пустую строку
+        не ищем: она стоит у всех сервисов без business-аккаунта."""
+        if not business_id:
+            return None
+        row = await self.pool.fetchrow(
+            "SELECT * FROM services WHERE business_connection_id=$1", str(business_id)
+        )
+        return dict(row) if row else None
+
     async def create_service(
         self, slug: str, name: str, color: str = "#4F8EF7", emoji: str = None,
-        n8n_webhook_url: str = "",
+        n8n_webhook_url: str = "", business_connection_id: str = "",
     ) -> dict:
         """Новый сервис получает собственную коллекцию Qdrant и префикс
         dialog_id — так диалоги двух независимых n8n не столкнутся первичными
@@ -536,22 +561,29 @@ class DatabaseManager:
         )
         row = await self.pool.fetchrow(
             """INSERT INTO services (slug, name, color, emoji, qdrant_collection,
-                                     dialog_id_prefix, n8n_webhook_url, sort_order)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *""",
+                                     dialog_id_prefix, n8n_webhook_url, sort_order,
+                                     business_connection_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *""",
             slug, name, color, emoji, f"kb_{slug}", f"{slug}_", n8n_webhook_url or "", sort_order,
+            (business_connection_id or "").strip(),
         )
         return dict(row)
 
     async def update_service(
         self, service_id: int, name: str, color: str, emoji: str = None,
         n8n_webhook_url: str = "", is_active: bool = True,
+        business_connection_id: str = "",
     ) -> Optional[dict]:
         """slug, коллекция Qdrant и префикс dialog_id неизменяемы: они уже
-        зашиты в воркфлоу n8n, в ключи Redis и в первичные ключи диалогов."""
+        зашиты в воркфлоу n8n, в ключи Redis и в первичные ключи диалогов.
+        business_connection_id, наоборот, меняется: аккаунт поддержки
+        переподключают к боту, и Telegram выдаёт новый id."""
         row = await self.pool.fetchrow(
-            """UPDATE services SET name=$1, color=$2, emoji=$3, n8n_webhook_url=$4, is_active=$5
-               WHERE id=$6 RETURNING *""",
-            name, color, emoji, n8n_webhook_url or "", is_active, service_id,
+            """UPDATE services SET name=$1, color=$2, emoji=$3, n8n_webhook_url=$4, is_active=$5,
+                                   business_connection_id=$6
+               WHERE id=$7 RETURNING *""",
+            name, color, emoji, n8n_webhook_url or "", is_active,
+            (business_connection_id or "").strip(), service_id,
         )
         return dict(row) if row else None
 
@@ -686,7 +718,8 @@ class DatabaseManager:
     _DIALOG_SELECT = """
         SELECT d.*, s.slug AS service_slug, s.name AS service_name,
                s.color AS service_color, s.emoji AS service_emoji,
-               s.qdrant_collection, s.n8n_webhook_url
+               s.qdrant_collection, s.n8n_webhook_url,
+               s.business_connection_id
         FROM dialogs d JOIN services s ON s.id = d.service_id
     """
 
@@ -744,21 +777,30 @@ class DatabaseManager:
     # без неё переключение ИИ в одном ВПН-е гасило бы бота в другом у того же
     # Telegram-пользователя.
 
-    async def sync_n8n_dialog_status(self, chat_id: str, status: str, service_slug: str):
+    @staticmethod
+    def _n8n_keys(dialog: dict) -> list[str]:
+        """Чем n8n метит свои строки в колонке `service`. Один воркфлоу на все
+        сервисы метит их business_connection_id, отдельный воркфлоу на сервис —
+        слагом. Сверяем по обоим, чтобы синхронизация работала при любом из
+        вариантов и не ломалась на переходе между ними."""
+        return [v for v in (dialog.get("service_slug"),
+                            dialog.get("business_connection_id")) if v]
+
+    async def sync_n8n_dialog_status(self, chat_id: str, status: str, dialog: dict):
         try:
             await self.pool.execute(
                 "UPDATE n8n_dialogs SET status=$1 WHERE id=("
-                "  SELECT MAX(id) FROM n8n_dialogs WHERE user_id=$2 AND service=$3)",
-                status, int(chat_id), service_slug,
+                "  SELECT MAX(id) FROM n8n_dialogs WHERE user_id=$2 AND service = ANY($3::text[]))",
+                status, int(chat_id), self._n8n_keys(dialog),
             )
         except Exception as e:
             print(f"[sync_n8n] status update error: {e}")
 
-    async def sync_n8n_dialog_ai_status(self, chat_id: str, ai_enabled: bool, service_slug: str):
+    async def sync_n8n_dialog_ai_status(self, chat_id: str, ai_enabled: bool, dialog: dict):
         try:
             await self.pool.execute(
-                "UPDATE n8n_dialogs SET ai_status=$1 WHERE user_id=$2 AND service=$3",
-                ai_enabled, int(chat_id), service_slug,
+                "UPDATE n8n_dialogs SET ai_status=$1 WHERE user_id=$2 AND service = ANY($3::text[])",
+                ai_enabled, int(chat_id), self._n8n_keys(dialog),
             )
         except Exception as e:
             print(f"[sync_n8n] ai_status update error: {e}")
