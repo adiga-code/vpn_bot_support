@@ -135,6 +135,10 @@ class BotApiProvider(CustomerProvider):
                 traffic_used=_num(k.get("traffic_month_gb")),
                 # Лимит общий на бота и лежит в /meta, у ключа его нет.
                 traffic_limit=0.0,
+                # Счётчик устройств есть только в полной карточке ключа, а её
+                # мы берём для одного активного. У остальных «не знаем» —
+                # честнее нуля, который прочитали бы как «устройств нет».
+                devices=None,
                 active=bool(k.get("status")) and not k.get("blocked"),
             )
             for k in (u.get("keys") or []) if isinstance(k, dict)
@@ -166,6 +170,7 @@ class BotApiProvider(CustomerProvider):
                         k.traffic_limit = _num(detail.get("panel_traffic_limit_gb"))
                         if detail.get("panel_traffic_gb"):
                             k.traffic_used = _num(detail["panel_traffic_gb"])
+                        k.devices = len(devices)
 
         referrals = [
             Referral(tg_id=str(r.get("tgid")), name=r.get("fullname") or r.get("username") or "",
