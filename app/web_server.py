@@ -30,6 +30,7 @@ from app.customer import (
     CUSTOMER_DEFAULTS,
     DANGEROUS as _CUSTOMER_DANGEROUS,
     CustomerService,
+    build_customer_provider,
     known_customer_providers,
 )
 from app.health import MONITORING_DEFAULTS, ServiceHealthMonitor, known_providers
@@ -173,6 +174,19 @@ class ServiceBody(BaseModel):
     emoji: Optional[str] = None
     n8n_webhook_url: str = ""
     is_active: bool = True
+    # business_connection_id аккаунта поддержки: по нему панель узнаёт свой
+    # сервис во входящем сообщении, поэтому воркфлоу n8n один на всех.
+    business_id: str = ""
+    # Support API этого ВПН-а. Заполняются в той же форме, что и сам сервис, и
+    # сохраняются в настройку `customer` — отдельный экран для этого не нужен.
+    # Пустой api_token при правке означает «оставить прежний».
+    api_base_url: str = ""
+    api_token: str = ""
+
+
+class ApiCheckBody(BaseModel):
+    base_url: str = ""
+    token: str = ""
 
 class OperatorServicesBody(BaseModel):
     service_ids: list[int] = []
@@ -497,7 +511,7 @@ def build_app(
         dialog = await require_dialog(dialog_id, operator)
         new_value = not dialog["ai_enabled"]
         await db.update_ai_enabled(dialog_id, new_value)
-        await db.sync_n8n_dialog_ai_status(dialog["chat_id"], new_value, dialog["service_slug"])
+        await db.sync_n8n_dialog_ai_status(dialog["chat_id"], new_value, dialog)
         await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], new_value, dialog)
         # Keep the status model coherent: AI back on while queued → «ИИ» section;
         # AI off while unattended in «ИИ» → escalate to humans.
@@ -776,16 +790,78 @@ def build_app(
 
     # ── Services (ВПН-ы) ──────────────────────────────────────────────────────
 
-    def _fmt_service(s: dict, count: int = 0) -> dict:
+    def _fmt_service(s: dict, count: int = 0, api: dict = None) -> dict:
+        cfg = (api or {}).get("config") or {}
         return {
             "id": s["id"], "slug": s["slug"], "name": s["name"],
             "color": s["color"], "emoji": s.get("emoji"),
             "qdrantCollection": s["qdrant_collection"],
             "dialogIdPrefix": s["dialog_id_prefix"],
             "n8nWebhookUrl": s.get("n8n_webhook_url") or "",
+            "businessId": s.get("business_connection_id") or "",
             "isActive": s["is_active"], "sortOrder": s["sort_order"],
             "activeCount": count,
+            # Токен наружу не отдаём никогда: форма показывает «сохранён» и
+            # отправляет пустое поле, если менять его не собираются.
+            "apiBaseUrl": cfg.get("base_url") or "",
+            "hasApiToken": bool(cfg.get("token")),
         }
+
+    async def _save_service_api(service_id: int, base_url: str, token: str) -> None:
+        """URL и токен Support API живут в настройке `customer` того же сервиса
+        — там же, где их ищет карточка клиента. Пустой токен означает «не
+        трогать сохранённый», иначе правка названия стирала бы доступ."""
+        stored = await db.get_setting_json("customer", None, service_id) or {}
+        cfg = dict(stored.get("config") or {})
+        base_url = (base_url or "").strip().rstrip("/")
+        if not base_url and not token:
+            return
+        cfg["base_url"] = base_url or cfg.get("base_url", "")
+        if token:
+            cfg["token"] = token.strip()
+        # remnawave и http выбирают осознанно на экране «Клиенты», и форма
+        # сервиса их не перебивает. Всё остальное (в том числе мок по
+        # умолчанию) при заполненном URL становится Support API.
+        provider = stored.get("provider")
+        await db.set_setting_json("customer", {
+            **CUSTOMER_DEFAULTS, **stored,
+            "provider": provider if provider in ("remnawave", "http") else "bot_api",
+            "config": cfg,
+        }, service_id)
+        customers.invalidate(service_id)
+
+    async def _check_business_id_free(business_id: str, service_id: int | None) -> None:
+        """Один аккаунт поддержки — один ВПН. В БД это стережёт уникальный
+        индекс, но человеку нужен внятный текст, а не ошибка драйвера."""
+        business_id = (business_id or "").strip()
+        if not business_id:
+            return
+        other = await db.get_service_by_business_id(business_id)
+        if other and other["id"] != service_id:
+            raise HTTPException(409, f"Этот business_id уже занят сервисом «{other['name']}»")
+
+    @app.post("/api/services/test-connection")
+    async def test_service_connection(body: ApiCheckBody,
+                                      operator: dict = Depends(require_auth)):
+        """Проверка адреса и токена до сохранения сервиса: дёргаем /meta и
+        показываем, что за бот ответил. Дешевле, чем завести сервис с опечаткой
+        в токене и выяснить это на живом клиенте."""
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        base_url = (body.base_url or "").strip().rstrip("/")
+        if not base_url:
+            raise HTTPException(400, "Укажите адрес API")
+        provider = build_customer_provider(
+            "bot_api", {}, {"base_url": base_url, "token": (body.token or "").strip()})
+        if not provider:
+            raise HTTPException(500, "Провайдер bot_api не зарегистрирован")
+        try:
+            meta = await provider.meta()
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
+        return {"ok": True, "botId": meta.get("bot_id") or "",
+                "botName": meta.get("bot_name") or "",
+                "scopes": meta.get("scopes") or []}
 
     @app.get("/api/services")
     async def get_services(operator: dict = Depends(require_auth)):
@@ -798,10 +874,15 @@ def build_app(
 
     @app.get("/api/services/all")
     async def get_all_services(operator: dict = Depends(require_auth)):
-        """Полный список для админки — включая выключенные сервисы."""
+        """Полный список для админки — включая выключенные сервисы. Вместе с
+        адресом Support API, чтобы форма подключения открывалась заполненной."""
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
-        return [_fmt_service(s) for s in await db.get_services(only_active=False)]
+        out = []
+        for s in await db.get_services(only_active=False):
+            api = await db.get_setting_json("customer", None, s["id"]) or {}
+            out.append(_fmt_service(s, 0, api))
+        return out
 
     @app.post("/api/services")
     async def create_service(body: ServiceBody, operator: dict = Depends(require_auth)):
@@ -815,9 +896,12 @@ def build_app(
             raise HTTPException(400, str(e))
         if await db.get_service_by_slug(slug):
             raise HTTPException(409, "Сервис с таким слагом уже есть")
+        await _check_business_id_free(body.business_id, None)
         service = await db.create_service(
             slug, body.name.strip(), body.color, body.emoji, body.n8n_webhook_url,
+            body.business_id,
         )
+        await _save_service_api(service["id"], body.api_base_url, body.api_token)
         # Пустая коллекция создаётся сразу — воркфлоу n8n сможет обращаться к
         # ней ещё до первой загрузки базы знаний.
         try:
@@ -825,7 +909,9 @@ def build_app(
             await ensure_collection(settings.QDRANT_URL, service["qdrant_collection"])
         except Exception as e:
             print(f"[services] ensure_collection failed: {e}")
-        return _fmt_service(service)
+        await ws.broadcast({"type": "services_changed"})
+        return _fmt_service(service, 0,
+                            await db.get_setting_json("customer", None, service["id"]))
 
     @app.put("/api/services/{service_id}")
     async def update_service(service_id: int, body: ServiceBody,
@@ -834,14 +920,17 @@ def build_app(
             raise HTTPException(403, "Admin only")
         if not body.name.strip():
             raise HTTPException(400, "Название обязательно")
+        await _check_business_id_free(body.business_id, service_id)
         service = await db.update_service(
             service_id, body.name.strip(), body.color, body.emoji,
-            body.n8n_webhook_url, body.is_active,
+            body.n8n_webhook_url, body.is_active, body.business_id,
         )
         if not service:
             raise HTTPException(404)
+        await _save_service_api(service_id, body.api_base_url, body.api_token)
         await ws.broadcast({"type": "services_changed"})
-        return _fmt_service(service)
+        return _fmt_service(service, 0,
+                            await db.get_setting_json("customer", None, service_id))
 
     @app.delete("/api/services/{service_id}")
     async def delete_service(service_id: int, operator: dict = Depends(require_auth)):

@@ -74,10 +74,27 @@ class RabbitMQConsumer:
     # ── Handlers ──────────────────────────────────────────────────────────────
 
     async def _resolve_service(self, data: dict) -> dict | None:
-        """Сервис (ВПН) входящего события. Воркфлоу n8n кладёт слаг в поле
-        `service`; если поля нет — это старый одно-сервисный воркфлоу, и
-        событие относится к первому (мигрированному) сервису. Неизвестный слаг
-        — сообщение отбрасывается: тикет без сервиса некому показывать."""
+        """Сервис (ВПН) входящего события.
+
+        Основной способ — `business_id`: Telegram присылает его с каждым
+        сообщением из аккаунта поддержки, к которому подключён бот, и в панели
+        он записан в карточке сервиса. Поэтому воркфлоу n8n один на всех и
+        ничего про сервисы не знает.
+
+        Дальше — `service` со слагом, как в старых воркфлоу; если нет и его,
+        событие относится к первому (мигрированному) сервису. Неизвестный
+        business_id или слаг — сообщение отбрасывается: свалить чужой тикет в
+        первый попавшийся ВПН хуже, чем не принять его вовсе.
+        """
+        business_id = str(data.get("business_id")
+                          or data.get("business_connection_id") or "").strip()
+        if business_id:
+            service = await self.db.get_service_by_business_id(business_id)
+            if not service:
+                print(f"[consumer] неизвестный business_id '{business_id}' — "
+                      f"событие отброшено; впишите его в карточку сервиса")
+            return service
+
         slug = (data.get("service") or "").strip().lower()
         if not slug:
             services = await self.db.get_services()
@@ -147,7 +164,10 @@ class RabbitMQConsumer:
             await self.db.update_operator_called(dialog_id, True)
 
         if is_new:
-            await self.db.sync_n8n_dialog_status(chat_id, "active", service["slug"])
+            await self.db.sync_n8n_dialog_status(chat_id, "active", {
+                "service_slug": service["slug"],
+                "business_connection_id": service.get("business_connection_id") or "",
+            })
 
         updated = await self.db.get_dialog(dialog_id)
         username = updated.get("user_username") or dialog_id

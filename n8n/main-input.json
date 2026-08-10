@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "updates": ["message", "callback_query"],
+        "updates": ["message", "business_message", "callback_query"],
         "additionalFields": { "download": false }
       },
       "type": "n8n-nodes-base.telegramTrigger",
@@ -40,7 +40,7 @@
                 "conditions": [
                   {
                     "id": "1ecb4703-9f5c-4ae7-b61e-de6c1a52e2a5",
-                    "leftValue": "={{ $json.message }}",
+                    "leftValue": "={{ $json.message || $json.business_message }}",
                     "rightValue": "",
                     "operator": { "type": "object", "operation": "exists", "singleValue": true }
                   }
@@ -64,7 +64,7 @@
       "parameters": {
         "queue": "vpn_bot.incoming",
         "sendInputData": false,
-        "message": "={{ JSON.stringify({ type: \"callback\", service: $vars.SERVICE_SLUG, chat_id: String($json.callback_query.from.id), callback_data: $json.callback_query.data }) }}",
+        "message": "={{ JSON.stringify({ type: \"callback\", business_id: ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id, service: $vars.SERVICE_SLUG, chat_id: String($json.callback_query.from.id), callback_data: $json.callback_query.data }) }}",
         "options": {}
       },
       "type": "n8n-nodes-base.rabbitmq",
@@ -96,9 +96,9 @@
         "returnAll": true,
         "where": {
           "values": [
-            { "column": "user_id", "value": "={{ $('Telegram Trigger1').item.json.message.from.id }}" },
+            { "column": "user_id", "value": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).from.id }}" },
             { "column": "status", "value": "active" },
-            { "column": "service", "value": "={{ $vars.SERVICE_SLUG }}" }
+            { "column": "service", "value": "={{ (($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id || $vars.SERVICE_SLUG) }}" }
           ]
         },
         "sort": { "values": [{ "column": "id", "direction": "DESC" }] },
@@ -143,11 +143,11 @@
           "mappingMode": "defineBelow",
           "value": {
             "ai_status": true,
-            "username": "={{ $('Telegram Trigger1').item.json.message.from.username }}",
-            "user_id": "={{ $('Telegram Trigger1').item.json.message.from.id }}",
+            "username": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).from.username }}",
+            "user_id": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).from.id }}",
             "created_at": "={{ $now }}",
             "status": "active",
-            "service": "={{ $vars.SERVICE_SLUG }}"
+            "service": "={{ (($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id || $vars.SERVICE_SLUG) }}"
           },
           "matchingColumns": ["id"],
           "schema": [],
@@ -188,7 +188,7 @@
                 "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
                 "conditions": [
                   {
-                    "leftValue": "={{ $('Telegram Trigger1').item.json.message.sticker }}",
+                    "leftValue": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).sticker }}",
                     "rightValue": "",
                     "operator": { "type": "object", "operation": "exists", "singleValue": true },
                     "id": "8f761088-9ab4-4260-bed2-e89186c1d07b"
@@ -205,7 +205,7 @@
                 "conditions": [
                   {
                     "id": "5ef13e73-450a-4c69-8bfc-5a05397a605d",
-                    "leftValue": "={{ $('Telegram Trigger1').item.json.message.photo }}",
+                    "leftValue": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).photo }}",
                     "rightValue": "",
                     "operator": { "type": "array", "operation": "exists", "singleValue": true }
                   }
@@ -221,7 +221,7 @@
                 "conditions": [
                   {
                     "id": "2eea8441-e9e4-489d-85ee-4842f61a85b2",
-                    "leftValue": "={{ $('Telegram Trigger1').item.json.message.voice }}",
+                    "leftValue": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).voice }}",
                     "rightValue": "",
                     "operator": { "type": "object", "operation": "exists", "singleValue": true }
                   }
@@ -237,7 +237,7 @@
                 "conditions": [
                   {
                     "id": "0b4d0d9e-5894-4d75-9b65-25acf473fdba",
-                    "leftValue": "={{ $('Telegram Trigger1').item.json.message.video }}",
+                    "leftValue": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).video }}",
                     "rightValue": "",
                     "operator": { "type": "object", "operation": "exists", "singleValue": true }
                   }
@@ -275,7 +275,7 @@
     },
     {
       "parameters": {
-        "url": "=https://api.telegram.org/bot{{ $vars.TG_TOKEN }}/getFile?file_id={{ $('Telegram Trigger1').item.json.message.sticker.thumb.file_id }}",
+        "url": "=https://api.telegram.org/bot{{ $vars.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).sticker.thumb.file_id }}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -297,7 +297,7 @@
     },
     {
       "parameters": {
-        "url": "=https://api.telegram.org/bot{{ $vars.TG_TOKEN }}/getFile?file_id={{ $('Telegram Trigger1').item.json.message.photo.at(-1).file_id }}",
+        "url": "=https://api.telegram.org/bot{{ $vars.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).photo.at(-1).file_id }}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -319,7 +319,7 @@
     },
     {
       "parameters": {
-        "url": "=https://api.telegram.org/bot{{ $vars.TG_TOKEN }}/getFile?file_id={{ $('Telegram Trigger1').item.json.message.voice.file_id }}",
+        "url": "=https://api.telegram.org/bot{{ $vars.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).voice.file_id }}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -341,7 +341,7 @@
     },
     {
       "parameters": {
-        "url": "=https://api.telegram.org/bot{{ $vars.TG_TOKEN }}/getFile?file_id={{ $('Telegram Trigger1').item.json.message.video.file_id }}",
+        "url": "=https://api.telegram.org/bot{{ $vars.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).video.file_id }}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -401,7 +401,7 @@
         "assignments": {
           "assignments": [
             { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "", "type": "string" },
-            { "id": "79de50d1-902e-4f61-880d-cb735dd83cdf", "name": "file_id", "value": "={{ $('Telegram Trigger1').item.json.message.sticker.file_id }}", "type": "string" },
+            { "id": "79de50d1-902e-4f61-880d-cb735dd83cdf", "name": "file_id", "value": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).sticker.file_id }}", "type": "string" },
             { "id": "0eeb5121-c3a3-4120-bed0-a882ae9ef32d", "name": "dialog_id", "value": "={{ $('Switch2').item.json.id }}", "type": "string" },
             { "id": "e2ed7b8b-21e7-4081-af0b-feec20eb3b8b", "name": "file_type", "value": "sticker", "type": "string" }
           ]
@@ -418,7 +418,7 @@
       "parameters": {
         "assignments": {
           "assignments": [
-            { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "={{ $('Telegram Trigger1').item.json.message.caption }}", "type": "string" },
+            { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).caption }}", "type": "string" },
             { "id": "20eaa7bd-6977-4bed-a2ed-606f3b2edafd", "name": "file_id", "value": "={{ $json.url }}", "type": "string" },
             { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $('Switch2').item.json.id }}", "type": "string" },
             { "id": "e86e8b7b-110f-4431-801e-e3cb30efe38c", "name": "file_type", "value": "photo", "type": "string" }
@@ -472,7 +472,7 @@
       "parameters": {
         "assignments": {
           "assignments": [
-            { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "={{ $('Telegram Trigger1').item.json.message.text }}", "type": "string" },
+            { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).text }}", "type": "string" },
             { "id": "20eaa7bd-6977-4bed-a2ed-606f3b2edafd", "name": "file_id", "value": "=", "type": "string" },
             { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $json.id }}", "type": "string" },
             { "id": "1c621010-38bf-4b9e-a49d-9498242dccee", "name": "file_type", "value": "text", "type": "string" }
@@ -493,14 +493,14 @@
         "columns": {
           "mappingMode": "defineBelow",
           "value": {
-            "user_id": "={{ $('Telegram Trigger1').item.json.message.from.id }}",
+            "user_id": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).from.id }}",
             "dialog_id": "={{ $json.dialog_id }}",
             "message": "={{ $json.message }}",
             "type": "user_message",
             "created_at": "={{ $now }}",
             "file_id": "={{ $json.file_id }}",
             "file_type": "={{ $json.file_type }}",
-            "service": "={{ $vars.SERVICE_SLUG }}"
+            "service": "={{ (($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id || $vars.SERVICE_SLUG) }}"
           },
           "matchingColumns": ["id"],
           "schema": [],
@@ -542,7 +542,7 @@
       "parameters": {
         "queue": "vpn_bot.incoming",
         "sendInputData": false,
-        "message": "={{ JSON.stringify({\n  \"type\": \"user_message\",\n  \"service\": $vars.SERVICE_SLUG,\n  \"dialog_id\": $json.dialog_id.toString(),\n  \"chat_id\": $('Telegram Trigger1').item.json.message.chat.id.toString(),\n  \"user_username\": $('Telegram Trigger1').item.json.message.chat.username,\n  \"user_name\": $('Telegram Trigger1').item.json.message.chat.first_name,\n  \"message\": $json.message,\n  \"ai_enabled\": $('Получить диалог1').item.json.ai_status,\n  \"file_id\": $json.file_id,\n  \"file_type\": $json.file_type\n}) }}",
+        "message": "={{ JSON.stringify({\n  \"type\": \"user_message\",\n  \"service\": $vars.SERVICE_SLUG,\n  \"business_id\": ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id,\n  \"dialog_id\": $json.dialog_id.toString(),\n  \"chat_id\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id.toString(),\n  \"user_username\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.username,\n  \"user_name\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.first_name,\n  \"message\": $json.message,\n  \"ai_enabled\": $('Получить диалог1').item.json.ai_status,\n  \"file_id\": $json.file_id,\n  \"file_type\": $json.file_type\n}) }}",
         "options": {}
       },
       "type": "n8n-nodes-base.rabbitmq",
@@ -852,7 +852,7 @@
     {
       "parameters": {
         "operation": "push",
-        "list": "=mes:{{ $vars.SERVICE_SLUG }}:{{ $('Telegram Trigger1').item.json.message.chat.id }}",
+        "list": "=mes:{{ (($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id || $vars.SERVICE_SLUG) }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
         "messageData": "={{ JSON.stringify({ id: $('Telegram Trigger1').first().json.message.message_id, text: $json.prompt }) }}",
         "tail": true
       },
@@ -866,7 +866,7 @@
     {
       "parameters": {
         "operation": "incr",
-        "key": "=key:{{ $vars.SERVICE_SLUG }}:{{ $('Telegram Trigger1').item.json.message.chat.id }}",
+        "key": "=key:{{ (($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id || $vars.SERVICE_SLUG) }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
         "expire": true
       },
       "type": "n8n-nodes-base.redis",
@@ -899,7 +899,7 @@
       "parameters": {
         "operation": "get",
         "propertyName": "keyafter",
-        "key": "=key:{{ $vars.SERVICE_SLUG }}:{{ $('Telegram Trigger1').item.json.message.chat.id }}",
+        "key": "=key:{{ (($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id || $vars.SERVICE_SLUG) }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
         "options": {}
       },
       "type": "n8n-nodes-base.redis",
@@ -936,7 +936,7 @@
       "parameters": {
         "operation": "get",
         "propertyName": "messages",
-        "key": "=mes:{{ $vars.SERVICE_SLUG }}:{{ $('Telegram Trigger1').item.json.message.chat.id }}",
+        "key": "=mes:{{ (($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id || $vars.SERVICE_SLUG) }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
         "options": {}
       },
       "type": "n8n-nodes-base.redis",
@@ -949,7 +949,7 @@
     {
       "parameters": {
         "operation": "delete",
-        "key": "=mes:{{ $vars.SERVICE_SLUG }}:{{ $('Telegram Trigger1').item.json.message.chat.id }}"
+        "key": "=mes:{{ (($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id || $vars.SERVICE_SLUG) }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}"
       },
       "type": "n8n-nodes-base.redis",
       "typeVersion": 1,
@@ -980,7 +980,7 @@
           "mappingMode": "defineBelow",
           "value": {
             "ai_enabled": true,
-            "service": "={{ $vars.SERVICE_SLUG }}",
+            "service": "={{ (($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id || $vars.SERVICE_SLUG) }}",
             "chat_id": "={{ $('Если ИИ включена для чата1').item.json.user_id }}",
             "dialog_id": "={{ $('Если ИИ включена для чата1').item.json.dialog_id }}",
             "message": "={{ $json.message }}"

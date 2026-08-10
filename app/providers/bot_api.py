@@ -216,6 +216,12 @@ class BotApiProvider(CustomerProvider):
             raw=u,
         )
 
+    async def meta(self) -> dict:
+        """`GET /meta` — самый дешёвый запрос, каким проверяют связь: не ходит
+        в VPN-панель и сразу показывает, какому боту принадлежит токен и какие
+        скоупы выданы."""
+        return await self._request("GET", "/meta")
+
     async def options(self, chat_id: str) -> dict:
         out = {}
         servers = await self._maybe(self._request("GET", "/servers"), "servers")

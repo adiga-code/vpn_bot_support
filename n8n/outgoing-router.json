@@ -136,7 +136,7 @@
         "url": "=https://api.telegram.org/bot{{ $vars.TG_TOKEN }}/sendMessage",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ chat_id: String($json.chat_id), text: $json.text, reply_markup: { inline_keyboard: $json.keyboard } }) }}",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ chat_id: String($json.chat_id), text: $json.text, reply_markup: { inline_keyboard: $json.keyboard } }, $json.business_id ? { business_connection_id: $json.business_id } : {})) }}",
         "options": {}
       },
       "id": "88043eeb-c6c4-4f82-8a89-191707d6e68e",

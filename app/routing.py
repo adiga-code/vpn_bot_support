@@ -132,7 +132,7 @@ class RoutingEngine:
             return
         dialog_id, chat_id = dialog["dialog_id"], dialog["chat_id"]
         await self.db.update_ai_enabled(dialog_id, False)
-        await self.db.sync_n8n_dialog_ai_status(chat_id, False, dialog["service_slug"])
+        await self.db.sync_n8n_dialog_ai_status(chat_id, False, dialog)
         await self.n8n.notify_ai_toggled(dialog_id, chat_id, False, dialog)
 
     async def _notify_operator_called(self, dialog: dict):
@@ -309,7 +309,7 @@ class RoutingEngine:
     async def close(self, dialog_id: str, chat_id: str, closed_by: str) -> dict:
         await self.db.move_to_closed(dialog_id)
         updated = await self._emit(dialog_id, "Диалог закрыт оператором")
-        await self.db.sync_n8n_dialog_status(chat_id, "closed", updated["service_slug"])
+        await self.db.sync_n8n_dialog_status(chat_id, "closed", updated)
         await self.n8n.notify_dialog_closed(dialog_id, chat_id, closed_by, updated)
         await self.drain()  # the freed slot may serve the queue
         return updated
@@ -318,7 +318,7 @@ class RoutingEngine:
         """«Открыть снова»: back to the queue, unassigned; AI stays off."""
         await self.db.move_to_queue(dialog_id)
         updated = await self._emit(dialog_id, "Диалог переоткрыт оператором")
-        await self.db.sync_n8n_dialog_status(chat_id, "active", updated["service_slug"])
+        await self.db.sync_n8n_dialog_status(chat_id, "active", updated)
         await self.drain()
         return updated
 
