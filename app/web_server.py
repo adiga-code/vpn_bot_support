@@ -625,7 +625,8 @@ def build_app(
             raise HTTPException(403, "Действие доступно только администратору")
         dialog = await require_dialog(dialog_id, operator)
         service = await db.get_service(dialog["service_id"])
-        result = await customers.execute(service, dialog, action, body or {})
+        result = await customers.execute(service, dialog, action, body or {},
+                                         operator=operator["name"])
         if not result.ok:
             raise HTTPException(502, result.message)
         # След в переписке: кто и что сделал с аккаунтом клиента. Отдельная
