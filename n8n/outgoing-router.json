@@ -2,6 +2,18 @@
   "name": "Outgoing Router",
   "nodes": [
     {
+      "parameters": {
+        "jsCode": "// Константы воркфлоу. Settings → Variables ($vars) — платная фича n8n, в self-hosted community её нет, поэтому значения живут здесь: правятся в одном месте на воркфлоу, ниже на них ссылаются как $('Константы').first().json.TG_TOKEN\nconst C = {\n  TG_TOKEN: 'ТОКЕН_БОТА_ОТ_BOTFATHER',\n  PANEL_URL: 'https://адрес-панели',\n  N8N_API_KEY: 'та же строка, что в .env панели',\n};\n\n// Входящий элемент отдаём дальше как есть: ноды ниже читают свои поля из $json, и подмена содержимого их бы сломала.\nreturn $input.all().map((item) => ({ json: { ...item.json, ...C } }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [512, 4560],
+      "id": "c0n5tan7-a1a9-4e51-9c01-000000000004",
+      "name": "Константы",
+      "notesInFlow": true,
+      "notes": "Токен бота, адрес панели и ключ API — вместо платного Settings → Variables."
+    },
+    {
       "parameters": { "httpMethod": "POST", "path": "vpn-bot-outgoing", "options": {} },
       "id": "b6e4e885-392b-4cb5-9a98-f940878b34ef",
       "name": "Webhook исходящих",
@@ -12,7 +24,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Проверка API-ключа и распаковка тела вебхука.\n// ИМЯ НОДЫ НЕ МЕНЯТЬ — на неё ссылаются через $('Распарсить JSON').\nconst item = $input.first().json;\nconst headers = item.headers || {};\nconst expected = $vars.N8N_API_KEY || '';\n\nif (expected && headers['x-api-key'] !== expected) {\n  console.error('Webhook: неверный X-API-Key, событие отброшено');\n  return [];\n}\n\nconst raw = item.body;\nif (!raw) return [];\n\ntry {\n  const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;\n  return [{ json: parsed }];\n} catch (error) {\n  console.error('JSON parse error:', error.message);\n  return [{ json: { type: 'parse_error', error: error.message, raw } }];\n}"
+        "jsCode": "// Проверка API-ключа и распаковка тела вебхука.\n// ИМЯ НОДЫ НЕ МЕНЯТЬ — на неё ссылаются через $('Распарсить JSON').\nconst item = $input.first().json;\nconst headers = item.headers || {};\nconst expected = $('Константы').first().json.N8N_API_KEY || '';\n\nif (expected && headers['x-api-key'] !== expected) {\n  console.error('Webhook: неверный X-API-Key, событие отброшено');\n  return [];\n}\n\nconst raw = item.body;\nif (!raw) return [];\n\ntry {\n  const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;\n  return [{ json: parsed }];\n} catch (error) {\n  console.error('JSON parse error:', error.message);\n  return [{ json: { type: 'parse_error', error: error.message, raw } }];\n}"
       },
       "id": "099fe748-f911-4851-826b-260eb8af6e7e",
       "name": "Распарсить JSON",
@@ -84,7 +96,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const d = $input.first().json;\nconst out = {\n  dialog_id: d.dialog_id,\n  chat_id: String(d.chat_id),\n  message: d.message || '',\n  message_id: d.message_id\n};\nif (d.file_url) {\n  out.file_id = d.file_url;\n  out.file_type = d.file_type || 'document';\n} else if (d.file_id) {\n  out.file_id = d.file_id;\n  out.file_type = d.file_type || 'document';\n}\nreturn [{ json: out }];"
+        "jsCode": "const d = $input.first().json;\nconst out = {\n  dialog_id: d.dialog_id,\n  chat_id: String(d.chat_id),\n  message: d.message || '',\n  message_id: d.message_id,\n  // Ответ в business-чат Telegram принимает только вместе с этим id;\n  // у обычного чата поле пустое, и дальше его просто не подставят.\n  business_id: d.business_id || ''\n};\nif (d.file_url) {\n  out.file_id = d.file_url;\n  out.file_type = d.file_type || 'document';\n} else if (d.file_id) {\n  out.file_id = d.file_id;\n  out.file_type = d.file_type || 'document';\n}\nreturn [{ json: out }];"
       },
       "id": "6b7f8f76-f0fa-49ad-9baa-23bcc89c4b46",
       "name": "Подготовить файл",
@@ -133,7 +145,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $vars.TG_TOKEN }}/sendMessage",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/sendMessage",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify(Object.assign({ chat_id: String($json.chat_id), text: $json.text, reply_markup: { inline_keyboard: $json.keyboard } }, $json.business_id ? { business_connection_id: $json.business_id } : {})) }}",
@@ -147,7 +159,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const d = $input.first().json;\nreturn [{ json: { chat_id: String(d.chat_id), message: d.text } }];"
+        "jsCode": "const d = $input.first().json;\nreturn [{ json: {\n  chat_id: String(d.chat_id),\n  message: d.text,\n  dialog_id: d.dialog_id,\n  message_id: d.message_id,\n  business_id: d.business_id || ''\n} }];"
       },
       "id": "2ef4b98b-ab19-4f23-a9d8-83da9359c772",
       "name": "Нормализовать text→message",
@@ -280,7 +292,8 @@
     }
   ],
   "connections": {
-    "Webhook исходящих": { "main": [[{ "node": "Распарсить JSON", "type": "main", "index": 0 }]] },
+    "Webhook исходящих": { "main": [[{ "node": "Константы", "type": "main", "index": 0 }]] },
+    "Константы": { "main": [[{ "node": "Распарсить JSON", "type": "main", "index": 0 }]] },
     "Распарсить JSON": { "main": [[{ "node": "Switch по type", "type": "main", "index": 0 }]] },
     "Switch по type": {
       "main": [

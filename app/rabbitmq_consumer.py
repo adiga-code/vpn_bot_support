@@ -105,20 +105,37 @@ class RabbitMQConsumer:
         return service
 
     @staticmethod
-    def _qualify(service: dict, dialog_id) -> str:
+    def _qualify(service: dict, dialog_id, chat_id=None) -> str:
         """dialog_id из n8n → глобально уникальный ключ. Префикс разводит
         идентификаторы независимых инстансов n8n, которые могут выдать
-        одинаковые номера; у мигрированного сервиса он пустой."""
+        одинаковые номера; у мигрированного сервиса он пустой.
+
+        Если n8n прислал пустой или нулевой идентификатор — а так бывает, когда
+        колонка `n8n_dialogs.id` не автоинкрементная и каждая вставка получает
+        один и тот же ноль, — ключ строится от chat_id. Иначе все клиенты
+        сервиса слились бы в один тикет: `dialogs.dialog_id` первичный ключ, и
+        upsert перезаписал бы чужую строку вместе с chat_id.
+        """
         prefix = service["dialog_id_prefix"]
-        raw = str(dialog_id)
+        raw = str(dialog_id if dialog_id is not None else "").strip()
+        try:
+            usable = bool(raw) and int(float(raw)) > 0
+        except ValueError:
+            usable = bool(raw)          # нечисловой, но непустой — доверяем n8n
+        if not usable:
+            if chat_id is None:
+                raise ValueError("dialog_id пустой, и chat_id не из чего взять")
+            print(f"[consumer] n8n прислал dialog_id={raw!r} — ключ построен от "
+                  f"chat_id; проверьте, что n8n_dialogs.id автоинкрементный")
+            raw = f"chat_{chat_id}"
         return raw if not prefix or raw.startswith(prefix) else prefix + raw
 
     async def _handle_user_message(self, data: dict):
         service = await self._resolve_service(data)
         if not service:
             return
-        dialog_id = self._qualify(service, data["dialog_id"])
         chat_id = str(data["chat_id"])
+        dialog_id = self._qualify(service, data.get("dialog_id"), chat_id)
         text = data.get("message", "")
         file_id = data.get("file_id")
         file_type = data.get("file_type", "text")
@@ -232,7 +249,9 @@ class RabbitMQConsumer:
         service = await self._resolve_service(data)
         if not service:
             return
-        dialog_id = self._qualify(service, data["dialog_id"])
+        # chat_id тот же, что и во входящем: ИИ-агент кладёт его в ai_response,
+        # поэтому при нулевом dialog_id ответ попадёт в тот же тикет.
+        dialog_id = self._qualify(service, data.get("dialog_id"), data.get("chat_id"))
         text = data.get("message", "")
 
         dialog = await self.db.get_dialog(dialog_id)
