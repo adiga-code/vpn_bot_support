@@ -57,6 +57,15 @@ def _day(value) -> str:
     return str(value).split("T")[0]
 
 
+def _id(value):
+    """Идентификатор пользователя для тела запроса. В путях он подставляется
+    как есть, а в JSON тип важен: у одних сборок это число, у других UUID.
+    Слепой int() на UUID падал ValueError, и оператор видел в тикете сырой
+    питоновский текст вместо ответа панели."""
+    text = str(value)
+    return int(text) if text.isdigit() else text
+
+
 class RemnawaveProvider(CustomerProvider):
     """Remnawave: подписки, трафик, сроки и устройства."""
 
@@ -74,7 +83,17 @@ class RemnawaveProvider(CustomerProvider):
         async with aiohttp.ClientSession(timeout=timeout) as s:
             async with s.request(method, base + path, params=params, json=json,
                                  headers=headers) as r:
-                body = await r.json(content_type=None) if r.content_length != 0 else {}
+                # Смотрим на само тело, а не на Content-Length: у chunked-ответов
+                # и у большинства 204 заголовка нет вовсе, и проверка на его
+                # значение пропускала пустое тело в json() — например, key_delete
+                # отчитывался ошибкой после успешного удаления.
+                text = await r.text()
+                body = {}
+                if text:
+                    try:
+                        body = await r.json(content_type=None)
+                    except Exception:
+                        body = {}
                 if r.status >= 400:
                     msg = ""
                     if isinstance(body, dict):
@@ -162,7 +181,12 @@ class RemnawaveProvider(CustomerProvider):
                 expires_at=_day(u.get("expireAt")),
                 traffic_used=_gb((u.get("userTraffic") or {}).get("usedTrafficBytes")),
                 traffic_limit=_gb(u.get("trafficLimitBytes")),
-                devices=int(u.get("hwidDeviceLimit") or 0),
+                # hwidDeviceLimit — это ЛИМИТ устройств, а не их число, и в
+                # карточке под подписью «Устройств» он читался бы как счётчик.
+                # Реальный счётчик есть только у ключа, для которого мы ниже
+                # запросили список; у остальных «не знаем» — карточка нарисует
+                # «—», что честнее нуля.
+                devices=None,
                 active=u.get("status") == "ACTIVE",
             )
             for u in users
@@ -171,6 +195,9 @@ class RemnawaveProvider(CustomerProvider):
         main = next((u for u in users if u.get("status") == "ACTIVE"), users[0])
         status = _STATUS.get(main.get("status"), "active")
         devices = await self._devices(main.get("id"))
+        for k in keys:
+            if k.id == str(main.get("id")):
+                k.devices = len(devices)
 
         return CustomerProfile(
             tg_id=str(chat_id),
@@ -189,6 +216,7 @@ class RemnawaveProvider(CustomerProvider):
             traffic_limit=round(sum(k.traffic_limit for k in keys), 2),
             keys=keys,
             devices=devices,
+            devices_key_id=str(main.get("id")) if devices else "",
             raw=main,
         )
 
@@ -262,7 +290,7 @@ class RemnawaveProvider(CustomerProvider):
         base = datetime.fromisoformat(str(current).replace("Z", "+00:00"))
         new = base + timedelta(days=days)
         await self._request("PATCH", "/api/users", json={
-            "id": int(key_id),
+            "id": _id(key_id),
             "expireAt": new.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
         })
         return ActionResult(ok=True,
@@ -289,7 +317,7 @@ class RemnawaveProvider(CustomerProvider):
         if current == 0:
             return ActionResult(ok=False, message="У клиента безлимитный тариф — докупать нечего")
         await self._request("PATCH", "/api/users", json={
-            "id": int(u["id"]),
+            "id": _id(u["id"]),
             "trafficLimitBytes": current + int(gb) * GB,
         })
         return ActionResult(ok=True, message=f"Добавлено {gb} ГБ трафика")

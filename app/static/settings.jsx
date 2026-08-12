@@ -799,7 +799,8 @@ function ServiceModal({ editing, onSave, onClose }) {
     setCheck("…");
     try {
       const r = await window.apiFetch("POST", "/api/services/test-connection",
-                                      { base_url: apiUrl.trim(), token: token.trim() });
+                                      { base_url: apiUrl.trim(), token: token.trim(),
+                                        service_id: editing?.id ?? null });
       setCheck(r);
     } catch (e) {
       setCheck({ ok: false, error: e?.detail || "Не удалось проверить" });

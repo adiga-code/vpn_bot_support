@@ -187,6 +187,10 @@ class ServiceBody(BaseModel):
 class ApiCheckBody(BaseModel):
     base_url: str = ""
     token: str = ""
+    # Правка сохранённого сервиса: форма шлёт пустой токен, когда менять его не
+    # собираются, и проверка должна взять сохранённый — иначе она уходит с
+    # пустым Bearer и рисует «Связи нет» на исправном сервисе.
+    service_id: Optional[int] = None
 
 class OperatorServicesBody(BaseModel):
     service_ids: list[int] = []
@@ -851,8 +855,14 @@ def build_app(
         base_url = (body.base_url or "").strip().rstrip("/")
         if not base_url:
             raise HTTPException(400, "Укажите адрес API")
+        token = (body.token or "").strip()
+        if not token and body.service_id is not None:
+            # Токен наружу не отдаётся, поэтому форма правки шлёт его пустым:
+            # берём сохранённый оттуда же, куда его кладёт _save_service_api.
+            stored = await db.get_setting_json("customer", None, body.service_id) or {}
+            token = (stored.get("config") or {}).get("token") or ""
         provider = build_customer_provider(
-            "bot_api", {}, {"base_url": base_url, "token": (body.token or "").strip()})
+            "bot_api", {}, {"base_url": base_url, "token": token})
         if not provider:
             raise HTTPException(500, "Провайдер bot_api не зарегистрирован")
         try:
