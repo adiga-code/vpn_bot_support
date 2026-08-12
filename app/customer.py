@@ -126,6 +126,11 @@ class CustomerProfile:
     referrals: list = field(default_factory=list)        # list[Referral]
     keys: list = field(default_factory=list)             # list[KeyInfo]
     devices: list = field(default_factory=list)          # list[Device]
+    # Ключ, которому принадлежат устройства из devices. Источники отдают список
+    # устройств не по клиенту целиком, а по одному ключу — форма отвязки должна
+    # знать, по какому, иначе оператор снимет устройство не с того ключа.
+    # Пусто — источник не сказал, форма оставляет выбор ключа оператору.
+    devices_key_id: str = ""
     traffic_used: float = 0.0                            # суммарно, ГБ
     traffic_limit: float = 0.0
     # Служебное. source пустой по умолчанию — оркестратор проставит имя
@@ -172,6 +177,7 @@ class CustomerProfile:
             "referralsDepositsTotal": self.referrals_deposits_total,
             "keys": [k.to_dict() for k in self.keys],
             "devices": [d.to_dict() for d in self.devices],
+            "devicesKeyId": self.devices_key_id,
             "traffic": {"used": self.traffic_used, "total": self.traffic_limit},
             "source": self.source,
             "isMock": self.is_mock,

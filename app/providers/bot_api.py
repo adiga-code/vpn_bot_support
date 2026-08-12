@@ -208,6 +208,7 @@ class BotApiProvider(CustomerProvider):
             referrals=referrals,
             keys=keys,
             devices=devices,
+            devices_key_id=str(main_key["id"]) if main_key and devices else "",
             # Месячный расход, а не traffic_gb: тот считает трафик за всё
             # время, а лимит рядом — месячный, и полоса переполнялась бы.
             traffic_used=round(sum(k.traffic_used for k in keys), 2),
@@ -253,8 +254,11 @@ class BotApiProvider(CustomerProvider):
         if isinstance(data, dict) and data.get("ok") is False:
             return ActionResult(ok=False,
                                 message=data.get("detail") or "панель не отработала")
+        # На успехе поля detail в ответе нет вовсе — None здесь такой же «нечего
+        # показывать», как пустая строка, и оператор должен увидеть текст успеха,
+        # а не пустой тост.
         detail = (data or {}).get("detail") if isinstance(data, dict) else ""
-        return ActionResult(ok=True, message=success if detail in ("", "ok") else detail)
+        return ActionResult(ok=True, message=success if detail in (None, "", "ok") else detail)
 
     # ── Пользователь ──────────────────────────────────────────────────────────
 

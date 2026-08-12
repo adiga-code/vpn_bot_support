@@ -1490,10 +1490,17 @@ function ActionShell({ open, onClose, title, subtitle, compact, children }) {
 }
 
 // Форма действия по описанию полей из ACTIONS (app/customer.py).
-function ActionForm({ spec, options, keys, devices, preset, busy, onSubmit, onCancel }) {
+function ActionForm({ spec, options, keys, devices, devicesKeyId, preset, busy, onSubmit, onCancel }) {
+  // Устройства источник отдаёт не по клиенту целиком, а по одному ключу. Значит
+  // в форме с выбором устройства ключ не выбирается: он тот, чьи устройства в
+  // списке. Иначе оператор снял бы устройство с ключа, которому оно не
+  // принадлежит, и запрос ушёл бы с несуществующей парой ключ+устройство.
+  const deviceKey = spec.fields.some((f) => f.type === "device") ? (devicesKeyId || "") : "";
   const initial = {};
   for (const f of spec.fields) {
-    initial[f.name] = preset && preset[f.name] !== undefined
+    initial[f.name] = deviceKey && f.type === "key"
+      ? deviceKey
+      : preset && preset[f.name] !== undefined
       ? preset[f.name]
       : (f.default !== null && f.default !== undefined ? f.default : "");
   }
@@ -1509,7 +1516,8 @@ function ActionForm({ spec, options, keys, devices, preset, busy, onSubmit, onCa
         </div>
       )}
       {spec.fields.map((f) => {
-        const preselected = preset && preset[f.name] !== undefined;
+        const lockedByDevice = !!deviceKey && f.type === "key";
+        const preselected = (preset && preset[f.name] !== undefined) || lockedByDevice;
         if (f.type === "key" && preselected) {
           const k = (keys || []).find((x) => x.id === values[f.name]);
           return (
@@ -1518,6 +1526,11 @@ function ActionForm({ spec, options, keys, devices, preset, busy, onSubmit, onCa
               <div className="text-sm text-[#f1f1f5] bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 truncate">
                 {k ? `${k.name} · ${k.server || "—"}` : values[f.name]}
               </div>
+              {lockedByDevice && (
+                <div className="text-[10px] text-[#6b7280] mt-1">
+                  Список устройств известен только по этому ключу
+                </div>
+              )}
             </div>
           );
         }
@@ -1934,6 +1947,7 @@ function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmi
             options={data?.options || {}}
             keys={data?.keys || []}
             devices={data?.devices || []}
+            devicesKeyId={data?.devicesKeyId || ""}
             busy={busy}
             onSubmit={(values) => runAction(form.spec, values)}
             onCancel={() => setForm(null)}
