@@ -3,6 +3,18 @@
   "nodes": [
     {
       "parameters": {
+        "jsCode": "// Константы воркфлоу. Settings → Variables ($vars) — платная фича n8n, в self-hosted community её нет, поэтому значения живут здесь: правятся в одном месте на воркфлоу, ниже на них ссылаются как $('Константы').first().json.TG_TOKEN\nconst C = {\n  TG_TOKEN: 'ТОКЕН_БОТА_ОТ_BOTFATHER',\n  PANEL_URL: 'https://адрес-панели',\n  N8N_API_KEY: 'та же строка, что в .env панели',\n};\n\n// Входящий элемент отдаём дальше как есть: ноды ниже читают свои поля из $json, и подмена содержимого их бы сломала.\nreturn $input.all().map((item) => ({ json: { ...item.json, ...C } }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2288, 1776],
+      "id": "c0n5tan7-a1a9-4e51-9c01-000000000001",
+      "name": "Константы",
+      "notesInFlow": true,
+      "notes": "Токен бота, адрес панели и ключ API — вместо платного Settings → Variables."
+    },
+    {
+      "parameters": {
         "workflowInputs": {
           "values": [
             { "name": "message" },
@@ -319,7 +331,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $env.TG_TOKEN }}/sendChatAction",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/sendChatAction",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ chat_id: String($('AI').first().json.chat_id), action: 'typing' }) }}",
@@ -462,7 +474,8 @@
     }
   ],
   "connections": {
-    "AI": { "main": [[{ "node": "Switch", "type": "main", "index": 0 }]] },
+    "AI": { "main": [[{ "node": "Константы", "type": "main", "index": 0 }]] },
+    "Константы": { "main": [[{ "node": "Switch", "type": "main", "index": 0 }]] },
     "Switch": {
       "main": [
         [{ "node": "HTTP Request1", "type": "main", "index": 0 }],

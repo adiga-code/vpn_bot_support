@@ -3,6 +3,18 @@
   "nodes": [
     {
       "parameters": {
+        "jsCode": "// Константы воркфлоу. Settings → Variables ($vars) — платная фича n8n, в self-hosted community её нет, поэтому значения живут здесь: правятся в одном месте на воркфлоу, ниже на них ссылаются как $('Константы').first().json.TG_TOKEN\nconst C = {\n  TG_TOKEN: 'ТОКЕН_БОТА_ОТ_BOTFATHER',\n  PANEL_URL: 'https://адрес-панели',\n  N8N_API_KEY: 'та же строка, что в .env панели',\n};\n\n// Входящий элемент отдаём дальше как есть: ноды ниже читают свои поля из $json, и подмена содержимого их бы сломала.\nreturn $input.all().map((item) => ({ json: { ...item.json, ...C } }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2432, 2064],
+      "id": "c0n5tan7-a1a9-4e51-9c01-000000000002",
+      "name": "Константы",
+      "notesInFlow": true,
+      "notes": "Токен бота, адрес панели и ключ API — вместо платного Settings → Variables."
+    },
+    {
+      "parameters": {
         "updates": ["message", "business_message", "callback_query"],
         "additionalFields": { "download": false }
       },
@@ -294,7 +306,7 @@
     },
     {
       "parameters": {
-        "url": "=https://api.telegram.org/bot{{ $env.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).sticker.thumb.file_id }}",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).sticker.thumb.file_id }}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -305,7 +317,7 @@
     },
     {
       "parameters": {
-        "url": "=https://api.telegram.org/file/bot{{ $env.TG_TOKEN }}/{{ $json.result.file_path }}",
+        "url": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
         "options": { "response": { "response": { "responseFormat": "file" } } }
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -316,7 +328,7 @@
     },
     {
       "parameters": {
-        "url": "=https://api.telegram.org/bot{{ $env.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).photo.at(-1).file_id }}",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).photo.at(-1).file_id }}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -327,7 +339,7 @@
     },
     {
       "parameters": {
-        "url": "=https://api.telegram.org/file/bot{{ $env.TG_TOKEN }}/{{ $json.result.file_path }}",
+        "url": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -338,7 +350,7 @@
     },
     {
       "parameters": {
-        "url": "=https://api.telegram.org/bot{{ $env.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).voice.file_id }}",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).voice.file_id }}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -349,7 +361,7 @@
     },
     {
       "parameters": {
-        "url": "=https://api.telegram.org/file/bot{{ $env.TG_TOKEN }}/{{ $json.result.file_path }}",
+        "url": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -360,7 +372,7 @@
     },
     {
       "parameters": {
-        "url": "=https://api.telegram.org/bot{{ $env.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).video.file_id }}",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).video.file_id }}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -372,10 +384,10 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.PANEL_URL }}/api/n8n/upload",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}/api/n8n/upload",
         "sendHeaders": true,
         "headerParameters": {
-          "parameters": [{ "name": "X-API-Key", "value": "={{ $env.N8N_API_KEY }}" }]
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
         },
         "sendBody": true,
         "contentType": "multipart-form-data",
@@ -395,10 +407,10 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.PANEL_URL }}/api/n8n/upload",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}/api/n8n/upload",
         "sendHeaders": true,
         "headerParameters": {
-          "parameters": [{ "name": "X-API-Key", "value": "={{ $env.N8N_API_KEY }}" }]
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
         },
         "sendBody": true,
         "contentType": "multipart-form-data",
@@ -474,7 +486,7 @@
         "assignments": {
           "assignments": [
             { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "=", "type": "string" },
-            { "id": "20eaa7bd-6977-4bed-a2ed-606f3b2edafd", "name": "file_id", "value": "=https://api.telegram.org/file/bot{{ $env.TG_TOKEN }}/{{ $json.result.file_path }}", "type": "string" },
+            { "id": "20eaa7bd-6977-4bed-a2ed-606f3b2edafd", "name": "file_id", "value": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}", "type": "string" },
             { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $('Switch2').item.json.id }}", "type": "string" },
             { "id": "1c621010-38bf-4b9e-a49d-9498242dccee", "name": "file_type", "value": "video", "type": "string" }
           ]
@@ -573,10 +585,10 @@
     },
     {
       "parameters": {
-        "url": "={{ $env.PANEL_URL }}/api/dialogs/{{ $('Если ИИ включена для чата1').item.json.dialog_id }}/has_photo",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}/api/dialogs/{{ $('Если ИИ включена для чата1').item.json.dialog_id }}/has_photo",
         "sendHeaders": true,
         "headerParameters": {
-          "parameters": [{ "name": "X-API-Key", "value": "={{ $env.N8N_API_KEY }}" }]
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
         },
         "options": {}
       },
@@ -664,7 +676,7 @@
             {
               "id": "6050c05c-a8f8-476e-a663-cc749984b475",
               "name": "photo_url",
-              "value": "=https://api.telegram.org/file/bot{{ $env.TG_TOKEN }}/{{ $json.result.file_path }}",
+              "value": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
               "type": "string"
             }
           ]
@@ -680,10 +692,10 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.PANEL_URL }}/api/dialogs/{{ $('Если ИИ включена для чата1').item.json.dialog_id }}/set_photo",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}/api/dialogs/{{ $('Если ИИ включена для чата1').item.json.dialog_id }}/set_photo",
         "sendHeaders": true,
         "headerParameters": {
-          "parameters": [{ "name": "X-API-Key", "value": "={{ $env.N8N_API_KEY }}" }]
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
         },
         "sendBody": true,
         "bodyParameters": {
@@ -1020,7 +1032,8 @@
     }
   ],
   "connections": {
-    "Telegram Trigger1": { "main": [[{ "node": "Определить сервис", "type": "main", "index": 0 }]] },
+    "Telegram Trigger1": { "main": [[{ "node": "Константы", "type": "main", "index": 0 }]] },
+    "Константы": { "main": [[{ "node": "Определить сервис", "type": "main", "index": 0 }]] },
     "Определить сервис": { "main": [[{ "node": "Switch4", "type": "main", "index": 0 }]] },
     "Switch4": {
       "main": [

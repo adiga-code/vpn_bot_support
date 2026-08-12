@@ -3,6 +3,18 @@
   "nodes": [
     {
       "parameters": {
+        "jsCode": "// Константы воркфлоу. Settings → Variables ($vars) — платная фича n8n, в self-hosted community её нет, поэтому значения живут здесь: правятся в одном месте на воркфлоу, ниже на них ссылаются как $('Константы').first().json.TG_TOKEN\nconst C = {\n  TG_TOKEN: 'ТОКЕН_БОТА_ОТ_BOTFATHER',\n  PANEL_URL: 'https://адрес-панели',\n  N8N_API_KEY: 'та же строка, что в .env панели',\n};\n\n// Входящий элемент отдаём дальше как есть: ноды ниже читают свои поля из $json, и подмена содержимого их бы сломала.\nreturn $input.all().map((item) => ({ json: { ...item.json, ...C } }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-288, 640],
+      "id": "c0n5tan7-a1a9-4e51-9c01-000000000003",
+      "name": "Константы",
+      "notesInFlow": true,
+      "notes": "Токен бота, адрес панели и ключ API — вместо платного Settings → Variables."
+    },
+    {
+      "parameters": {
         "workflowInputs": {
           "values": [
             { "name": "chat_id" },
@@ -102,7 +114,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $env.TG_TOKEN }}/sendMessage",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/sendMessage",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify(Object.assign({ chat_id: String($json.chat_id), text: $json.message, parse_mode: \"HTML\" }, $json.business_id ? { business_connection_id: $json.business_id } : {})) }}",
@@ -126,7 +138,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $env.TG_TOKEN }}/sendPhoto{{ $('When Executed by Another Workflow').item.json.business_id ? '?business_connection_id=' + $('When Executed by Another Workflow').item.json.business_id : '' }}",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/sendPhoto{{ $('When Executed by Another Workflow').item.json.business_id ? '?business_connection_id=' + $('When Executed by Another Workflow').item.json.business_id : '' }}",
         "sendBody": true,
         "contentType": "multipart-form-data",
         "bodyParameters": {
@@ -154,7 +166,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $env.TG_TOKEN }}/sendSticker",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/sendSticker",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify(Object.assign({ chat_id: String($('When Executed by Another Workflow').item.json.chat_id), sticker: $('When Executed by Another Workflow').item.json.file_id }, $('When Executed by Another Workflow').item.json.business_id ? { business_connection_id: $('When Executed by Another Workflow').item.json.business_id } : {})) }}",
@@ -169,7 +181,7 @@
     },
     {
       "parameters": {
-        "url": "=https://api.telegram.org/bot{{ $env.TG_TOKEN }}/getFile?file_id={{ $json.file_id }}",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/getFile?file_id={{ $json.file_id }}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -180,7 +192,7 @@
     },
     {
       "parameters": {
-        "url": "=https://api.telegram.org/file/bot{{ $env.TG_TOKEN }}/{{ $json.result.file_path }}",
+        "url": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -192,7 +204,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $env.TG_TOKEN }}/sendVoice{{ $('When Executed by Another Workflow').item.json.business_id ? '?business_connection_id=' + $('When Executed by Another Workflow').item.json.business_id : '' }}",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/sendVoice{{ $('When Executed by Another Workflow').item.json.business_id ? '?business_connection_id=' + $('When Executed by Another Workflow').item.json.business_id : '' }}",
         "sendBody": true,
         "contentType": "multipart-form-data",
         "bodyParameters": {
@@ -328,8 +340,9 @@
   ],
   "connections": {
     "When Executed by Another Workflow": {
-      "main": [[{ "node": "Switch", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Константы", "type": "main", "index": 0 }]]
     },
+    "Константы": { "main": [[{ "node": "Switch", "type": "main", "index": 0 }]] },
     "Switch": {
       "main": [
         [{ "node": "Скачать фото", "type": "main", "index": 0 }],
