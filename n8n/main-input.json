@@ -29,7 +29,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT slug, qdrant_collection FROM services WHERE business_connection_id = $1 AND $1 <> '' LIMIT 1;",
+        "query": "SELECT slug, qdrant_collection FROM services WHERE ($1 <> '' AND business_connection_id = $1) OR ($1 = '' AND is_active) ORDER BY sort_order, id LIMIT 1;",
         "options": {
           "queryReplacement": "={{ ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id || '' }}"
         }
@@ -41,7 +41,7 @@
       "name": "Определить сервис",
       "alwaysOutputData": true,
       "notesInFlow": true,
-      "notes": "Слаг и коллекция Qdrant по business_connection_id аккаунта поддержки. Благодаря этому новый ВПН заводится формой в панели, а воркфлоу и переменные окружения не трогают.",
+      "notes": "Слаг и коллекция Qdrant по business_connection_id аккаунта поддержки. Благодаря этому новый ВПН заводится формой в панели, а воркфлоу и переменные окружения не трогают. Пустой business_connection_id (обычный чат с ботом) — берётся первый активный сервис, тем же порядком, что и в панели.",
       "credentials": { "postgres": { "id": "5tWDSrTUFp4DiJlP", "name": "Postgres account" } },
       "onError": "continueRegularOutput"
     },
@@ -95,7 +95,7 @@
       "parameters": {
         "queue": "vpn_bot.incoming",
         "sendInputData": false,
-        "message": "={{ JSON.stringify({ type: \"callback\", business_id: ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id, service: ($('Определить сервис').first().json.slug || 'default'), chat_id: String($('Telegram Trigger1').item.json.callback_query.from.id), callback_data: $('Telegram Trigger1').item.json.callback_query.data }) }}",
+        "message": "={{ JSON.stringify({ type: \"callback\", business_id: ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id, service: ($('Определить сервис').first().json.slug || ''), chat_id: String($('Telegram Trigger1').item.json.callback_query.from.id), callback_data: $('Telegram Trigger1').item.json.callback_query.data }) }}",
         "options": {}
       },
       "type": "n8n-nodes-base.rabbitmq",
@@ -573,7 +573,7 @@
       "parameters": {
         "queue": "vpn_bot.incoming",
         "sendInputData": false,
-        "message": "={{ JSON.stringify({\n  \"type\": \"user_message\",\n  \"service\": ($('Определить сервис').first().json.slug || 'default'),\n  \"business_id\": ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id,\n  \"dialog_id\": $json.dialog_id.toString(),\n  \"chat_id\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id.toString(),\n  \"user_username\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.username,\n  \"user_name\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.first_name,\n  \"message\": $json.message,\n  \"ai_enabled\": $('Получить диалог1').item.json.ai_status,\n  \"file_id\": $json.file_id,\n  \"file_type\": $json.file_type\n}) }}",
+        "message": "={{ JSON.stringify({\n  \"type\": \"user_message\",\n  \"service\": ($('Определить сервис').first().json.slug || ''),\n  \"business_id\": ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id,\n  \"dialog_id\": $json.dialog_id.toString(),\n  \"chat_id\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id.toString(),\n  \"user_username\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.username,\n  \"user_name\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.first_name,\n  \"message\": $json.message,\n  \"ai_enabled\": $('Получить диалог1').item.json.ai_status,\n  \"file_id\": $json.file_id,\n  \"file_type\": $json.file_type\n}) }}",
         "options": {}
       },
       "type": "n8n-nodes-base.rabbitmq",
@@ -884,7 +884,7 @@
       "parameters": {
         "operation": "push",
         "list": "=mes:{{ ($('Определить сервис').first().json.slug || 'default') }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
-        "messageData": "={{ JSON.stringify({ id: $('Telegram Trigger1').first().json.message.message_id, text: $json.prompt }) }}",
+        "messageData": "={{ JSON.stringify({ id: ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).message_id, text: $json.prompt }) }}",
         "tail": true
       },
       "type": "n8n-nodes-base.redis",
@@ -1011,7 +1011,7 @@
           "mappingMode": "defineBelow",
           "value": {
             "ai_enabled": true,
-            "service": "={{ ($('Определить сервис').first().json.slug || 'default') }}",
+            "service": "={{ ($('Определить сервис').first().json.slug || '') }}",
             "qdrant_collection": "={{ $('Определить сервис').first().json.qdrant_collection || 'kb' }}",
             "chat_id": "={{ $('Если ИИ включена для чата1').item.json.user_id }}",
             "dialog_id": "={{ $('Если ИИ включена для чата1').item.json.dialog_id }}",
