@@ -781,6 +781,9 @@ function ServiceModal({ editing, onSave, onClose }) {
   const [business, setBusiness] = useStateT(editing?.businessId || "");
   const [more, setMore] = useStateT(false);
   const [check, setCheck] = useStateT(null);      // null | "…" | {ok, ...}
+  const [rwUrl, setRwUrl] = useStateT(editing?.remnawaveBaseUrl || "");
+  const [rwToken, setRwToken] = useStateT("");
+  const [rwCheck, setRwCheck] = useStateT(null);   // null | "…" | {ok, ...}
 
   // Слаг сам предлагается из названия, но остаётся редактируемым.
   function changeName(v) {
@@ -800,10 +803,24 @@ function ServiceModal({ editing, onSave, onClose }) {
     try {
       const r = await window.apiFetch("POST", "/api/services/test-connection",
                                       { base_url: apiUrl.trim(), token: token.trim(),
-                                        service_id: editing?.id ?? null });
+                                        provider: "bot_api", service_id: editing?.id ?? null });
       setCheck(r);
     } catch (e) {
       setCheck({ ok: false, error: e?.detail || "Не удалось проверить" });
+    }
+  }
+
+  // Токен Remnawave тоже лежит в customer.config — тот же приём, что и у
+  // Support API: пустое поле при правке значит «сервер, проверь сохранённый».
+  async function testRwConnection() {
+    setRwCheck("…");
+    try {
+      const r = await window.apiFetch("POST", "/api/services/test-connection",
+                                      { base_url: rwUrl.trim(), token: rwToken.trim(),
+                                        provider: "remnawave", service_id: editing?.id ?? null });
+      setRwCheck(r);
+    } catch (e) {
+      setRwCheck({ ok: false, error: e?.detail || "Не удалось проверить" });
     }
   }
 
@@ -816,6 +833,7 @@ function ServiceModal({ editing, onSave, onClose }) {
       emoji: emoji.trim() || null, n8n_webhook_url: hook.trim(), is_active: active,
       business_id: business.trim(),
       api_base_url: apiUrl.trim(), api_token: token.trim(),
+      remnawave_base_url: rwUrl.trim(), remnawave_token: rwToken.trim(),
     });
   }
 
@@ -876,6 +894,47 @@ function ServiceModal({ editing, onSave, onClose }) {
             <div className="text-[10px] text-[#6b7280] mt-1">
               По нему панель узнаёт, чей это тикет. Приходит от Telegram, когда бот
               подключён к аккаунту поддержки этого ВПН-а.
+            </div>
+          </div>
+
+          <div className="pt-1 border-t border-[#2a2a3a]/60 space-y-3">
+            <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold pt-2">
+              Remnawave
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">Адрес панели</label>
+              <input value={rwUrl} onChange={(e) => { setRwUrl(e.target.value); setRwCheck(null); }}
+                placeholder="https://panel.example.com"
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">
+                Токен {editing && editing.hasRemnawaveToken && !rwToken &&
+                  <span className="text-[#22c55e]">— сохранён, оставьте пустым, чтобы не менять</span>}
+              </label>
+              <input type="password" value={rwToken} onChange={(e) => { setRwToken(e.target.value); setRwCheck(null); }}
+                placeholder={editing && editing.hasRemnawaveToken ? "••••••••" : "токен из /api/tokens панели"}
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+            </div>
+            <div>
+              <button type="button" onClick={testRwConnection} disabled={!rwUrl.trim() || rwCheck === "…"}
+                className="px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40">
+                {rwCheck === "…" ? "Проверяем…" : "Проверить подключение"}
+              </button>
+              {rwCheck && rwCheck !== "…" && (
+                <div className={"mt-2 rounded-lg px-3 py-2 text-[11px] border " + (rwCheck.ok
+                  ? "bg-[#22c55e]/10 border-[#22c55e]/25 text-[#22c55e]"
+                  : "bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]")}>
+                  {rwCheck.ok
+                    ? <>Связь есть: <b>{rwCheck.botName}</b>
+                        {rwCheck.scopes?.length ? <span className="opacity-70"> · {rwCheck.scopes.join(", ")}</span> : null}</>
+                    : rwCheck.error}
+                </div>
+              )}
+            </div>
+            <div className="text-[10px] text-[#6b7280]">
+              Подключает и карточку клиента (Профиль/Ключи), и мониторинг
+              серверов на экране «Состояние».
             </div>
           </div>
 

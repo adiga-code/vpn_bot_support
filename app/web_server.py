@@ -34,6 +34,7 @@ from app.customer import (
     known_customer_providers,
 )
 from app.health import MONITORING_DEFAULTS, ServiceHealthMonitor, known_providers
+from app.providers.remnawave import check_connection as _remnawave_check_connection
 from app.ws_manager import WebSocketManager
 
 _STATIC = Path(__file__).parent / "static"
@@ -182,11 +183,18 @@ class ServiceBody(BaseModel):
     # Пустой api_token при правке означает «оставить прежний».
     api_base_url: str = ""
     api_token: str = ""
+    # Remnawave: та же панель отдаёт и профиль клиента, и состояние нод —
+    # одна пара полей сохраняется сразу в `customer` и в `monitoring.servers`.
+    # Пустой remnawave_token при правке означает «оставить прежний».
+    remnawave_base_url: str = ""
+    remnawave_token: str = ""
 
 
 class ApiCheckBody(BaseModel):
     base_url: str = ""
     token: str = ""
+    # bot_api — Support API этого ВПН-а, remnawave — панель Remnawave.
+    provider: str = "bot_api"
     # Правка сохранённого сервиса: форма шлёт пустой токен, когда менять его не
     # собираются, и проверка должна взять сохранённый — иначе она уходит с
     # пустым Bearer и рисует «Связи нет» на исправном сервисе.
@@ -809,6 +817,10 @@ def build_app(
             # отправляет пустое поле, если менять его не собираются.
             "apiBaseUrl": cfg.get("base_url") or "",
             "hasApiToken": bool(cfg.get("token")),
+            # То же самое, но только когда источник клиентов — именно Remnawave:
+            # для bot_api/http эти поля значат другое, показывать их не нужно.
+            "remnawaveBaseUrl": cfg.get("base_url") or "" if (api or {}).get("provider") == "remnawave" else "",
+            "hasRemnawaveToken": bool(cfg.get("token")) if (api or {}).get("provider") == "remnawave" else False,
         }
 
     async def _save_service_api(service_id: int, base_url: str, token: str) -> None:
@@ -834,6 +846,39 @@ def build_app(
         }, service_id)
         customers.invalidate(service_id)
 
+    async def _save_service_remnawave(service: dict, base_url: str, token: str) -> None:
+        """Remnawave отдаёт и профиль клиента, и состояние нод — одна пара
+        полей в форме сервиса заполняет сразу `customer` (карточка клиента) и
+        `monitoring.servers` (экран «Состояние»). Раз администратор явно
+        заполнил это поле, оба источника переключаются на remnawave; пустой
+        токен при правке — «не трогать сохранённый», как и у Support API."""
+        base_url = (base_url or "").strip().rstrip("/")
+        if not base_url and not token:
+            return
+        service_id = service["id"]
+
+        stored_c = await db.get_setting_json("customer", None, service_id) or {}
+        cfg_c = dict(stored_c.get("config") or {})
+        cfg_c["base_url"] = base_url or cfg_c.get("base_url", "")
+        if token:
+            cfg_c["token"] = token.strip()
+        await db.set_setting_json("customer", {
+            **CUSTOMER_DEFAULTS, **stored_c, "provider": "remnawave", "config": cfg_c,
+        }, service_id)
+
+        stored_m = await db.get_setting_json("monitoring", None, service_id) or {}
+        monitoring = {**MONITORING_DEFAULTS, **stored_m}
+        servers_block = dict(monitoring.get("servers") or {})
+        cfg_s = dict(servers_block.get("config") or {})
+        cfg_s["base_url"] = base_url or cfg_s.get("base_url", "")
+        if token:
+            cfg_s["token"] = token.strip()
+        monitoring["servers"] = {"provider": "remnawave", "config": cfg_s}
+        await db.set_setting_json("monitoring", monitoring, service_id)
+
+        customers.invalidate(service_id)
+        asyncio.create_task(health.refresh(service))
+
     async def _check_business_id_free(business_id: str, service_id: int | None) -> None:
         """Один аккаунт поддержки — один ВПН. В БД это стережёт уникальный
         индекс, но человеку нужен внятный текст, а не ошибка драйвера."""
@@ -858,9 +903,19 @@ def build_app(
         token = (body.token or "").strip()
         if not token and body.service_id is not None:
             # Токен наружу не отдаётся, поэтому форма правки шлёт его пустым:
-            # берём сохранённый оттуда же, куда его кладёт _save_service_api.
+            # берём сохранённый оттуда же, куда его кладёт _save_service_api /
+            # _save_service_remnawave — оба пишут token в customer.config.
             stored = await db.get_setting_json("customer", None, body.service_id) or {}
             token = (stored.get("config") or {}).get("token") or ""
+
+        if body.provider == "remnawave":
+            try:
+                info = await _remnawave_check_connection(base_url, token)
+            except Exception as e:
+                return {"ok": False, "error": str(e)[:200]}
+            return {"ok": True, "botName": f"Remnawave v{info['version']}" if info["version"] else "Remnawave",
+                    "scopes": [f"{info['nodesTotal']} нод"]}
+
         provider = build_customer_provider(
             "bot_api", {}, {"base_url": base_url, "token": token})
         if not provider:
@@ -912,6 +967,7 @@ def build_app(
             body.business_id,
         )
         await _save_service_api(service["id"], body.api_base_url, body.api_token)
+        await _save_service_remnawave(service, body.remnawave_base_url, body.remnawave_token)
         # Пустая коллекция создаётся сразу — воркфлоу n8n сможет обращаться к
         # ней ещё до первой загрузки базы знаний.
         try:
@@ -938,6 +994,7 @@ def build_app(
         if not service:
             raise HTTPException(404)
         await _save_service_api(service_id, body.api_base_url, body.api_token)
+        await _save_service_remnawave(service, body.remnawave_base_url, body.remnawave_token)
         await ws.broadcast({"type": "services_changed"})
         return _fmt_service(service, 0,
                             await db.get_setting_json("customer", None, service_id))

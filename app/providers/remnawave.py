@@ -1,4 +1,4 @@
-"""Remnawave как источник данных о клиентах.
+"""Remnawave: источник данных о клиентах И источник состояния серверов.
 
 Панель управления Xray-подписками: пользователи, трафик, сроки, устройства,
 ноды. Денег и партнёрки в её API нет — ни рефералов, ни баланса, ни депозитов,
@@ -24,6 +24,20 @@
       "default_days": 30,
       "default_squad_uuid": ""
     }
+
+Тем же base_url/token опрашивается и состояние нод для экрана «Состояние» —
+настройка сервиса → «Мониторинг» → источник servers `remnawave`, config:
+
+    {
+      "base_url": "https://panel.example.com",
+      "token":    "токен из /api/tokens",
+      "timeout":  10,
+      // Выше скольки % использованного трафика ноды считать «high».
+      "load_warn_pct": 80
+    }
+
+Обычно оба конфига совпадают — форма подключения сервиса в панели заполняет
+их одним движением, см. web_server._save_service_remnawave.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -33,6 +47,7 @@ from app.customer import (
     ActionResult, CustomerProfile, CustomerProvider, Device, KeyInfo,
     register_customer_provider,
 )
+from app.health import SERVERS, ComponentStatus, HealthProvider, register_provider
 
 GB = 1024 ** 3
 
@@ -66,45 +81,59 @@ def _id(value):
     return int(text) if text.isdigit() else text
 
 
+# ── Транспорт (общий для CustomerProvider и HealthProvider) ─────────────────
+
+async def _rw_call(base_url: str, token: str, timeout: float, method: str, path: str,
+                   *, params=None, json=None):
+    base = (base_url or "").rstrip("/")
+    if not base:
+        raise RuntimeError("Не указан base_url в настройке сервиса")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as s:
+        async with s.request(method, base + path, params=params, json=json,
+                             headers=headers) as r:
+            # Смотрим на само тело, а не на Content-Length: у chunked-ответов
+            # и у большинства 204 заголовка нет вовсе, и проверка на его
+            # значение пропускала пустое тело в json() — например, key_delete
+            # отчитывался ошибкой после успешного удаления.
+            text = await r.text()
+            body = {}
+            if text:
+                try:
+                    body = await r.json(content_type=None)
+                except Exception:
+                    body = {}
+            if r.status >= 400:
+                msg = ""
+                if isinstance(body, dict):
+                    msg = body.get("message") or body.get("error") or ""
+                if r.status in (401, 403):
+                    msg = msg or "токен не принят или у него нет нужного скоупа"
+                raise RuntimeError(msg or f"HTTP {r.status}")
+            # Remnawave заворачивает полезную нагрузку в response.
+            if isinstance(body, dict) and "response" in body:
+                return body["response"]
+            return body
+
+
+async def check_connection(base_url: str, token: str, timeout: float = 10) -> dict:
+    """Быстрая проверка для формы подключения сервиса: версия панели и число
+    нод. Ошибки не ловит — их разбирает вызывающая сторона (web_server)."""
+    meta = await _rw_call(base_url, token, timeout, "GET", "/api/system/metadata")
+    nodes = await _rw_call(base_url, token, timeout, "GET", "/api/nodes")
+    total = len(nodes) if isinstance(nodes, list) else 0
+    return {"version": (meta or {}).get("version") or "", "nodesTotal": total}
+
+
 class RemnawaveProvider(CustomerProvider):
     """Remnawave: подписки, трафик, сроки и устройства."""
 
     source = "remnawave"
 
-    # ── Транспорт ─────────────────────────────────────────────────────────────
-
     async def _request(self, method: str, path: str, *, params=None, json=None):
-        base = (self.config.get("base_url") or "").rstrip("/")
-        if not base:
-            raise RuntimeError("Не указан base_url в настройке «Клиенты» сервиса")
-        token = self.config.get("token") or ""
-        timeout = aiohttp.ClientTimeout(total=float(self.config.get("timeout", 10)))
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-        async with aiohttp.ClientSession(timeout=timeout) as s:
-            async with s.request(method, base + path, params=params, json=json,
-                                 headers=headers) as r:
-                # Смотрим на само тело, а не на Content-Length: у chunked-ответов
-                # и у большинства 204 заголовка нет вовсе, и проверка на его
-                # значение пропускала пустое тело в json() — например, key_delete
-                # отчитывался ошибкой после успешного удаления.
-                text = await r.text()
-                body = {}
-                if text:
-                    try:
-                        body = await r.json(content_type=None)
-                    except Exception:
-                        body = {}
-                if r.status >= 400:
-                    msg = ""
-                    if isinstance(body, dict):
-                        msg = body.get("message") or body.get("error") or ""
-                    if r.status in (401, 403):
-                        msg = msg or "токен не принят или у него нет нужного скоупа"
-                    raise RuntimeError(msg or f"HTTP {r.status}")
-                # Remnawave заворачивает полезную нагрузку в response.
-                if isinstance(body, dict) and "response" in body:
-                    return body["response"]
-                return body
+        timeout = float(self.config.get("timeout", 10))
+        return await _rw_call(self.config.get("base_url") or "", self.config.get("token") or "",
+                              timeout, method, path, params=params, json=json)
 
     # ── Пользователи ──────────────────────────────────────────────────────────
 
@@ -329,3 +358,58 @@ class RemnawaveProvider(CustomerProvider):
 
 
 register_customer_provider("remnawave", RemnawaveProvider)
+
+
+# ── Состояние нод (экран «Состояние») ────────────────────────────────────────
+
+class RemnawaveServerProvider(HealthProvider):
+    """Remnawave: состояние нод — подключены ли, не превышен ли трафик."""
+
+    kind = SERVERS
+    source = "remnawave"
+
+    async def _nodes(self) -> list[dict]:
+        timeout = float(self.config.get("timeout", 10))
+        data = await _rw_call(self.config.get("base_url") or "", self.config.get("token") or "",
+                              timeout, "GET", "/api/nodes")
+        return [n for n in data if isinstance(n, dict)] if isinstance(data, list) else []
+
+    async def check(self) -> list[ComponentStatus]:
+        try:
+            nodes = await self._nodes()
+        except Exception as e:
+            return [self.make("nodes-error", "Ошибка опроса Remnawave", "unknown", message=str(e)[:200])]
+        if not nodes:
+            return [self.make("no-nodes", "Ноды не найдены", "unknown",
+                              message="В Remnawave не заведено ни одной ноды")]
+        warn_pct = float(self.config.get("load_warn_pct", 80))
+        return [self._one(n, warn_pct) for n in nodes]
+
+    def _one(self, n: dict, warn_pct: float) -> ComponentStatus:
+        node_id = f"node-{n.get('uuid')}"
+        name = n.get("name") or str(n.get("uuid") or "")
+        location = n.get("countryCode") or ""
+
+        used = n.get("trafficUsedBytes")
+        limit = n.get("trafficLimitBytes")
+        load = None
+        if isinstance(used, (int, float)) and isinstance(limit, (int, float)) and limit > 0:
+            load = round(used / limit * 100, 1)
+
+        if n.get("isConnecting"):
+            return self.make(node_id, name, "unknown", location=location,
+                             message="подключается", metrics={"load": load})
+        if n.get("isDisabled") and not n.get("isConnected"):
+            return self.make(node_id, name, "unknown", location=location,
+                             message="нода отключена вручную", metrics={"load": load})
+        if n.get("isConnected"):
+            high = load is not None and load > warn_pct
+            return self.make(node_id, name, "high" if high else "ok", location=location,
+                             message=f"нагрузка выше {warn_pct}%" if high else "",
+                             metrics={"load": load})
+        return self.make(node_id, name, "down", location=location,
+                         message=n.get("lastStatusMessage") or "нет соединения с нодой",
+                         metrics={"load": load})
+
+
+register_provider("remnawave", RemnawaveServerProvider)

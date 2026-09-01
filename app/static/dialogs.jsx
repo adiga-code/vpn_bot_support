@@ -1726,11 +1726,13 @@ function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmi
         )}
       </div>
 
-      {/* Вкладки */}
-      <div className="flex px-1 border-b border-[#2a2a3a] shrink-0 overflow-x-auto no-scrollbar">
+      {/* Вкладки. scrollbar-thin, а не no-scrollbar: панель узкая (320px), и
+          когда вкладки не помещаются, скрытый скроллбар не давал понять, что
+          часть вкладок обрезана, а не просто отсутствует. */}
+      <div className="flex px-1 border-b border-[#2a2a3a] shrink-0 overflow-x-auto scrollbar-thin">
         {tabs.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)}
-                  className={"shrink-0 px-2 py-2 text-xs font-medium border-b-2 -mb-px whitespace-nowrap transition " +
+                  className={"shrink-0 px-1.5 py-2 text-xs font-medium border-b-2 -mb-px whitespace-nowrap transition " +
                     (tab === t.id
                       ? "border-[#4F8EF7] text-[#7BA8F9]"
                       : "border-transparent text-[#6b7280] hover:text-[#f1f1f5]")}>

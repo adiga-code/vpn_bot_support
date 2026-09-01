@@ -150,23 +150,55 @@ function ServiceHealthSection({ snapshot, showServiceTitle }) {
 function SourcePicker({ serviceId, onChanged }) {
   const [cfg, setCfg] = useStateSv(null);
   const [saving, setSaving] = useStateSv(false);
+  // Какой из блоков (servers | bots) сейчас раскрыт под редактирование
+  // конфига, и текст в его текстарее — раздельно, чтобы правка одного не
+  // затирала несохранённый черновик другого.
+  const [openKind, setOpenKind] = useStateSv(null);
+  const [configText, setConfigText] = useStateSv("{}");
+  const [configErr, setConfigErr] = useStateSv(null);
 
   useEffectSv(() => {
-    if (serviceId === null) { setCfg(null); return; }
+    if (serviceId === null) { setCfg(null); setOpenKind(null); return; }
     window.apiFetch("GET", `/api/settings/monitoring?service_id=${serviceId}`)
       .then(setCfg).catch(() => setCfg(null));
   }, [serviceId]);
 
-  async function pick(kind, provider) {
-    const next = { interval: cfg.interval, servers: cfg.servers, bots: cfg.bots };
-    next[kind] = { provider, config: next[kind].config || {} };
-    setCfg((c) => ({ ...c, ...next }));
+  async function save(next) {
     setSaving(true);
     try {
       await window.apiFetch("PUT", `/api/settings/monitoring?service_id=${serviceId}`, next);
       onChanged && onChanged();
     } catch { /* сообщение покажет общий тост */ }
     setSaving(false);
+  }
+
+  function pick(kind, provider) {
+    const next = { interval: cfg.interval, servers: cfg.servers, bots: cfg.bots };
+    next[kind] = { provider, config: next[kind].config || {} };
+    setCfg((c) => ({ ...c, ...next }));
+    save(next);
+  }
+
+  function toggleConfig(kind) {
+    if (openKind === kind) { setOpenKind(null); return; }
+    setOpenKind(kind);
+    setConfigText(JSON.stringify(cfg[kind]?.config || {}, null, 2));
+    setConfigErr(null);
+  }
+
+  function saveConfig(kind) {
+    let parsed;
+    try {
+      parsed = JSON.parse(configText || "{}");
+    } catch (e) {
+      setConfigErr("Это не похоже на JSON: " + e.message);
+      return;
+    }
+    setConfigErr(null);
+    const next = { interval: cfg.interval, servers: cfg.servers, bots: cfg.bots };
+    next[kind] = { provider: cfg[kind]?.provider, config: parsed };
+    setCfg((c) => ({ ...c, ...next }));
+    save(next);
   }
 
   if (!cfg) return null;
@@ -178,25 +210,50 @@ function SourcePicker({ serviceId, onChanged }) {
         Источник данных · {cfg.serviceName}
       </div>
       {rows.map(([kind, label]) => (
-        <div key={kind} className="flex items-center gap-3 flex-wrap">
-          <span className="text-xs text-[#6b7280] w-[70px] shrink-0">{label}</span>
-          {(cfg.available?.[kind] || []).map((p) => {
-            const on = cfg[kind]?.provider === p.name;
-            return (
-              <button key={p.name} disabled={saving} onClick={() => pick(kind, p.name)}
-                title={p.description}
-                className={"px-2.5 py-1 rounded-md text-xs font-medium border transition disabled:opacity-40 " +
-                  (on ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
-                      : "text-[#6b7280] border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24]/60")}>
-                {p.name}{p.isMock ? " (мок)" : ""}
+        <div key={kind} className="space-y-2">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs text-[#6b7280] w-[70px] shrink-0">{label}</span>
+            {(cfg.available?.[kind] || []).map((p) => {
+              const on = cfg[kind]?.provider === p.name;
+              return (
+                <button key={p.name} disabled={saving} onClick={() => pick(kind, p.name)}
+                  title={p.description}
+                  className={"px-2.5 py-1 rounded-md text-xs font-medium border transition disabled:opacity-40 " +
+                    (on ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
+                        : "text-[#6b7280] border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24]/60")}>
+                  {p.name}{p.isMock ? " (мок)" : ""}
+                </button>
+              );
+            })}
+            <button onClick={() => toggleConfig(kind)}
+              className="ml-auto px-2 py-1 rounded-md text-[11px] text-[#6b7280] hover:text-[#7BA8F9] hover:bg-[#1a1a24]/60 flex items-center gap-1">
+              <Icon name={openKind === kind ? "chevronDown" : "chevronRight"} className="w-3 h-3" />
+              Конфиг (JSON)
+            </button>
+          </div>
+          {openKind === kind && (
+            <div className="space-y-2 pl-[82px]">
+              <textarea value={configText} onChange={(e) => setConfigText(e.target.value)} rows={6}
+                spellCheck={false}
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-xs font-mono text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 resize-y scrollbar-thin" />
+              {configErr && (
+                <div className="text-xs text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-3 py-2">
+                  {configErr}
+                </div>
+              )}
+              <button onClick={() => saveConfig(kind)} disabled={saving}
+                className="px-3 py-1.5 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold transition disabled:opacity-40">
+                Сохранить конфигурацию
               </button>
-            );
-          })}
+            </div>
+          )}
         </div>
       ))}
       <div className="text-[10px] text-[#6b7280]">
-        Параметры источника (адреса серверов, токены) задаются в настройке
-        <code className="mx-1 text-[#7BA8F9]">monitoring</code> сервиса.
+        Для <code className="text-[#7BA8F9]">remnawave</code>: base_url, token, timeout,
+        load_warn_pct — см. подсказку в <code className="text-[#7BA8F9]">app/providers/remnawave.py</code>.
+        Для сервисов на Remnawave проще всего заполнить адрес и токен в форме
+        сервиса («Настройки → Сервисы») — она сохранит их сюда сама.
       </div>
     </div>
   );
