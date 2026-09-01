@@ -118,8 +118,8 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       {modalOpen && <OperatorModal editing={editingOp} services={services} onClose={() => setModalOpen(false)} onSave={saveOperator} />}
 
       {confirmDelete && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirmDelete(null)}>
-          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setConfirmDelete(null)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
             <div className="font-semibold text-[#f1f1f5] mb-1">Удалить оператора?</div>
             <div className="text-sm text-[#6b7280] mb-5">«{confirmDelete.name}» больше не сможет отвечать.</div>
             <div className="flex justify-end gap-2">
@@ -127,7 +127,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
               <button onClick={() => deleteOperator(confirmDelete)} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30">Удалить</button>
             </div>
           </div>
-        </div>
+        </ModalOverlay>
       )}
     </>
   );
@@ -748,8 +748,8 @@ function ServicesSection({ showToast, onChanged }) {
       {modal && <ServiceModal editing={modal.id ? modal : null} onSave={save} onClose={() => setModal(null)} />}
 
       {confirmDel && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirmDel(null)}>
-          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setConfirmDel(null)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
             <div className="font-semibold text-[#f1f1f5] mb-1">Удалить сервис «{confirmDel.name}»?</div>
             <div className="text-sm text-[#6b7280] mb-5">
               Вместе с ним удалятся все его диалоги, сообщения, статьи базы знаний и коллекция
@@ -760,7 +760,7 @@ function ServicesSection({ showToast, onChanged }) {
               <button onClick={() => remove(confirmDel)} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30">Удалить</button>
             </div>
           </div>
-        </div>
+        </ModalOverlay>
       )}
     </div>
   );
@@ -820,8 +820,8 @@ function ServiceModal({ editing, onSave, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden" onClick={(e) => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose}>
+      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden">
         <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
           <div className="font-semibold text-[#f1f1f5]">{editing ? "Редактировать сервис" : "Новый ВПН-сервис"}</div>
           <button type="button" onClick={onClose} className="p-1 text-[#6b7280] hover:text-[#f1f1f5] rounded"><Icon name="x" /></button>
@@ -946,7 +946,7 @@ function ServiceModal({ editing, onSave, onClose }) {
           </button>
         </div>
       </form>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -973,8 +973,8 @@ function OperatorModal({ editing, services = [], onClose, onSave }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden" onClick={(e) => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose}>
+      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden">
         <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
           <div className="font-semibold text-[#f1f1f5]">{editing ? "Редактировать" : "Добавить оператора"}</div>
           <button type="button" onClick={onClose} className="p-1 text-[#6b7280] hover:text-[#f1f1f5] rounded"><Icon name="x" /></button>
@@ -1057,7 +1057,7 @@ function OperatorModal({ editing, services = [], onClose, onSave }) {
           </button>
         </div>
       </form>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -1832,8 +1832,8 @@ function BroadcastSection({ showToast, service }) {
       </div>
 
       {confirm && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirm(false)}>
-          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={e => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setConfirm(false)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
             <div className="font-semibold text-[#f1f1f5] mb-2">Отправить рассылку?</div>
             <div className="text-sm text-[#6b7280] mb-4 leading-relaxed">
               Сообщение получат все пользователи, которые когда-либо писали боту. Отменить нельзя.
@@ -1848,7 +1848,7 @@ function BroadcastSection({ showToast, service }) {
               </button>
             </div>
           </div>
-        </div>
+        </ModalOverlay>
       )}
     </div>
   );
@@ -1888,8 +1888,8 @@ function TemplateModal({ template, groups, onSave, onClose }) {
     onSave({ ...form, id: template?.id });
   }
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-lg" onClick={e => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-lg">
         <div className="font-semibold text-[#f1f1f5] mb-4">{template ? "Редактировать шаблон" : "Добавить шаблон"}</div>
         <form onSubmit={submit} className="space-y-4">
           <div>
@@ -1921,7 +1921,7 @@ function TemplateModal({ template, groups, onSave, onClose }) {
           </div>
         </form>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }
 

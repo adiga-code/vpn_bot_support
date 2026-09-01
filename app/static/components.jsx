@@ -312,6 +312,37 @@ function contrastOn(hex) {
   return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? "#0d0d12" : "#fff";
 }
 
+// Подложка модального окна. Закрывает окно только если на ней прошли ОБА
+// события мыши — и нажатие, и отпускание. Прежний вариант ловил `click`, а он
+// всплывает до общего предка: выделение текста в поле, законченное за краем
+// формы, читалось как клик по подложке, и окно закрывалось с набранным.
+// Escape закрывает всегда — раньше это умела только шторка.
+function ModalOverlay({ onClose, zIndex = 50, className = "", children }) {
+  const downOnBackdrop = useRef(false);
+
+  useEffect(() => {
+    if (!onClose) return;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      style={{ zIndex }}
+      onMouseDown={(e) => { downOnBackdrop.current = e.target === e.currentTarget; }}
+      onMouseUp={(e) => {
+        if (downOnBackdrop.current && e.target === e.currentTarget && onClose) onClose();
+        downOnBackdrop.current = false;
+      }}
+      className={"fixed inset-0 backdrop-blur-sm flex items-center justify-center " +
+        (className || "bg-black/60 p-4")}
+    >
+      {children}
+    </div>
+  );
+}
+
 // Шторка снизу: затемнение, «грабер», закрытие по свайпу вниз, тапу вне и Esc.
 // Общая для карточки клиента, выбора сервиса и меню действий над тикетом.
 function BottomSheet({ open, onClose, title, subtitle, children, maxHeight = "88%" }) {
@@ -527,6 +558,7 @@ function Toast({ msg, type = "ok" }) {
 }
 
 Object.assign(window, { Avatar, StatusBadge, WaitingLabel, SlaTimer, fmtSla, PlanBadge, SubStatus, Icon, Toast,
+                        ModalOverlay,
                         ServiceSwitcher, ServicePill, ContextChip, ServiceDot,
                         useViewport, contrastOn, BottomSheet, ServiceRail, ServiceTile,
                         MobileAppBar, AppBarButton, MobileNav });

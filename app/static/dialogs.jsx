@@ -393,9 +393,9 @@ function TemplatePickerModal({ onSelect, onClose, templates }) {
   }, [templates, group, search]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+    <ModalOverlay onClose={onClose}>
       <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-2xl flex flex-col"
-           style={{ maxHeight: "70vh" }} onClick={e => e.stopPropagation()}>
+           style={{ maxHeight: "70vh" }}>
         {/* Search header */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-[#2a2a3a] shrink-0">
           <Icon name="search" className="w-4 h-4 text-[#6b7280] shrink-0" />
@@ -436,7 +436,7 @@ function TemplatePickerModal({ onSelect, onClose, templates }) {
           </div>
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -448,8 +448,8 @@ function TransferModal({ activeDialog, operators, currentOperator, onTransfer, o
     (op.role === "admin" || (op.serviceIds || []).includes(activeDialog?.serviceId))
   );
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm">
         <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
           <div className="font-medium text-sm text-[#f1f1f5]">Передать тикет</div>
           <button onClick={onClose} className="text-[#6b7280] hover:text-[#f1f1f5]"><Icon name="x" className="w-4 h-4" /></button>
@@ -474,7 +474,7 @@ function TransferModal({ activeDialog, operators, currentOperator, onTransfer, o
           ))}
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -1317,11 +1317,8 @@ function DialogsScreen({
 
       {/* Lightbox */}
       {lightboxUrl && (
-        <div
-          onClick={() => setLightboxUrl(null)}
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-8"
-        >
-          <div className="relative max-w-4xl max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setLightboxUrl(null)} className="bg-black/80 p-8">
+          <div className="relative max-w-4xl max-h-[90vh]">
             <img src={lightboxUrl} alt="" className="max-w-full max-h-[90vh] rounded-xl object-contain" />
             <button
               onClick={() => setLightboxUrl(null)}
@@ -1330,13 +1327,13 @@ function DialogsScreen({
               <Icon name="x" />
             </button>
           </div>
-        </div>
+        </ModalOverlay>
       )}
 
       {/* Close confirm */}
       {confirmClose && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirmClose(false)}>
-          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setConfirmClose(false)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
             <div className="font-semibold text-[#f1f1f5] mb-1">Закрыть диалог?</div>
             <div className="text-sm text-[#6b7280] mb-5">Пользователь сможет открыть новый, написав в чат.</div>
             <div className="flex justify-end gap-2">
@@ -1348,7 +1345,7 @@ function DialogsScreen({
               </button>
             </div>
           </div>
-        </div>
+        </ModalOverlay>
       )}
       {showTemplates && <TemplatePickerModal onSelect={pickTemplate} templates={templates}
                                              onClose={() => setShowTemplates(false)} />}
@@ -1470,10 +1467,8 @@ function ActionShell({ open, onClose, title, subtitle, compact, children }) {
   }
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
-         onClick={onClose}>
-      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm"
-           onClick={(e) => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose} zIndex={60}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm">
         <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="font-medium text-sm text-[#f1f1f5] truncate">{title}</div>
@@ -1485,7 +1480,7 @@ function ActionShell({ open, onClose, title, subtitle, compact, children }) {
         </div>
         <div className="p-5">{children}</div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }
 
