@@ -222,15 +222,17 @@ class ServiceHealthMonitor:
         result = {"serviceId": service["id"], "serviceName": service["name"],
                   "serviceSlug": service["slug"], "serviceColor": service.get("color"),
                   "lastUpdated": _now_iso()}
-        is_mock = False
+        mock_by_kind = {}
         for kind in (SERVERS, BOTS):
             block = monitoring.get(kind) or {}
             components = await self._check_kind(service, kind, block)
             result[kind] = [c.to_dict() for c in components]
-            is_mock = is_mock or any(c.is_mock for c in components)
-        # Снимок целиком помечается моком, если хоть один источник мок — чтобы
-        # на экране нельзя было принять эти цифры за настоящие.
-        result["isMock"] = is_mock
+            mock_by_kind[kind] = any(c.is_mock for c in components)
+        # Раздельно по серверам и ботам — иначе подключённый Remnawave не
+        # спасает от баннера «всё выдумано», пока боты остаются на моке.
+        result["serversMock"] = mock_by_kind[SERVERS]
+        result["botsMock"] = mock_by_kind[BOTS]
+        result["isMock"] = mock_by_kind[SERVERS] or mock_by_kind[BOTS]
         self._snapshots[service["id"]] = result
         await self._notify_new_downs(service, result)
         return result

@@ -921,7 +921,9 @@ def build_app(
             service = services.get(sid)
             if service:
                 out.append(await health.ensure(service))
-        return {"services": out, "isMock": any(s.get("isMock") for s in out)}
+        return {"services": out, "isMock": any(s.get("isMock") for s in out),
+                "serversMock": any(s.get("serversMock") for s in out),
+                "botsMock": any(s.get("botsMock") for s in out)}
 
     @app.post("/api/health/refresh")
     async def refresh_health(service_id: Optional[int] = None,
@@ -934,7 +936,9 @@ def build_app(
             ids = [service_id]
         services = {s["id"]: s for s in await db.get_services()}
         out = [await health.refresh(services[sid]) for sid in ids if sid in services]
-        return {"services": out, "isMock": any(s.get("isMock") for s in out)}
+        return {"services": out, "isMock": any(s.get("isMock") for s in out),
+                "serversMock": any(s.get("serversMock") for s in out),
+                "botsMock": any(s.get("botsMock") for s in out)}
 
     @app.get("/api/settings/monitoring")
     async def get_monitoring(service_id: Optional[int] = None,
@@ -989,9 +993,15 @@ def build_app(
 
     # ── Services (ВПН-ы) ──────────────────────────────────────────────────────
 
-    def _fmt_service(s: dict, count: int = 0, api: dict = None, fb: dict = None) -> dict:
+    def _fmt_service(s: dict, count: int = 0, api: dict = None, fb: dict = None,
+                     mon: dict = None) -> dict:
         cfg = (api or {}).get("config") or {}
         fb_cfg = (fb or {}).get("config") or {}
+        # Remnawave для мониторинга серверов — это monitoring.servers, отдельная
+        # от customer настройка: с источником данных о клиенте она не связана.
+        rw_block = (mon or {}).get("servers") or {}
+        rw_cfg = rw_block.get("config") or {}
+        rw_active = rw_block.get("provider") == "remnawave"
         return {
             "id": s["id"], "slug": s["slug"], "name": s["name"],
             "color": s["color"], "emoji": s.get("emoji"),
@@ -1005,10 +1015,10 @@ def build_app(
             # отправляет пустое поле, если менять его не собираются.
             "apiBaseUrl": cfg.get("base_url") or "",
             "hasApiToken": bool(cfg.get("token")),
-            # То же самое, но только когда источник клиентов — именно Remnawave:
-            # для bot_api/http эти поля значат другое, показывать их не нужно.
-            "remnawaveBaseUrl": cfg.get("base_url") or "" if (api or {}).get("provider") == "remnawave" else "",
-            "hasRemnawaveToken": bool(cfg.get("token")) if (api or {}).get("provider") == "remnawave" else False,
+            # Remnawave для статистики серверов (экран «Состояние») — только
+            # когда в monitoring.servers выбран именно remnawave.
+            "remnawaveBaseUrl": rw_cfg.get("base_url") or "" if rw_active else "",
+            "hasRemnawaveToken": bool(rw_cfg.get("token")) if rw_active else False,
             # Резервная отправка. app_hash и строка сессии — секреты и наружу не
             # уходят никогда, ровно как токен Support API.
             "fallbackEnabled": bool((fb or {}).get("enabled")),
@@ -1042,24 +1052,17 @@ def build_app(
         customers.invalidate(service_id)
 
     async def _save_service_remnawave(service: dict, base_url: str, token: str) -> None:
-        """Remnawave отдаёт и профиль клиента, и состояние нод — одна пара
-        полей в форме сервиса заполняет сразу `customer` (карточка клиента) и
-        `monitoring.servers` (экран «Состояние»). Раз администратор явно
-        заполнил это поле, оба источника переключаются на remnawave; пустой
-        токен при правке — «не трогать сохранённый», как и у Support API."""
+        """Remnawave-поля формы сервиса — ИСКЛЮЧИТЕЛЬНО источник статистики
+        серверов на экране «Состояние» (`monitoring.servers`). С профилем
+        клиента (`customer`, вкладки Профиль/Ключи в карточке) это никак не
+        связано и переключать `customer.provider` эта функция не имеет права
+        — источник данных о клиенте настраивается отдельно, в «Настройки →
+        Источник данных». Пустой токен при правке — «не трогать сохранённый»,
+        как и у Support API."""
         base_url = (base_url or "").strip().rstrip("/")
         if not base_url and not token:
             return
         service_id = service["id"]
-
-        stored_c = await db.get_setting_json("customer", None, service_id) or {}
-        cfg_c = dict(stored_c.get("config") or {})
-        cfg_c["base_url"] = base_url or cfg_c.get("base_url", "")
-        if token:
-            cfg_c["token"] = token.strip()
-        await db.set_setting_json("customer", {
-            **CUSTOMER_DEFAULTS, **stored_c, "provider": "remnawave", "config": cfg_c,
-        }, service_id)
 
         stored_m = await db.get_setting_json("monitoring", None, service_id) or {}
         monitoring = {**MONITORING_DEFAULTS, **stored_m}
@@ -1071,7 +1074,6 @@ def build_app(
         monitoring["servers"] = {"provider": "remnawave", "config": cfg_s}
         await db.set_setting_json("monitoring", monitoring, service_id)
 
-        customers.invalidate(service_id)
         asyncio.create_task(health.refresh(service))
 
     async def _check_business_id_free(business_id: str, service_id: int | None) -> None:
@@ -1098,10 +1100,15 @@ def build_app(
         token = (body.token or "").strip()
         if not token and body.service_id is not None:
             # Токен наружу не отдаётся, поэтому форма правки шлёт его пустым:
-            # берём сохранённый оттуда же, куда его кладёт _save_service_api /
-            # _save_service_remnawave — оба пишут token в customer.config.
-            stored = await db.get_setting_json("customer", None, body.service_id) or {}
-            token = (stored.get("config") or {}).get("token") or ""
+            # берём сохранённый оттуда же, куда его кладёт соответствующий
+            # _save_service_* — bot_api в customer.config, remnawave в
+            # monitoring.servers.config (это разные настройки, не путать).
+            if body.provider == "remnawave":
+                stored = await db.get_setting_json("monitoring", None, body.service_id) or {}
+                token = ((stored.get("servers") or {}).get("config") or {}).get("token") or ""
+            else:
+                stored = await db.get_setting_json("customer", None, body.service_id) or {}
+                token = (stored.get("config") or {}).get("token") or ""
 
         if body.provider == "remnawave":
             try:
@@ -1142,7 +1149,8 @@ def build_app(
         for s in await db.get_services(only_active=False):
             api = await db.get_setting_json("customer", None, s["id"]) or {}
             fb = await db.get_setting_json("fallback_sender", None, s["id"]) or {}
-            out.append(_fmt_service(s, 0, api, fb))
+            mon = await db.get_setting_json("monitoring", None, s["id"]) or {}
+            out.append(_fmt_service(s, 0, api, fb, mon))
         return out
 
     @app.post("/api/services")
@@ -1174,7 +1182,8 @@ def build_app(
         await ws.broadcast({"type": "services_changed"})
         return _fmt_service(service, 0,
                             await db.get_setting_json("customer", None, service["id"]),
-                            await db.get_setting_json("fallback_sender", None, service["id"]))
+                            await db.get_setting_json("fallback_sender", None, service["id"]),
+                            await db.get_setting_json("monitoring", None, service["id"]))
 
     @app.put("/api/services/{service_id}")
     async def update_service(service_id: int, body: ServiceBody,
@@ -1195,7 +1204,8 @@ def build_app(
         await ws.broadcast({"type": "services_changed"})
         return _fmt_service(service, 0,
                             await db.get_setting_json("customer", None, service_id),
-                            await db.get_setting_json("fallback_sender", None, service_id))
+                            await db.get_setting_json("fallback_sender", None, service_id),
+                            await db.get_setting_json("monitoring", None, service_id))
 
     @app.delete("/api/services/{service_id}")
     async def delete_service(service_id: int, operator: dict = Depends(require_auth)):

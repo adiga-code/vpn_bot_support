@@ -123,7 +123,10 @@ function ServiceHealthSection({ snapshot, showServiceTitle }) {
         </div>
       )}
 
-      <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold">Серверы</div>
+      <div className="flex items-center gap-1.5">
+        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold">Серверы</div>
+        <MockBadge show={snapshot.serversMock} />
+      </div>
       {servers.length === 0 ? (
         <div className="text-xs text-[#6b7280]">Нет данных</div>
       ) : (
@@ -132,7 +135,10 @@ function ServiceHealthSection({ snapshot, showServiceTitle }) {
         </div>
       )}
 
-      <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold pt-2">Боты</div>
+      <div className="flex items-center gap-1.5 pt-2">
+        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold">Боты</div>
+        <MockBadge show={snapshot.botsMock} />
+      </div>
       {bots.length === 0 ? (
         <div className="text-xs text-[#6b7280]">Нет данных</div>
       ) : (
@@ -306,10 +312,16 @@ function HealthScreen({ serviceId = null, currentOperator = null, mobileChrome =
           <div className="flex items-start gap-3 bg-[#2a1f0a] border border-[#f59e0b]/30 rounded-xl px-4 py-3 text-sm text-[#f59e0b]">
             <span className="text-base leading-none mt-0.5">⚠</span>
             <div>
-              <span className="font-medium">Тестовые данные (мок)</span>
+              {/* Называем именно то, что ещё не подключено — иначе баннер
+                  «всё выдумано» держится даже когда серверы уже реальные, а
+                  моком остались только боты (или наоборот). */}
+              <span className="font-medium">
+                Тестовые данные (мок): {data.serversMock && data.botsMock ? "серверы и боты"
+                  : data.serversMock ? "серверы" : "боты"}
+              </span>
               <span className="text-[#f59e0b]/70 ml-2">
-                — серверы и боты здесь выдуманы, реальный источник ещё не подключён.
-                Источник задаётся на сервис в настройке мониторинга: реализуйте
+                — реальный источник ещё не подключён. Источник задаётся на сервис в
+                настройке мониторинга: реализуйте
                 <code className="bg-[#1a1200] px-1 rounded text-xs mx-1">HealthProvider</code>
                 и укажите его имя вместо <code className="bg-[#1a1200] px-1 rounded text-xs">mock</code>.
               </span>
