@@ -485,25 +485,31 @@ function CustomerSection({ showToast, service }) {
           Источник данных · {cfg.serviceName}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {(cfg.available || []).map((p) => {
-            const on = cfg.provider === p.name;
-            return (
-              <button key={p.name} disabled={saving} onClick={() => pickProvider(p.name)}
-                title={p.description}
-                className={"px-3 py-1.5 rounded-md text-xs font-medium border transition disabled:opacity-40 " +
-                  (on ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
-                      : "text-[#6b7280] border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24]/60")}>
-                {p.name}{p.isMock ? " (мок)" : ""}
-              </button>
-            );
-          })}
+          {/* Остальные источники (http, mock, remnawave и свои) в проде не
+              используются — показываем только bot_api, плюс то, что уже
+              реально выбрано у этого сервиса, чтобы не спрятать активный
+              выбор молча, если он вдруг не bot_api. */}
+          {(cfg.available || [])
+            .filter((p) => p.name === "bot_api" || p.name === cfg.provider)
+            .map((p) => {
+              const on = cfg.provider === p.name;
+              return (
+                <button key={p.name} disabled={saving} onClick={() => pickProvider(p.name)}
+                  title={p.description}
+                  className={"px-3 py-1.5 rounded-md text-xs font-medium border transition disabled:opacity-40 " +
+                    (on ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
+                        : "text-[#6b7280] border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24]/60")}>
+                  {p.name}{p.isMock ? " (мок)" : ""}
+                </button>
+              );
+            })}
         </div>
         {current && <div className="text-[11px] text-[#6b7280]">{current.description}</div>}
         {current?.isMock && (
           <div className="text-[11px] text-[#f59e0b] bg-[#f59e0b]/10 border border-[#f59e0b]/30 rounded-lg px-3 py-2">
-            Сейчас показываются выдуманные данные. Чтобы подключить свою API,
-            выберите <code className="text-[#7BA8F9]">http</code> и опишите адреса ниже,
-            либо положите свой провайдер файлом в <code className="text-[#7BA8F9]">app/providers/</code>.
+            Сейчас показываются выдуманные данные. Чтобы подключить настоящую API,
+            выберите <code className="text-[#7BA8F9]">bot_api</code> и заполните адрес и
+            токен Support API в форме сервиса («Настройки → Сервисы»).
           </div>
         )}
       </div>
