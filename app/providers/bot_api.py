@@ -117,12 +117,19 @@ class BotApiProvider(CustomerProvider):
                                        message="В боте нет пользователя с таким Telegram ID")
             raise
 
+        # tgid берём с fallback на chat_id, которым резолвили: некоторые
+        # сборки бота не эхуют это поле обратно, и голое u["tgid"] роняло
+        # весь fetch() KeyError-ом (мимо _maybe — тот защищает только await,
+        # а не построение f-строки с аргументом до него), карточка при этом
+        # откатывалась на устаревший снапшот с сообщением "bot_api: 'tgid'".
+        tgid = u.get("tgid") or chat_id
+
         # Рефералы и платежи — отдельные разделы; тянем параллельно, они
         # быстрые и в панель не ходят.
         referrals_raw, payments_raw = await asyncio.gather(
-            self._maybe(self._request("GET", f"/users/{u['tgid']}/referrals",
+            self._maybe(self._request("GET", f"/users/{tgid}/referrals",
                                       params={"limit": 50}), "referrals"),
-            self._maybe(self._request("GET", f"/users/{u['tgid']}/payments",
+            self._maybe(self._request("GET", f"/users/{tgid}/payments",
                                       params={"limit": 20}), "payments"),
         )
 
@@ -188,7 +195,7 @@ class BotApiProvider(CustomerProvider):
 
         active = next((k for k in keys if k.active), keys[0] if keys else None)
         return CustomerProfile(
-            tg_id=str(u.get("tgid")),
+            tg_id=str(tgid),
             username=u.get("username") or "",
             name=u.get("fullname") or "",
             language=u.get("lang") or u.get("lang_tg") or "",
