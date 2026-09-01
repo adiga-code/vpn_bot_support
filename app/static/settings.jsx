@@ -67,6 +67,8 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       hint: "сообщение клиентам сервиса" },
     { id: "templates",  label: "Шаблоны",       icon: "template",  adminOnly: true,  scope: "service",
       hint: "быстрые ответы по «/»" },
+    { id: "folders",    label: "Папки",         icon: "grid",      adminOnly: true,  scope: "service",
+      hint: "свои разделы в списке тикетов" },
   ];
   const sections = allSections.filter(s => !s.adminOnly || isAdmin);
 
@@ -110,6 +112,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       {section === "sounds"        && <SoundsSection showToast={showToast} />}
       {section === "broadcast"     && <BroadcastSection showToast={showToast} service={svc} />}
       {section === "templates"     && <TemplatesSection showToast={showToast} service={svc} />}
+      {section === "folders"       && <FoldersSection showToast={showToast} service={svc} />}
     </>
   );
 
@@ -1911,6 +1914,208 @@ function TemplateModal({ template, groups, onSave, onClose }) {
           </div>
         </form>
       </div>
+    </ModalOverlay>
+  );
+}
+
+// ── Секция «Папки»: свои разделы списка тикетов ──────────────────────────────
+// Папка — ярлык поверх статуса: тикет остаётся в «В работе» или «Ожидании» и
+// дополнительно лежит в папке, куда его положил оператор. Папки пер-сервисные.
+
+const FOLDER_EMOJI = ["📁", "🔥", "⭐", "💳", "🐞", "🔒", "📌", "🚚", "🎯", "🧊", "📞", "🧾"];
+
+function FoldersSection({ showToast, service }) {
+  const [folders, setFolders] = useStateT(null);
+  const [modal, setModal] = useStateT(null);      // {} — новая, объект — правка
+  const [confirmDel, setConfirmDel] = useStateT(null);
+  const [busy, setBusy] = useStateT(false);
+
+  async function reload() {
+    try {
+      setFolders(await window.apiFetch("GET", "/api/folders" + svcQuery(service)));
+    } catch { setFolders([]); }
+  }
+  useEffectT(() => { setFolders(null); if (service) reload(); }, [service?.id]);
+
+  async function save(form) {
+    try {
+      if (form.id) {
+        await window.apiFetch("PUT", `/api/folders/${form.id}`, form);
+        showToast("Папка обновлена");
+      } else {
+        await window.apiFetch("POST", "/api/folders" + svcQuery(service), form);
+        showToast("Папка создана");
+      }
+      setModal(null);
+      reload();
+    } catch (e) { showToast(e?.detail || "Ошибка сохранения"); }
+  }
+
+  async function remove(f) {
+    try {
+      await window.apiFetch("DELETE", `/api/folders/${f.id}`);
+      showToast("Папка удалена");
+      reload();
+    } catch (e) { showToast(e?.detail || "Ошибка удаления"); }
+    setConfirmDel(null);
+  }
+
+  // Порядок правится стрелками: меняем sort_order соседей местами.
+  async function move(index, delta) {
+    const next = index + delta;
+    if (next < 0 || next >= folders.length) return;
+    const a = folders[index], b = folders[next];
+    setBusy(true);
+    try {
+      await window.apiFetch("PUT", `/api/folders/${a.id}`,
+        { name: a.name, emoji: a.emoji, color: a.color, sort_order: b.sortOrder });
+      await window.apiFetch("PUT", `/api/folders/${b.id}`,
+        { name: b.name, emoji: b.emoji, color: b.color, sort_order: a.sortOrder });
+      await reload();
+    } catch { showToast("Не удалось изменить порядок"); }
+    setBusy(false);
+  }
+
+  if (folders === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+
+  return (
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold text-[#f1f1f5]">Папки</h1>
+          <div className="text-xs text-[#6b7280] mt-0.5">
+            Свои разделы в списке тикетов — рядом со статусными
+          </div>
+        </div>
+        <button onClick={() => setModal({})}
+          className="shrink-0 px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5">
+          <Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />
+          Добавить папку
+        </button>
+      </div>
+
+      <ServiceBanner service={service} hint="папки свои у каждого ВПН-а" />
+
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden divide-y divide-[#2a2a3a]/40">
+        {folders.length === 0 && (
+          <div className="px-5 py-10 text-center text-xs text-[#6b7280]">
+            Папок нет. Тикеты раскладываются по ним вручную — из меню действий над тикетом.
+          </div>
+        )}
+        {folders.map((f, i) => (
+          <div key={f.id} className="px-4 py-3 flex items-center gap-3 hover:bg-[#1a1a24]/40 transition">
+            <span className="w-9 h-9 shrink-0 rounded-[11px] flex items-center justify-center text-lg"
+                  style={{ background: f.color + "22", border: `1px solid ${f.color}55` }}>
+              {f.emoji}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm text-[#f1f1f5] truncate">{f.name}</div>
+              <div className="text-[11px] text-[#6b7280]">
+                {f.openCount > 0 ? `${f.openCount} открытых тикетов` : "пусто"}
+              </div>
+            </div>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <button onClick={() => move(i, -1)} disabled={busy || i === 0} aria-label="Выше"
+                className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded disabled:opacity-25">↑</button>
+              <button onClick={() => move(i, 1)} disabled={busy || i === folders.length - 1} aria-label="Ниже"
+                className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded disabled:opacity-25">↓</button>
+              <button onClick={() => setModal(f)} aria-label="Изменить"
+                className="p-1.5 text-[#6b7280] hover:text-[#7BA8F9] hover:bg-[#4F8EF7]/10 rounded transition"><Icon name="edit" className="w-4 h-4" /></button>
+              <button onClick={() => setConfirmDel(f)} aria-label="Удалить"
+                className="p-1.5 text-[#6b7280] hover:text-[#ef4444] hover:bg-[#ef4444]/10 rounded transition"><Icon name="trash" className="w-4 h-4" /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {modal && <FolderModal editing={modal.id ? modal : null}
+                             onSave={save} onClose={() => setModal(null)} />}
+
+      {confirmDel && (
+        <ModalOverlay onClose={() => setConfirmDel(null)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
+            <div className="font-semibold text-[#f1f1f5] mb-1">Удалить папку «{confirmDel.name}»?</div>
+            <div className="text-sm text-[#6b7280] mb-5">
+              Тикеты не пропадут — они просто перестанут быть разложенными.
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirmDel(null)} className="px-3 py-1.5 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+              <button onClick={() => remove(confirmDel)} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30">Удалить</button>
+            </div>
+          </div>
+        </ModalOverlay>
+      )}
+    </div>
+  );
+}
+
+function FolderModal({ editing, onSave, onClose }) {
+  const [name, setName] = useStateT(editing?.name || "");
+  const [emoji, setEmoji] = useStateT(editing?.emoji || FOLDER_EMOJI[0]);
+  const [color, setColor] = useStateT(editing?.color || SERVICE_COLORS[0]);
+
+  function submit(e) {
+    e?.preventDefault();
+    if (!name.trim()) return;
+    onSave({ id: editing?.id, name: name.trim(), emoji: emoji.trim() || "📁", color });
+  }
+
+  return (
+    <ModalOverlay onClose={onClose}>
+      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden">
+        <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
+          <div className="font-semibold text-[#f1f1f5]">{editing ? "Редактировать папку" : "Новая папка"}</div>
+          <button type="button" onClick={onClose} className="p-1 text-[#6b7280] hover:text-[#f1f1f5] rounded"><Icon name="x" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="flex items-center gap-3">
+            <span className="w-11 h-11 shrink-0 rounded-xl flex items-center justify-center text-xl"
+                  style={{ background: color + "22", border: `1px solid ${color}55` }}>
+              {emoji || "📁"}
+            </span>
+            <div className="flex-1 min-w-0">
+              <label className="block text-xs text-[#6b7280] mb-1.5">Название</label>
+              <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Оплаты"
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">
+              Эмодзи <span className="text-[#3a3a4a]">— или впишите своё</span>
+            </label>
+            <div className="flex items-center gap-2">
+              <input value={emoji} onChange={(e) => setEmoji(e.target.value)} maxLength={4}
+                className="w-16 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-2 py-2 text-base text-center text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50" />
+              <div className="flex flex-wrap gap-1 flex-1">
+                {FOLDER_EMOJI.map((e) => (
+                  <button key={e} type="button" onClick={() => setEmoji(e)}
+                    className={"w-8 h-8 rounded-lg text-base transition " +
+                      (emoji === e ? "bg-[#1a1a24] ring-1 ring-[#4F8EF7]/50" : "hover:bg-[#1a1a24]")}>
+                    {e}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Цвет</label>
+            <div className="flex flex-wrap gap-2">
+              {SERVICE_COLORS.map((c) => (
+                <button key={c} type="button" onClick={() => setColor(c)}
+                  className={"w-7 h-7 rounded-lg transition " + (color === c ? "ring-2 ring-offset-2 ring-offset-[#13131a] ring-white/60" : "")}
+                  style={{ background: c }}></button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="px-5 py-4 border-t border-[#2a2a3a] flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+          <button type="submit" disabled={!name.trim()}
+            className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold disabled:opacity-40">
+            {editing ? "Сохранить" : "Создать"}
+          </button>
+        </div>
+      </form>
     </ModalOverlay>
   );
 }

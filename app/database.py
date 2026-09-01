@@ -444,6 +444,39 @@ class DatabaseManager:
 
         await self._migrate_monitoring(conn)
         await self._migrate_customer(conn)
+        await self._migrate_folders(conn)
+
+    async def _migrate_folders(self, conn):
+        """Папки-ярлыки: второй, независимый срез списка тикетов поверх статусов.
+        Тикет остаётся в своём статусном разделе («В работе», «Ожидание») и
+        дополнительно лежит в папке, куда его положил оператор.
+
+        Папка принадлежит ВПН-сервису: у каждого свои поводы раскладывать
+        тикеты, а одноимённые папки двух сервисов в одном ряду читались бы как
+        одна."""
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ticket_folders (
+                id         SERIAL PRIMARY KEY,
+                service_id INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+                name       TEXT NOT NULL,
+                emoji      TEXT NOT NULL DEFAULT '📁',
+                color      TEXT NOT NULL DEFAULT '#4F8EF7',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS ticket_folders_service_idx "
+            "ON ticket_folders (service_id, sort_order, id)"
+        )
+        # SET NULL, а не CASCADE: удаление папки не должно уносить тикеты.
+        await conn.execute(
+            "ALTER TABLE dialogs ADD COLUMN IF NOT EXISTS folder_id INTEGER "
+            "REFERENCES ticket_folders(id) ON DELETE SET NULL"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS dialogs_folder_idx ON dialogs (folder_id)"
+        )
 
     async def _migrate_monitoring(self, conn):
         """Мониторинг серверов был глобальным (SERVERS в .env) — переносим его в
@@ -652,6 +685,58 @@ class DatabaseManager:
         counts.update({r["service_id"]: int(r["cnt"]) for r in rows})
         return counts
 
+    # ── Папки тикетов ─────────────────────────────────────────────────────────
+
+    async def get_folders(self, service_ids: list[int]) -> list[dict]:
+        if not service_ids:
+            return []
+        rows = await self.pool.fetch(
+            """SELECT f.*, COUNT(d.dialog_id) FILTER (WHERE d.status <> 'closed') AS open_count
+               FROM ticket_folders f
+                    LEFT JOIN dialogs d ON d.folder_id = f.id
+               WHERE f.service_id = ANY($1::int[])
+               GROUP BY f.id
+               ORDER BY f.sort_order, f.id""",
+            service_ids,
+        )
+        return [dict(r) for r in rows]
+
+    async def get_folder(self, folder_id: int) -> Optional[dict]:
+        row = await self.pool.fetchrow("SELECT * FROM ticket_folders WHERE id=$1", folder_id)
+        return dict(row) if row else None
+
+    async def create_folder(self, service_id: int, name: str, emoji: str,
+                            color: str) -> dict:
+        sort_order = await self.pool.fetchval(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM ticket_folders WHERE service_id=$1",
+            service_id,
+        )
+        row = await self.pool.fetchrow(
+            """INSERT INTO ticket_folders (service_id, name, emoji, color, sort_order)
+               VALUES ($1,$2,$3,$4,$5) RETURNING *""",
+            service_id, name, emoji, color, sort_order,
+        )
+        return dict(row)
+
+    async def update_folder(self, folder_id: int, name: str, emoji: str, color: str,
+                            sort_order: int = None) -> Optional[dict]:
+        row = await self.pool.fetchrow(
+            """UPDATE ticket_folders
+               SET name=$1, emoji=$2, color=$3, sort_order=COALESCE($4, sort_order)
+               WHERE id=$5 RETURNING *""",
+            name, emoji, color, sort_order, folder_id,
+        )
+        return dict(row) if row else None
+
+    async def delete_folder(self, folder_id: int) -> bool:
+        result = await self.pool.execute("DELETE FROM ticket_folders WHERE id=$1", folder_id)
+        return result == "DELETE 1"
+
+    async def set_dialog_folder(self, dialog_id: str, folder_id: int | None):
+        await self.pool.execute(
+            "UPDATE dialogs SET folder_id=$1 WHERE dialog_id=$2", folder_id, dialog_id
+        )
+
     # ── Dialogs ───────────────────────────────────────────────────────────────
 
     async def upsert_dialog(
@@ -722,8 +807,10 @@ class DatabaseManager:
         SELECT d.*, s.slug AS service_slug, s.name AS service_name,
                s.color AS service_color, s.emoji AS service_emoji,
                s.qdrant_collection, s.n8n_webhook_url,
-               s.business_connection_id
+               s.business_connection_id,
+               f.name AS folder_name, f.emoji AS folder_emoji, f.color AS folder_color
         FROM dialogs d JOIN services s ON s.id = d.service_id
+                  LEFT JOIN ticket_folders f ON f.id = d.folder_id
     """
 
     async def get_all_dialogs(self, service_ids: list[int]) -> list[dict]:

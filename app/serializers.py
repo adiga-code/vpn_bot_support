@@ -59,6 +59,10 @@ def fmt_dialog(row: dict, tickets: list = None) -> dict:
         "rating": row.get("rating"),
         "notes": row.get("user_notes") or "",
         "photoUrl": row.get("user_photo_url") or None,
+        # Папка-ярлык: срез поверх статуса, тикет остаётся и в своём разделе.
+        "folderId": row.get("folder_id"),
+        "folderName": row.get("folder_name"),
+        "folderEmoji": row.get("folder_emoji"),
         "waitingReason": row.get("waiting_reason"),
         "slaSeconds": row.get("sla_seconds_total") or 0,
         "slaStartedAt": row["sla_started_at"].isoformat() if row.get("sla_started_at") else None,

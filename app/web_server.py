@@ -192,6 +192,20 @@ class ApiCheckBody(BaseModel):
     # пустым Bearer и рисует «Связи нет» на исправном сервисе.
     service_id: Optional[int] = None
 
+class FolderBody(BaseModel):
+    """Папка-ярлык: имя и эмодзи задаёт админ, цвет — из той же палитры, что
+    у сервисов."""
+    name: str
+    emoji: str = "📁"
+    color: str = "#4F8EF7"
+    sort_order: Optional[int] = None
+
+
+class DialogFolderBody(BaseModel):
+    # null — вынуть тикет из папки
+    folder_id: Optional[int] = None
+
+
 class OperatorServicesBody(BaseModel):
     service_ids: list[int] = []
 
@@ -300,6 +314,25 @@ def build_app(
             raise HTTPException(404)
         if dialog["service_id"] not in await db.get_operator_service_ids(operator):
             raise HTTPException(403, "Нет доступа к этому сервису")
+        return dialog
+
+    async def require_dialog_write(dialog_id: str, operator: dict) -> dict:
+        """То же плюс владение: пока тикет в работе у одного оператора, второй
+        такого же уровня его только читает — двое, пишущих клиенту разное, хуже
+        любой задержки с ответом. Забрать тикет он может кнопкой «Запросить»:
+        владелец передаёт его сам.
+
+        Админ не ограничен — иначе разруливать зависшие тикеты было бы некому.
+        Комментарии и заметки под этот гард не попадают: ради них второй
+        оператор в чужой тикет и заходит.
+
+        423 Locked, а не 403: «тикет занят» и «нет доступа к сервису» — разные
+        вещи, и фронт должен уметь их различить."""
+        dialog = await require_dialog(dialog_id, operator)
+        owner = dialog.get("assigned_operator")
+        if (operator["role"] != "admin" and owner and owner != operator["name"]
+                and dialog["status"] in ("in_progress", "waiting")):
+            raise HTTPException(423, f"Тикет в работе у оператора {owner}")
         return dialog
 
     # ── Static / index ────────────────────────────────────────────────────────
@@ -961,6 +994,88 @@ def build_app(
             print(f"[services] delete_collection failed: {e}")
         await ws.broadcast({"type": "services_changed"})
         return {"ok": True}
+
+    # ── Папки тикетов ─────────────────────────────────────────────────────────
+    # Папка — второй срез списка поверх статусов: тикет остаётся в «В работе»
+    # или «Ожидании» и дополнительно лежит в папке, куда его положил оператор.
+    # Создаёт и правит папки админ, раскладывает по ним — любой оператор.
+
+    def _fmt_folder(f: dict) -> dict:
+        return {"id": f["id"], "serviceId": f["service_id"], "name": f["name"],
+                "emoji": f.get("emoji") or "📁", "color": f.get("color") or "#4F8EF7",
+                "sortOrder": f.get("sort_order") or 0,
+                "openCount": int(f.get("open_count") or 0)}
+
+    async def require_folder(folder_id: int, operator: dict) -> dict:
+        folder = await db.get_folder(folder_id)
+        if not folder:
+            raise HTTPException(404, "Папка не найдена")
+        if folder["service_id"] not in await db.get_operator_service_ids(operator):
+            raise HTTPException(403, "Нет доступа к этому сервису")
+        return folder
+
+    @app.get("/api/folders")
+    async def get_folders(service_id: Optional[int] = None,
+                          operator: dict = Depends(require_auth)):
+        """С service_id — папки одного ВПН-а; без него — всех доступных."""
+        ids = await db.get_operator_service_ids(operator)
+        if service_id is not None:
+            if service_id not in ids:
+                raise HTTPException(403, "Нет доступа к этому сервису")
+            ids = [service_id]
+        return [_fmt_folder(f) for f in await db.get_folders(ids)]
+
+    @app.post("/api/folders")
+    async def create_folder(body: FolderBody, service_id: Optional[int] = None,
+                            operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not body.name.strip():
+            raise HTTPException(400, "Название обязательно")
+        service = await require_service(service_id, operator)
+        folder = await db.create_folder(service["id"], body.name.strip(),
+                                        body.emoji.strip() or "📁", body.color)
+        await ws.broadcast({"type": "folders_changed", "service_id": service["id"]})
+        return _fmt_folder(folder)
+
+    @app.put("/api/folders/{folder_id}")
+    async def update_folder(folder_id: int, body: FolderBody,
+                            operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        folder = await require_folder(folder_id, operator)
+        if not body.name.strip():
+            raise HTTPException(400, "Название обязательно")
+        updated = await db.update_folder(folder_id, body.name.strip(),
+                                         body.emoji.strip() or "📁", body.color,
+                                         body.sort_order)
+        await ws.broadcast({"type": "folders_changed", "service_id": folder["service_id"]})
+        return _fmt_folder(updated)
+
+    @app.delete("/api/folders/{folder_id}")
+    async def delete_folder(folder_id: int, operator: dict = Depends(require_auth)):
+        """Тикеты из удалённой папки не пропадают — просто перестают быть
+        разложенными (folder_id → NULL по внешнему ключу)."""
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        folder = await require_folder(folder_id, operator)
+        await db.delete_folder(folder_id)
+        await ws.broadcast({"type": "folders_changed", "service_id": folder["service_id"]})
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/folder")
+    async def set_dialog_folder(dialog_id: str, body: DialogFolderBody,
+                                operator: dict = Depends(require_auth)):
+        dialog = await require_dialog_write(dialog_id, operator)
+        if body.folder_id is not None:
+            folder = await require_folder(body.folder_id, operator)
+            if folder["service_id"] != dialog["service_id"]:
+                raise HTTPException(400, "Папка другого сервиса")
+        await db.set_dialog_folder(dialog_id, body.folder_id)
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+                           updated["service_id"])
+        return {"ok": True, "folderId": body.folder_id}
 
     # ── Operators ─────────────────────────────────────────────────────────────
 

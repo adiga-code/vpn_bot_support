@@ -100,6 +100,11 @@ function ConvCard({ conv, active, onClick, showServiceTag = false, flat = false 
             <div className="flex items-center gap-1.5 min-w-0">
               {/* В режиме «Все сервисы» — чей это тикет */}
               {showServiceTag && <ServiceDot color={conv.serviceColor} name={conv.serviceName} />}
+              {conv.folderEmoji && (
+                <span title={"Папка: " + conv.folderName} className="shrink-0 text-[11px] leading-none">
+                  {conv.folderEmoji}
+                </span>
+              )}
               <div className="text-sm font-medium text-[#f1f1f5] truncate">{conv.name}</div>
             </div>
             <div className="text-[10px] text-[#6b7280] shrink-0">{conv.time}</div>
@@ -483,6 +488,7 @@ function DialogsScreen({
   onReply, onToggleAI, onClose, onHandoff, onReopen, onWait,
   currentOperator, operators,
   showServiceTag = false,
+  serviceId = null, folders = [],
   viewport, mobileChrome, onMobileChatOpen,
 }) {
   const [searchQ, setSearchQ] = useStateD("");
@@ -496,6 +502,7 @@ function DialogsScreen({
   const [confirmClose, setConfirmClose] = useStateD(false);
   const [showTemplates, setShowTemplates] = useStateD(false);
   const [showTransfer, setShowTransfer] = useStateD(false);
+  const [showFolderPick, setShowFolderPick] = useStateD(false);
   // Шаблоны нужны сразу: по «/» список должен появляться мгновенно, без похода
   // в сеть. Модалка шаблонов берёт этот же массив.
   const [templates, setTemplates] = useStateD([]);
@@ -616,15 +623,17 @@ function DialogsScreen({
   };
   const MY_SECTIONS  = ["wip", "waiting", "closed"];
   const ALL_SECTIONS = ["wip", "waiting", "queue", "ai", "closed"];
-  const ALL_MAIN = ["wip", "waiting", "queue"];
-  const ALL_MORE = ["ai", "closed"];
-  const [moreOpen, setMoreOpen] = useStateD(false);
+
+  // Папки видны только при выбранном ВПН-е: они пер-сервисные, и одноимённые
+  // папки двух сервисов в одном ряду читались бы как одна.
+  const visibleFolders = serviceId === null ? [] : folders;
+  const isFolder = (f) => String(f).startsWith("folder:");
+  const folderIdOf = (f) => Number(String(f).slice(7));
 
   function switchView(v) {
     setView(v);
-    setMoreOpen(false);
     const valid = v === "my" ? MY_SECTIONS : ALL_SECTIONS;
-    if (!valid.includes(filter)) setFilter("wip");
+    if (!isFolder(filter) && !valid.includes(filter)) setFilter("wip");
   }
 
   const baseList = useMemoD(() =>
@@ -635,7 +644,11 @@ function DialogsScreen({
   );
 
   const filtered = useMemoD(() => {
-    let list = baseList.filter((c) => c.status === SECTION_STATUS[filter]);
+    // В папке показываем открытые тикеты: закрытые живут в своём разделе,
+    // иначе счётчик папки и её содержимое расходились бы.
+    let list = isFolder(filter)
+      ? baseList.filter((c) => c.folderId === folderIdOf(filter) && c.status !== "closed")
+      : baseList.filter((c) => c.status === SECTION_STATUS[filter]);
     if (searchQ.trim()) {
       const q = searchQ.toLowerCase();
       list = list.filter(
@@ -657,8 +670,35 @@ function DialogsScreen({
     for (const id of ALL_SECTIONS) {
       res[id] = baseList.filter((c) => c.status === SECTION_STATUS[id]).length;
     }
+    for (const f of visibleFolders) {
+      res["folder:" + f.id] = baseList.filter(
+        (c) => c.folderId === f.id && c.status !== "closed").length;
+    }
     return res;
-  }, [baseList]);
+  }, [baseList, visibleFolders]);
+
+  // Один список вкладок на обе раскладки: статусные разделы, разделитель,
+  // папки. Ряд прокручивается — новые папки не ломают вёрстку.
+  const sectionTabs = useMemoD(() => {
+    const statuses = (view === "my" ? MY_SECTIONS : ALL_SECTIONS).map((id) => ({
+      key: id, icon: SECTION_META[id].icon, label: SECTION_META[id].label,
+    }));
+    return statuses.concat(visibleFolders.map((f) => ({
+      key: "folder:" + f.id, icon: f.emoji, label: f.name, color: f.color,
+    })));
+  }, [view, visibleFolders]);
+
+  async function setDialogFolder(folderId) {
+    setShowFolderPick(false);
+    if (!active) return;
+    try {
+      await window.apiFetch("POST", `/api/dialogs/${active.id}/folder`, { folder_id: folderId });
+      const f = folders.find((x) => x.id === folderId);
+      showToast(f ? `Тикет в папке «${f.name}»` : "Тикет вынут из папки");
+    } catch (e) {
+      showToast(e?.status === 423 ? e.detail : "Не удалось изменить папку");
+    }
+  }
 
   async function handleTransfer(operatorName) {
     setShowTransfer(false);
@@ -802,6 +842,9 @@ function DialogsScreen({
       ? [{ icon: "clock", label: "В ожидание", run: waitDialog }] : []),
     ...(active.status !== "closed"
       ? [{ icon: "arrowRight", label: "Передать оператору", run: () => setShowTransfer(true) }] : []),
+    ...(folders.length > 0
+      ? [{ icon: "grid", label: active.folderId ? "Сменить папку" : "Положить в папку",
+           run: () => setShowFolderPick(true) }] : []),
     { icon: "link", label: "Скопировать ссылку", run: copyDialogLink },
     ...(active.status !== "closed"
       ? [{ icon: "x", label: "Закрыть диалог", danger: true, run: () => setConfirmClose(true) }] : []),
@@ -832,68 +875,31 @@ function DialogsScreen({
         ))}
       </div>
       {searchField}
-      <div className="flex gap-1 text-[11px] relative">
-        {(view === "my" ? MY_SECTIONS : ALL_MAIN).map((id) => (
-          <button
-            key={id}
-            onClick={() => { setFilter(id); setMoreOpen(false); }}
-            className={
-              "flex-1 px-1 py-1.5 rounded-md font-medium transition flex flex-col items-center gap-0.5 " +
-              (filter === id
-                ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
-                : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
-            }
-          >
-            <span className="text-sm leading-none">{SECTION_META[id].icon}</span>
-            <span className="whitespace-nowrap">{SECTION_META[id].label}</span>
-            <span className="opacity-60">{counts[id]}</span>
-          </button>
-        ))}
-        {view === "all" && (
-          <>
+      {/* Ряд разделов прокручивается вправо: статусных пять, а папок сколько
+          угодно, и «ещё»-меню, в которое раньше прятались ИИ и Закрытые,
+          столько уже не вместит. */}
+      <div className="flex gap-1 text-[11px] overflow-x-auto scrollbar-thin pb-0.5">
+        {sectionTabs.map((t, i) => (
+          <React.Fragment key={t.key}>
+            {i > 0 && !isFolder(sectionTabs[i - 1].key) && isFolder(t.key) && (
+              <div className="w-px shrink-0 my-1.5 bg-[#2a2a3a]"></div>
+            )}
             <button
-              onClick={() => setMoreOpen((v) => !v)}
-              title="Ещё разделы"
+              onClick={() => setFilter(t.key)}
+              title={t.label}
               className={
-                "px-2 py-1.5 rounded-md font-medium transition flex flex-col items-center justify-center gap-0.5 " +
-                (ALL_MORE.includes(filter)
+                "shrink-0 min-w-[56px] max-w-[104px] px-1.5 py-1.5 rounded-md font-medium transition flex flex-col items-center gap-0.5 " +
+                (filter === t.key
                   ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
                   : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
               }
             >
-              {ALL_MORE.includes(filter) ? (
-                <>
-                  <span className="text-sm leading-none">{SECTION_META[filter].icon}</span>
-                  <span className="whitespace-nowrap">{SECTION_META[filter].label}</span>
-                  <span className="opacity-60">{counts[filter]}</span>
-                </>
-              ) : (
-                <span className="text-base leading-none px-0.5">⋯</span>
-              )}
+              <span className="text-sm leading-none">{t.icon}</span>
+              <span className="max-w-full truncate">{t.label}</span>
+              <span className="opacity-60">{counts[t.key] || 0}</span>
             </button>
-            {moreOpen && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setMoreOpen(false)}></div>
-                <div className="absolute right-0 top-full mt-1 z-20 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg shadow-2xl py-1 min-w-[150px]">
-                  {ALL_MORE.map((id) => (
-                    <button
-                      key={id}
-                      onClick={() => { setFilter(id); setMoreOpen(false); }}
-                      className={
-                        "w-full text-left px-3 py-2 flex items-center gap-2 transition " +
-                        (filter === id ? "text-[#7BA8F9]" : "text-[#d1d1d8] hover:bg-[#2a2a3a]/50")
-                      }
-                    >
-                      <span>{SECTION_META[id].icon}</span>
-                      <span>{SECTION_META[id].label}</span>
-                      <span className="opacity-60 ml-auto">{counts[id]}</span>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </>
-        )}
+          </React.Fragment>
+        ))}
       </div>
     </div>
   );
@@ -913,15 +919,16 @@ function DialogsScreen({
         ))}
       </div>
       <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
-        {(view === "my" ? MY_SECTIONS : ALL_SECTIONS).map((id) => (
-          <button key={id} onClick={() => setFilter(id)}
-            aria-label={"Раздел: " + SECTION_META[id].label}
+        {sectionTabs.map((t) => (
+          <button key={t.key} onClick={() => setFilter(t.key)}
+            aria-label={"Раздел: " + t.label}
             className={"shrink-0 min-h-[44px] px-3.5 rounded-full text-[12.5px] font-medium border transition " +
-              (filter === id
+              (filter === t.key
                 ? "bg-[#4F8EF7] border-[#4F8EF7] text-white"
                 : "bg-[#13131a] border-[#2a2a3a] text-[#9095a3]")}>
-            {SECTION_META[id].label}
-            {counts[id] > 0 && <span className="ml-1 font-mono opacity-75">{counts[id]}</span>}
+            {isFolder(t.key) && <span className="mr-1">{t.icon}</span>}
+            {t.label}
+            {counts[t.key] > 0 && <span className="ml-1 font-mono opacity-75">{counts[t.key]}</span>}
           </button>
         ))}
       </div>
@@ -1000,6 +1007,19 @@ function DialogsScreen({
           >
             <Icon name="arrowRight" className="w-3.5 h-3.5" />
             Передать
+          </button>
+        )}
+        {folders.length > 0 && (
+          <button
+            onClick={() => setShowFolderPick(true)}
+            title={active.folderName ? `Папка: ${active.folderName}` : "Положить в папку"}
+            className={"px-2.5 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 " +
+              (active.folderId
+                ? "border-[#3a3a4a] text-[#f1f1f5] bg-[#1a1a24]"
+                : "border-[#2a2a3a] text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}
+          >
+            <span className="text-sm leading-none">{active.folderEmoji || "📁"}</span>
+            <span className="max-w-[90px] truncate">{active.folderName || "Папка"}</span>
           </button>
         )}
         <button
@@ -1347,6 +1367,32 @@ function DialogsScreen({
       )}
       {showTemplates && <TemplatePickerModal onSelect={pickTemplate} templates={templates}
                                              onClose={() => setShowTemplates(false)} />}
+      <ActionShell open={showFolderPick} onClose={() => setShowFolderPick(false)}
+                   compact={compact} title="Папка тикета" subtitle={active?.name}>
+        <div className="space-y-1.5">
+          {folders.map((f) => (
+            <button key={f.id} onClick={() => setDialogFolder(f.id)}
+              className={"w-full min-h-[44px] px-3 rounded-lg flex items-center gap-2.5 text-left border transition " +
+                (active?.folderId === f.id
+                  ? "bg-[#1a1a24] border-[#3a3a4a] text-[#f1f1f5]"
+                  : "border-[#2a2a3a] text-[#d1d1d8] hover:bg-[#1a1a24]")}>
+              <span className="w-7 h-7 shrink-0 rounded-lg flex items-center justify-center text-base"
+                    style={{ background: f.color + "22", border: `1px solid ${f.color}55` }}>
+                {f.emoji}
+              </span>
+              <span className="flex-1 min-w-0 truncate text-sm">{f.name}</span>
+              {active?.folderId === f.id && <Icon name="check" className="w-4 h-4 text-[#22c55e] shrink-0" />}
+            </button>
+          ))}
+          {active?.folderId && (
+            <button onClick={() => setDialogFolder(null)}
+              className="w-full min-h-[44px] px-3 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] text-left">
+              Убрать из папки
+            </button>
+          )}
+        </div>
+      </ActionShell>
+
       {showTransfer && (
         <TransferModal
           activeDialog={active}
