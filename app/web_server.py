@@ -1500,9 +1500,12 @@ def build_app(
         if not text.strip():
             raise HTTPException(400, "File is empty")
         # У каждого сервиса своя коллекция Qdrant — базы знаний не смешиваются.
+        # db+service_id заставляют process_document полностью заменить прежнюю
+        # базу знаний сервиса новой — иначе разделы, удалённые из документа при
+        # правке, навсегда оставались бы в поиске ИИ.
         chunks = await process_document(
             text, kb_chat_client, settings.OPENAI_API_KEY, settings.QDRANT_URL,
-            service["qdrant_collection"],
+            service["qdrant_collection"], db=db, service_id=service["id"],
         )
         for c in chunks:
             await db.save_kb_article(

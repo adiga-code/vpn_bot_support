@@ -388,12 +388,19 @@ async def delete_from_qdrant(article_id: str, qdrant_url: str, collection: str):
 
 async def process_document(
     text: str, chat_client: "ChatClient", openai_key: str, qdrant_url: str, collection: str,
+    db=None, service_id: int = None,
 ) -> list[dict]:
     """Full pipeline: text → chunks → embeddings (OpenAI) → Qdrant.
 
     Structured markdown ("## " sections) is split deterministically; the
     chat LLM is only a fallback for unstructured documents.
-    """
+
+    `db`/`service_id` — если заданы, загрузка ПОЛНОСТЬЮ заменяет прежнюю базу
+    знаний этого сервиса, а не дополняет её: старая версия документа стирается
+    после того, как новая успешно собрана и провекторизована (если чанкинг или
+    эмбеддинги упали, рабочая база остаётся нетронутой). Без переустановки
+    раздел, удалённый из документа при правке, навсегда оставался бы в поиске
+    ИИ — с мелкими чанками по "### " это особенно заметно."""
     try:
         chunks = parse_markdown_sections(text)
         if chunks:
@@ -406,6 +413,9 @@ async def process_document(
             return []
         print(f"[KB] Created {len(chunks)} chunks, embedding...")
         chunks = await embed_chunks(chunks, openai_key)
+        if db is not None and service_id is not None:
+            await db.reset_kb(service_id)
+            await delete_collection(qdrant_url, collection)
         await ensure_collection(qdrant_url, collection)
         await upsert_to_qdrant(chunks, qdrant_url, collection)
         print(f"[KB] Upserted {len(chunks)} vectors to Qdrant collection '{collection}'")

@@ -1610,6 +1610,13 @@ function KBSection({ service }) {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = "";
+    // Загрузка заменяет базу знаний целиком, а не дополняет её — иначе разделы,
+    // удалённые из документа при правке, навсегда оставались бы в поиске ИИ.
+    // Поэтому спрашиваем, когда есть что потерять.
+    if (articles && articles.length > 0 &&
+        !window.confirm(`Загрузка заменит базу знаний целиком: ${articles.length} ` +
+                        `чанков будут удалены, вместо них встанут чанки из нового файла. ` +
+                        `Продолжить?`)) return;
     setUploading(true);
     setUploadErr(null);
     try {
@@ -1664,7 +1671,10 @@ function KBSection({ service }) {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-[#f1f1f5]">База знаний</h1>
-          <div className="text-xs text-[#6b7280] mt-0.5">{articles.length} чанков · используется ИИ для поиска</div>
+          <div className="text-xs text-[#6b7280] mt-0.5">
+            {articles.length} чанков · используется ИИ для поиска ·
+            {" "}<span className="text-[#f59e0b]">загрузка заменяет базу целиком</span>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {uploading && <span className="text-xs text-[#6b7280] animate-pulse">Обработка ИИ...</span>}
