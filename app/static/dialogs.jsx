@@ -34,8 +34,18 @@ function DaySeparator({ label }) {
   );
 }
 
-function DeliveryStatus({ status }) {
+function DeliveryStatus({ status, error }) {
   if (!status || status === "failed") return null;
+  // Резервный канал: сообщение дошло, но не тем путём, каким должно было —
+  // жёлтые галочки, а причина обхода в подсказке.
+  if (status === "delivered_fallback") {
+    return (
+      <span className="ml-1 font-bold text-[#eab308]"
+            title={"business-чат не принял: " + (error || "—")}>
+        ✓✓
+      </span>
+    );
+  }
   const delivered = status === "delivered";
   return (
     <span className={"ml-1 font-bold " + (delivered ? "text-[#4F8EF7]" : "text-[#6b7280]")}>
@@ -259,8 +269,11 @@ function MessageBubble({ msg, onImageClick, compact = false }) {
   if (msg.kind === "operator") {
     const hasFile = msg.fileType && msg.fileType !== "text";
     const failed = msg.deliveryStatus === "failed";
+    const viaFallback = msg.deliveryStatus === "delivered_fallback";
     const bubbleBorder = failed
       ? "bg-[#A855F7]/15 border border-[#ef4444]/60 text-[#f1f1f5]"
+      : viaFallback
+      ? "bg-[#A855F7]/15 border border-[#eab308]/50 text-[#f1f1f5]"
       : "bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5]";
     return (
       <div className="flex justify-end">
@@ -274,10 +287,16 @@ function MessageBubble({ msg, onImageClick, compact = false }) {
           }
           <div className="text-[10px] text-[#6b7280] mt-1 mr-2 text-right">
             {msg.operator} · {msgTime(msg)}
-            <DeliveryStatus status={msg.deliveryStatus} />
+            <DeliveryStatus status={msg.deliveryStatus} error={msg.deliveryError} />
           </div>
           {failed && msg.deliveryError && (
             <div className="text-[10px] text-[#ef4444] mt-0.5 mr-2 text-right">✗ {msg.deliveryError}</div>
+          )}
+          {viaFallback && (
+            <div className="text-[10px] text-[#eab308] mt-0.5 mr-2 text-right"
+                 title={msg.deliveryError || ""}>
+              доставлено резервным каналом
+            </div>
           )}
         </div>
       </div>

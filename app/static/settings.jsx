@@ -738,7 +738,8 @@ function ServicesSection({ showToast, onChanged }) {
         5. Загрузите базу знаний и задайте промпт — они пер-сервисные.
       </div>
 
-      {modal && <ServiceModal editing={modal.id ? modal : null} onSave={save} onClose={() => setModal(null)} />}
+      {modal && <ServiceModal editing={modal.id ? modal : null} onSave={save}
+                              showToast={showToast} onClose={() => setModal(null)} />}
 
       {confirmDel && (
         <ModalOverlay onClose={() => setConfirmDel(null)}>
@@ -762,7 +763,220 @@ function ServicesSection({ showToast, onChanged }) {
 // Подключение ВПН-сервиса. На виду только то, что нельзя не заполнить:
 // название, адрес и токен Support API, business_id аккаунта поддержки.
 // Слаг, цвет, эмодзи и вебхук n8n заполняются сами и лежат под «Дополнительно».
-function ServiceModal({ editing, onSave, onClose }) {
+// Резервный канал доставки. Ответ оператора уходит через n8n в business-чат
+// Telegram, и тот иногда отвечает BUSINESS_PEER_USAGE_MISSING — сообщение
+// теряется. Здесь подключается тот же аккаунт поддержки по MTProto: панель
+// повторит отправку им и покажет результат прямо в переписке.
+//
+// Авторизация требует сохранённого сервиса: коду из Телеграм нужно, куда
+// вернуться, а у несохранённого сервиса ещё нет id.
+function FallbackBlock({ service, showToast }) {
+  const [appId, setAppId] = useStateT(service?.fallbackAppId ? String(service.fallbackAppId) : "");
+  const [appHash, setAppHash] = useStateT("");
+  const [phone, setPhone] = useStateT(service?.fallbackPhone || "");
+  const [code, setCode] = useStateT("");
+  const [password, setPassword] = useStateT("");
+  const [session, setSession] = useStateT("");
+  // idle | code | 2fa
+  const [step, setStep] = useStateT("idle");
+  const [busy, setBusy] = useStateT(false);
+  const [state, setState] = useStateT({
+    enabled: !!service?.fallbackEnabled,
+    account: service?.fallbackAccount || "",
+    linked: !!service?.hasFallbackSession,
+  });
+  const [check, setCheck] = useStateT(null);
+
+  const base = service ? `/api/services/${service.id}/fallback` : null;
+
+  async function call(path, body, method = "POST") {
+    setBusy(true);
+    try {
+      return await window.apiFetch(method, base + path, body);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendCode() {
+    setCheck(null);
+    try {
+      await call("/send-code", { app_id: Number(appId), app_hash: appHash.trim(), phone: phone.trim() });
+      setStep("code");
+      showToast("Код отправлен в Телеграм");
+    } catch (e) { setCheck({ ok: false, error: e?.detail || "Не удалось отправить код" }); }
+  }
+
+  async function signIn() {
+    setCheck(null);
+    try {
+      const r = await call("/sign-in", { code: code.trim(), password });
+      if (r.needs2fa) { setStep("2fa"); showToast("Нужен пароль двухфакторки"); return; }
+      setState({ enabled: true, account: r.account, linked: true });
+      setStep("idle"); setCode(""); setPassword(""); setAppHash("");
+      showToast(`Аккаунт подключён: ${r.account}`);
+    } catch (e) { setCheck({ ok: false, error: e?.detail || "Не удалось войти" }); }
+  }
+
+  async function useSession() {
+    setCheck(null);
+    try {
+      const r = await call("/session", { app_id: Number(appId), app_hash: appHash.trim(),
+                                         phone: phone.trim(), session: session.trim() });
+      setCheck(r);
+      if (r.ok) {
+        setState({ enabled: true, account: r.account, linked: true });
+        setSession(""); setAppHash("");
+        showToast(`Аккаунт подключён: ${r.account}`);
+      }
+    } catch (e) { setCheck({ ok: false, error: e?.detail || "Сессия не подошла" }); }
+  }
+
+  async function test() {
+    setCheck("…");
+    try { setCheck(await call("/test", {})); }
+    catch (e) { setCheck({ ok: false, error: e?.detail || "Не удалось проверить" }); }
+  }
+
+  async function toggle() {
+    const next = !state.enabled;
+    try {
+      await call("", { enabled: next }, "PATCH");
+      setState((s) => ({ ...s, enabled: next }));
+    } catch { showToast("Не удалось переключить"); }
+  }
+
+  async function forget() {
+    try {
+      await call("", undefined, "DELETE");
+      setState({ enabled: false, account: "", linked: false });
+      setCheck(null);
+      showToast("Аккаунт отвязан");
+    } catch { showToast("Не удалось отвязать"); }
+  }
+
+  const input = "w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50";
+
+  if (!service) {
+    return (
+      <div className="text-[11px] text-[#6b7280] bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5">
+        Резервная отправка настраивается после сохранения сервиса — коду из
+        Телеграм нужно, куда вернуться.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {state.linked ? (
+        <>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm text-[#f1f1f5] truncate">
+                Аккаунт {state.account || "подключён"}
+              </div>
+              <div className="text-[10px] text-[#6b7280]">
+                {state.enabled
+                  ? "Панель повторит недоставленный ответ этим аккаунтом"
+                  : "Канал выключен — недоставленные ответы останутся недоставленными"}
+              </div>
+            </div>
+            <Switch on={state.enabled} onChange={toggle} />
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={test} disabled={busy || check === "…"}
+              className="px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40">
+              {check === "…" ? "Проверяем…" : "Проверить"}
+            </button>
+            <button type="button" onClick={forget} disabled={busy}
+              className="px-3 py-2 rounded-lg border border-[#ef4444]/30 text-xs text-[#ef4444] hover:bg-[#ef4444]/10 disabled:opacity-40">
+              Отвязать
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">app_id</label>
+              <input value={appId} onChange={(e) => setAppId(e.target.value.replace(/\D/g, ""))}
+                placeholder="123456" className={input + " font-mono text-xs"} />
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">Телефон</label>
+              <input value={phone} onChange={(e) => setPhone(e.target.value)}
+                placeholder="+79990000000" className={input + " font-mono text-xs"} />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">app_hash</label>
+            <input type="password" value={appHash} onChange={(e) => setAppHash(e.target.value)}
+              placeholder="из my.telegram.org" className={input + " font-mono text-xs"} />
+          </div>
+
+          {step === "idle" && (
+            <button type="button" onClick={sendCode}
+              disabled={busy || !appId || !appHash.trim() || !phone.trim()}
+              className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold disabled:opacity-40">
+              {busy ? "Отправляем код…" : "Подключить аккаунт"}
+            </button>
+          )}
+
+          {step !== "idle" && (
+            <div className="space-y-3 border-l-2 border-[#4F8EF7]/40 pl-3">
+              <div>
+                <label className="block text-xs text-[#6b7280] mb-1.5">Код из Телеграм</label>
+                <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="12345"
+                  className={input + " font-mono"} />
+              </div>
+              {step === "2fa" && (
+                <div>
+                  <label className="block text-xs text-[#6b7280] mb-1.5">Пароль двухфакторки</label>
+                  <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                    className={input} />
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={signIn} disabled={busy || (!code.trim() && step !== "2fa")}
+                  className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold disabled:opacity-40">
+                  {busy ? "Входим…" : "Войти"}
+                </button>
+                <button type="button" onClick={() => { setStep("idle"); setCode(""); setPassword(""); }}
+                  className="px-3 py-2 rounded-lg text-xs text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">
+                  Отмена
+                </button>
+              </div>
+            </div>
+          )}
+
+          <details className="text-[11px] text-[#6b7280]">
+            <summary className="cursor-pointer hover:text-[#d1d1d8]">Уже есть строка сессии</summary>
+            <div className="mt-2 space-y-2">
+              <textarea value={session} onChange={(e) => setSession(e.target.value)} rows={3}
+                placeholder="StringSession, сгенерированная снаружи"
+                className={input + " font-mono text-[10px] resize-y"} />
+              <button type="button" onClick={useSession}
+                disabled={busy || !appId || !appHash.trim() || !session.trim()}
+                className="px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40">
+                Использовать сессию
+              </button>
+            </div>
+          </details>
+        </>
+      )}
+
+      {check && check !== "…" && (
+        <div className={"rounded-lg px-3 py-2 text-[11px] border " + (check.ok
+          ? "bg-[#22c55e]/10 border-[#22c55e]/25 text-[#22c55e]"
+          : "bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]")}>
+          {check.ok ? <>Связь есть: <b>{check.account}</b></> : check.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ServiceModal({ editing, onSave, onClose, showToast }) {
   const [name,  setName]  = useStateT(editing?.name  || "");
   const [slug,  setSlug]  = useStateT(editing?.slug  || "");
   const [color, setColor] = useStateT(editing?.color || SERVICE_COLORS[0]);
@@ -773,6 +987,7 @@ function ServiceModal({ editing, onSave, onClose }) {
   const [token, setToken] = useStateT("");
   const [business, setBusiness] = useStateT(editing?.businessId || "");
   const [more, setMore] = useStateT(false);
+  const [fb, setFb] = useStateT(false);
   const [check, setCheck] = useStateT(null);      // null | "…" | {ok, ...}
 
   // Слаг сам предлагается из названия, но остаётся редактируемым.
@@ -870,6 +1085,35 @@ function ServiceModal({ editing, onSave, onClose }) {
               По нему панель узнаёт, чей это тикет. Приходит от Telegram, когда бот
               подключён к аккаунту поддержки этого ВПН-а.
             </div>
+          </div>
+
+          <div className="pt-1 border-t border-[#2a2a3a]/60">
+            <button type="button" onClick={() => setFb((v) => !v)}
+              className="w-full flex items-center gap-1.5 text-[11px] text-[#6b7280] hover:text-[#d1d1d8] py-1">
+              <Icon name={fb ? "chevronDown" : "chevronRight"} className="w-3.5 h-3.5" />
+              Резервная отправка
+              <span className={"ml-auto text-[10px] " +
+                (editing?.hasFallbackSession
+                  ? (editing?.fallbackEnabled ? "text-[#22c55e]" : "text-[#eab308]")
+                  : "text-[#3a3a4a]")}>
+                {editing?.hasFallbackSession
+                  ? (editing?.fallbackEnabled
+                      ? (editing.fallbackAccount || "включена")
+                      : "выключена")
+                  : "не настроена"}
+              </span>
+            </button>
+            {fb && (
+              <div className="mt-2 mb-1">
+                <div className="text-[10px] text-[#6b7280] mb-3 leading-relaxed">
+                  Если n8n не смог доставить ответ в business-чат (например,
+                  <span className="font-mono text-[#7BA8F9]"> BUSINESS_PEER_USAGE_MISSING</span>),
+                  панель повторит отправку по MTProto от этого же аккаунта поддержки
+                  и покажет результат в переписке.
+                </div>
+                <FallbackBlock service={editing} showToast={showToast} />
+              </div>
+            )}
           </div>
 
           <button type="button" onClick={() => setMore((v) => !v)}

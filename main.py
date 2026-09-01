@@ -9,6 +9,7 @@ from app.auth import hash_password
 from app.config import Settings
 from app.customer import CustomerService
 from app.database import DatabaseManager
+from app.fallback_sender import FallbackSenderService
 from app.health import ServiceHealthMonitor, load_plugins
 from app.n8n_client import N8NClient
 from app.rabbitmq_consumer import RabbitMQConsumer
@@ -89,11 +90,16 @@ async def main():
 
     health_monitor = ServiceHealthMonitor(db, on_component_down=on_component_down)
     customers = CustomerService(db)
+    # Резервная отправка: подхватывает ответ оператора, когда n8n не смог
+    # доставить его в business-чат Telegram.
+    fallback = FallbackSenderService(db)
 
     chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
     routing = RoutingEngine(db, ws_manager, n8n_client)
-    consumer = RabbitMQConsumer(rmq, db, ws_manager, n8n_client, routing, chat_client)
-    app = build_app(settings, db, ws_manager, n8n_client, routing, customers, health_monitor)
+    consumer = RabbitMQConsumer(rmq, db, ws_manager, n8n_client, routing, chat_client,
+                                fallback=fallback)
+    app = build_app(settings, db, ws_manager, n8n_client, routing, customers, health_monitor,
+                    fallback=fallback)
 
     # ── HTTP server ───────────────────────────────────────────────────────────
     config = uvicorn.Config(
@@ -114,6 +120,7 @@ async def main():
             routing.sweep_forever(),
         )
     finally:
+        await fallback.close()
         await rmq.close()
         await redis.aclose()
         await db.close()

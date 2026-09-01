@@ -206,6 +206,32 @@ class DialogFolderBody(BaseModel):
     folder_id: Optional[int] = None
 
 
+class FallbackAuthBody(BaseModel):
+    """Шаг 1 авторизации резервного аккаунта: реквизиты приложения с
+    my.telegram.org и телефон аккаунта поддержки."""
+    app_id: int
+    app_hash: str
+    phone: str
+
+
+class FallbackCodeBody(BaseModel):
+    """Шаг 2: код из Телеграм и, если он стоит, пароль двухфакторки."""
+    code: str = ""
+    password: str = ""
+
+
+class FallbackSessionBody(BaseModel):
+    """Готовая строка сессии, сгенерированная снаружи — вместо шагов с кодом."""
+    app_id: int
+    app_hash: str
+    phone: str = ""
+    session: str
+
+
+class FallbackToggleBody(BaseModel):
+    enabled: bool
+
+
 class OperatorServicesBody(BaseModel):
     service_ids: list[int] = []
 
@@ -239,6 +265,7 @@ def build_app(
     routing: RoutingEngine,
     customers: CustomerService,
     health: ServiceHealthMonitor,
+    fallback=None,
 ) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
@@ -475,7 +502,23 @@ def build_app(
             message_id=msg_row["id"], service=dialog,
         )
         if not delivered:
-            await db.update_message_delivery(msg_row["id"], "failed", "Очередь недоступна")
+            # До n8n сообщение не доехало вовсе — пробуем резервный канал сразу,
+            # подтверждения доставки ждать неоткуда.
+            status, error = "failed", "Очередь недоступна"
+            if fallback:
+                ok, detail = await fallback.send(
+                    dialog["service_id"], dialog["chat_id"], body.text, body.file_url)
+                if detail:
+                    note = ("Очередь недоступна — " +
+                            (detail if ok else f"резервная отправка тоже не удалась: {detail}"))
+                    sys_row = await db.save_message(dialog_id, "system", note)
+                    await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                                        "message": _fmt_message(sys_row)}, dialog["service_id"])
+                    if ok:
+                        status, delivered = "delivered_fallback", True
+                    else:
+                        error = f"Очередь недоступна · резерв: {detail}"
+            await db.update_message_delivery(msg_row["id"], status, error)
         await db.clear_unread(dialog_id)
 
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
@@ -938,8 +981,9 @@ def build_app(
 
     # ── Services (ВПН-ы) ──────────────────────────────────────────────────────
 
-    def _fmt_service(s: dict, count: int = 0, api: dict = None) -> dict:
+    def _fmt_service(s: dict, count: int = 0, api: dict = None, fb: dict = None) -> dict:
         cfg = (api or {}).get("config") or {}
+        fb_cfg = (fb or {}).get("config") or {}
         return {
             "id": s["id"], "slug": s["slug"], "name": s["name"],
             "color": s["color"], "emoji": s.get("emoji"),
@@ -953,6 +997,13 @@ def build_app(
             # отправляет пустое поле, если менять его не собираются.
             "apiBaseUrl": cfg.get("base_url") or "",
             "hasApiToken": bool(cfg.get("token")),
+            # Резервная отправка. app_hash и строка сессии — секреты и наружу не
+            # уходят никогда, ровно как токен Support API.
+            "fallbackEnabled": bool((fb or {}).get("enabled")),
+            "fallbackAppId": fb_cfg.get("app_id") or "",
+            "fallbackPhone": fb_cfg.get("phone") or "",
+            "fallbackAccount": fb_cfg.get("account") or "",
+            "hasFallbackSession": bool(fb_cfg.get("session")),
         }
 
     async def _save_service_api(service_id: int, base_url: str, token: str) -> None:
@@ -1035,7 +1086,8 @@ def build_app(
         out = []
         for s in await db.get_services(only_active=False):
             api = await db.get_setting_json("customer", None, s["id"]) or {}
-            out.append(_fmt_service(s, 0, api))
+            fb = await db.get_setting_json("fallback_sender", None, s["id"]) or {}
+            out.append(_fmt_service(s, 0, api, fb))
         return out
 
     @app.post("/api/services")
@@ -1065,7 +1117,8 @@ def build_app(
             print(f"[services] ensure_collection failed: {e}")
         await ws.broadcast({"type": "services_changed"})
         return _fmt_service(service, 0,
-                            await db.get_setting_json("customer", None, service["id"]))
+                            await db.get_setting_json("customer", None, service["id"]),
+                            await db.get_setting_json("fallback_sender", None, service["id"]))
 
     @app.put("/api/services/{service_id}")
     async def update_service(service_id: int, body: ServiceBody,
@@ -1084,7 +1137,8 @@ def build_app(
         await _save_service_api(service_id, body.api_base_url, body.api_token)
         await ws.broadcast({"type": "services_changed"})
         return _fmt_service(service, 0,
-                            await db.get_setting_json("customer", None, service_id))
+                            await db.get_setting_json("customer", None, service_id),
+                            await db.get_setting_json("fallback_sender", None, service_id))
 
     @app.delete("/api/services/{service_id}")
     async def delete_service(service_id: int, operator: dict = Depends(require_auth)):
@@ -1104,6 +1158,82 @@ def build_app(
         except Exception as e:
             print(f"[services] delete_collection failed: {e}")
         await ws.broadcast({"type": "services_changed"})
+        return {"ok": True}
+
+    # ── Резервная отправка ────────────────────────────────────────────────────
+    # Ответ оператора уходит через n8n в business-чат Telegram, и тот иногда
+    # отвечает BUSINESS_PEER_USAGE_MISSING. Резервный канал шлёт то же самое по
+    # MTProto от того же аккаунта поддержки — клиент видит сообщение в той же
+    # переписке. Настраивается в форме сервиса.
+
+    async def _require_fallback(service_id: int, operator: dict) -> dict:
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not fallback:
+            raise HTTPException(503, "Резервная отправка не собрана в этой установке")
+        service = await db.get_service(service_id)
+        if not service:
+            raise HTTPException(404, "Сервис не найден")
+        return service
+
+    @app.post("/api/services/{service_id}/fallback/send-code")
+    async def fallback_send_code(service_id: int, body: FallbackAuthBody,
+                                 operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        try:
+            return await fallback.send_code(service_id, body.app_id, body.app_hash,
+                                            body.phone.strip())
+        except Exception as e:
+            raise HTTPException(400, str(e)[:200])
+
+    @app.post("/api/services/{service_id}/fallback/sign-in")
+    async def fallback_sign_in(service_id: int, body: FallbackCodeBody,
+                               operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        try:
+            return await fallback.sign_in(service_id, body.code.strip(), body.password)
+        except Exception as e:
+            raise HTTPException(400, str(e)[:200])
+
+    @app.post("/api/services/{service_id}/fallback/session")
+    async def fallback_set_session(service_id: int, body: FallbackSessionBody,
+                                   operator: dict = Depends(require_auth)):
+        """Строка сессии, сгенерированная снаружи. Сразу проверяем её боем: без
+        проверки админ узнал бы об опечатке на первом же несработавшем фолбеке."""
+        await _require_fallback(service_id, operator)
+        stored = await fallback.settings(service_id)
+        await fallback.save(service_id, {
+            **stored, "enabled": True,
+            "config": {**(stored.get("config") or {}), "app_id": body.app_id,
+                       "app_hash": body.app_hash, "phone": body.phone.strip(),
+                       "session": body.session.strip(), "account": ""},
+        })
+        result = await fallback.check(service_id)
+        if result.get("ok"):
+            fresh = await fallback.settings(service_id)
+            await fallback.save(service_id, {
+                **fresh, "config": {**(fresh.get("config") or {}),
+                                    "account": result.get("account") or ""}})
+        return result
+
+    @app.post("/api/services/{service_id}/fallback/test")
+    async def fallback_test(service_id: int, operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        return await fallback.check(service_id)
+
+    @app.patch("/api/services/{service_id}/fallback")
+    async def fallback_toggle(service_id: int, body: FallbackToggleBody,
+                              operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        stored = await fallback.settings(service_id)
+        await fallback.save(service_id, {**stored, "enabled": body.enabled})
+        return {"ok": True, "enabled": body.enabled}
+
+    @app.delete("/api/services/{service_id}/fallback")
+    async def fallback_forget(service_id: int, operator: dict = Depends(require_auth)):
+        """Отвязать аккаунт: сессия удаляется, канал выключается."""
+        await _require_fallback(service_id, operator)
+        await fallback.save(service_id, {"enabled": False, "config": {}})
         return {"ok": True}
 
     # ── Папки тикетов ─────────────────────────────────────────────────────────

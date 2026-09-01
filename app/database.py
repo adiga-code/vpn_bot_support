@@ -959,6 +959,12 @@ class DatabaseManager:
             status, error, message_id,
         )
 
+    async def get_message(self, message_id: int) -> Optional[dict]:
+        """Одно сообщение по id — нужно резервной отправке, чтобы повторить
+        именно тот текст и то вложение, которые не дошли."""
+        row = await self.pool.fetchrow("SELECT * FROM messages WHERE id=$1", int(message_id))
+        return dict(row) if row else None
+
     async def get_messages(self, dialog_id: str) -> list[dict]:
         rows = await self.pool.fetch(
             "SELECT * FROM messages WHERE dialog_id=$1 ORDER BY created_at ASC", dialog_id,

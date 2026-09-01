@@ -26,6 +26,7 @@ class RabbitMQConsumer:
         n8n: N8NClient,
         routing: RoutingEngine,
         chat_client: ChatClient | None = None,
+        fallback=None,
     ):
         self._rmq = rmq
         self.db = db
@@ -33,6 +34,9 @@ class RabbitMQConsumer:
         self.n8n = n8n
         self.routing = routing
         self.chat_client = chat_client
+        # FallbackSenderService — резервный канал доставки; None означает, что
+        # панель собрана без него.
+        self.fallback = fallback
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -324,15 +328,55 @@ class RabbitMQConsumer:
         error      = data.get("error")
         if not message_id or not status:
             return
-        await self.db.update_message_delivery(int(message_id), status, error)
+        message_id = int(message_id)
         dialog = await self.db.get_dialog(dialog_id) if dialog_id else None
+
+        if status == "failed" and dialog:
+            status, error = await self.try_fallback(dialog, message_id, error)
+
+        await self.db.update_message_delivery(message_id, status, error)
         await self.ws.broadcast({
             "type":       "message_status",
             "dialog_id":  dialog_id,
-            "message_id": int(message_id),
+            "message_id": message_id,
             "status":     status,
             "error":      error,
         }, dialog["service_id"] if dialog else None)
+
+    async def try_fallback(self, dialog: dict, message_id: int,
+                           original_error: str) -> tuple[str, str]:
+        """Ответ оператора не дошёл — пробуем ещё раз, но по MTProto, от того же
+        аккаунта поддержки (см. app/fallback_sender.py). Возвращает статус и
+        текст ошибки для строки сообщения.
+
+        Пробуем на ЛЮБОЙ неуспешной доставке, а не только на
+        BUSINESS_PEER_USAGE_MISSING: «бот заблокирован пользователем» и обрыв
+        очереди резервный канал лечит ровно так же.
+        """
+        original_error = original_error or "Ошибка отправки"
+        if not self.fallback:
+            return "failed", original_error
+        row = await self.db.get_message(message_id)
+        if not row or row.get("kind") != "operator":
+            return "failed", original_error
+
+        ok, detail = await self.fallback.send(
+            dialog["service_id"], dialog["chat_id"],
+            row.get("text") or "", row.get("file_url"),
+        )
+        if not detail:                      # резервный канал не настроен
+            return "failed", original_error
+
+        note = (f"Сообщение не ушло в business-чат ({original_error}) — "
+                + (f"{detail}" if ok else f"резервная отправка тоже не удалась: {detail}"))
+        sys_row = await self.db.save_message(dialog["dialog_id"], "system", note)
+        await self.ws.broadcast({"type": "new_message", "dialog_id": dialog["dialog_id"],
+                                 "message": _fmt_message(sys_row)}, dialog["service_id"])
+        if ok:
+            # Исходную причину не теряем: оператор должен понимать, почему
+            # сообщение ушло другим путём, и что business-подключение сломано.
+            return "delivered_fallback", original_error
+        return "failed", f"{original_error} · резерв: {detail}"
 
     async def _auto_handoff(self, dialog_id: str, dialog: dict):
         print(f"[auto-handoff] dialog={dialog_id}")
