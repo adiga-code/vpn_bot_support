@@ -7,19 +7,29 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [512, 4560],
+      "position": [
+        512,
+        4560
+      ],
       "id": "c0n5tan7-a1a9-4e51-9c01-000000000004",
       "name": "Константы",
       "notesInFlow": true,
       "notes": "Токен бота, адрес панели и ключ API — вместо платного Settings → Variables."
     },
     {
-      "parameters": { "httpMethod": "POST", "path": "vpn-bot-outgoing", "options": {} },
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "vpn-bot-outgoing",
+        "options": {}
+      },
       "id": "b6e4e885-392b-4cb5-9a98-f940878b34ef",
       "name": "Webhook исходящих",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [400, 4560],
+      "position": [
+        400,
+        4560
+      ],
       "webhookId": "vpn-bot-outgoing"
     },
     {
@@ -30,7 +40,10 @@
       "name": "Распарсить JSON",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [624, 4560]
+      "position": [
+        624,
+        4560
+      ]
     },
     {
       "parameters": {
@@ -38,13 +51,21 @@
           "values": [
             {
               "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
                 "conditions": [
                   {
                     "id": "sw-r1",
                     "leftValue": "={{ $json.type }}",
                     "rightValue": "manager_message",
-                    "operator": { "type": "string", "operation": "equals" }
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
                   }
                 ],
                 "combinator": "and"
@@ -54,13 +75,21 @@
             },
             {
               "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
                 "conditions": [
                   {
                     "id": "sw-r2",
                     "leftValue": "={{ $json.type }}",
                     "rightValue": "send_to_user",
-                    "operator": { "type": "string", "operation": "equals" }
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
                   }
                 ],
                 "combinator": "and"
@@ -70,13 +99,21 @@
             },
             {
               "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
                 "conditions": [
                   {
                     "id": "sw-r3",
                     "leftValue": "={{ $json.type }}",
                     "rightValue": "operator_notify",
-                    "operator": { "type": "string", "operation": "equals" }
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
                   }
                 ],
                 "combinator": "and"
@@ -92,7 +129,10 @@
       "name": "Switch по type",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
-      "position": [1072, 4528]
+      "position": [
+        1072,
+        4528
+      ]
     },
     {
       "parameters": {
@@ -102,7 +142,10 @@
       "name": "Подготовить файл",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1296, 3888]
+      "position": [
+        1296,
+        3888
+      ]
     },
     {
       "parameters": {
@@ -118,18 +161,29 @@
       "name": "Отправить ответ оператора",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [1520, 3888]
+      "position": [
+        1520,
+        3888
+      ]
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
           "conditions": [
             {
               "id": "cond-keyboard",
               "leftValue": "={{ Array.isArray($json.keyboard) && $json.keyboard.length > 0 ? 'yes' : '' }}",
               "rightValue": "yes",
-              "operator": { "type": "string", "operation": "equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
             }
           ],
           "combinator": "and"
@@ -140,7 +194,10 @@
       "name": "С клавиатурой?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1296, 4176]
+      "position": [
+        1296,
+        4176
+      ]
     },
     {
       "parameters": {
@@ -155,7 +212,10 @@
       "name": "TG sendMessage с кнопками",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1520, 4080]
+      "position": [
+        1520,
+        4080
+      ]
     },
     {
       "parameters": {
@@ -165,7 +225,10 @@
       "name": "Нормализовать text→message",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1520, 4272]
+      "position": [
+        1520,
+        4272
+      ]
     },
     {
       "parameters": {
@@ -181,55 +244,89 @@
       "name": "Отправить текст пользователю",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [1744, 4272]
+      "position": [
+        1744,
+        4272
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const d = $input.first().json;\nconst event = d.event;\nconst svc = d.service_name || d.service || '';\nconst tag = svc ? `[${svc}] ` : '';\nconst texts = {\n  new_dialog:      () => `${tag}📩 Новый диалог\\nПользователь: ${d.username || d.dialog_id}`,\n  operator_called: () => `${tag}🆘 Вызов оператора\\nПользователь: ${d.username || d.dialog_id}`,\n  dialog_closed:   () => `${tag}✅ Диалог закрыт\\nОператор: ${d.operator_name || '—'}\\nID: ${d.dialog_id}`,\n  ai_toggled:      () => `${tag}🤖 ИИ ${d.ai_enabled ? 'включён ✅' : 'выключен ❌'}\\nДиалог: ${d.dialog_id}`,\n  server_down:     () => `${tag}🔴 Сервер недоступен: ${d.server_name || '—'} ${d.location || ''}\\n${d.reason || ''}`,\n  bot_down:        () => `${tag}🔴 Бот недоступен: ${d.server_name || '—'}\\n${d.reason || ''}`,\n};\nconst text = texts[event] ? texts[event]() : `${tag}[${event}] ${JSON.stringify(d)}`;\nreturn [{ json: { text, service: d.service || '' } }];"
+        "jsCode": "const d = $input.first().json;\nconst event = d.event;\nconst svc = d.service_name || d.service || '';\nconst tag = svc ? `[${svc}] ` : '';\nconst texts = {\n  new_dialog:      () => `${tag}📩 Новый диалог\\nПользователь: ${d.username || d.dialog_id}`,\n  operator_called: () => `${tag}🆘 Вызов оператора\\nПользователь: ${d.username || d.dialog_id}`,\n  dialog_closed:   () => `${tag}✅ Диалог закрыт\\nОператор: ${d.operator_name || '—'}\\nID: ${d.dialog_id}`,\n  claim_requested: () => `${tag}✋ Просьба передать тикет\\nПросит: ${d.operator_name || '—'}\\nСейчас у: ${d.owner_name || '—'}\\nПользователь: ${d.username || d.dialog_id}`,\n  ai_toggled:      () => `${tag}🤖 ИИ ${d.ai_enabled ? 'включён ✅' : 'выключен ❌'}\\nДиалог: ${d.dialog_id}`,\n  server_down:     () => `${tag}🔴 Сервер недоступен: ${d.server_name || '—'} ${d.location || ''}\\n${d.reason || ''}`,\n  bot_down:        () => `${tag}🔴 Бот недоступен: ${d.server_name || '—'}\\n${d.reason || ''}`,\n};\nconst text = texts[event] ? texts[event]() : `${tag}[${event}] ${JSON.stringify(d)}`;\nreturn [{ json: { text, service: d.service || '' } }];"
       },
       "id": "da1766c6-b9eb-4129-853b-95fad486b9ab",
       "name": "Форматировать уведомление",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1296, 4464]
+      "position": [
+        1296,
+        4464
+      ]
     },
     {
       "parameters": {
         "operation": "executeQuery",
         "query": "-- Операторы этого ВПН-а: по флагу доступа, плюс все админы\n-- (у админа флаги не выставляются, он видит все сервисы).\nSELECT DISTINCT o.tg_id\nFROM operators o\nLEFT JOIN operator_services os ON os.operator_id = o.id\nLEFT JOIN services s ON s.id = os.service_id\nWHERE o.tg_id IS NOT NULL\n  AND (o.role = 'admin' OR s.slug = $1)",
-        "options": { "queryReplacement": "={{ $json.service }}" }
+        "options": {
+          "queryReplacement": "={{ $json.service }}"
+        }
       },
       "id": "611a7015-9980-46f1-8aa7-7d29f10bcea9",
       "name": "Получить tg_id операторов",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [1520, 4464],
-      "credentials": { "postgres": { "id": "5tWDSrTUFp4DiJlP", "name": "Postgres account" } }
+      "position": [
+        1520,
+        4464
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "5tWDSrTUFp4DiJlP",
+          "name": "Postgres account"
+        }
+      }
     },
     {
       "parameters": {
         "chatId": "={{ $json.tg_id }}",
         "text": "={{ $('Форматировать уведомление').first().json.text }}",
-        "additionalFields": { "appendAttribution": false }
+        "additionalFields": {
+          "appendAttribution": false
+        }
       },
       "id": "de1fcaa2-a836-488a-936b-5dbf198e5bd7",
       "name": "Отправить оператору",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [1744, 4464],
+      "position": [
+        1744,
+        4464
+      ],
       "webhookId": "87bf632c-43a5-4725-a605-c292ccdece13",
-      "credentials": { "telegramApi": { "id": "drGmrRpP856vKvMY", "name": "Telegram account" } }
+      "credentials": {
+        "telegramApi": {
+          "id": "drGmrRpP856vKvMY",
+          "name": "Telegram account"
+        }
+      }
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
           "conditions": [
             {
               "id": "cond-dialog-closed",
               "leftValue": "={{ $json.event }}",
               "rightValue": "dialog_closed",
-              "operator": { "type": "string", "operation": "equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
             }
           ],
           "combinator": "and"
@@ -240,31 +337,52 @@
       "name": "Закрытие диалога?1",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1296, 4656]
+      "position": [
+        1296,
+        4656
+      ]
     },
     {
       "parameters": {
         "operation": "executeQuery",
         "query": "UPDATE n8n_dialogs SET status='closed' WHERE user_id=$1 AND service=$2",
-        "options": { "queryReplacement": "={{ $json.chat_id }},={{ $json.service }}" }
+        "options": {
+          "queryReplacement": "={{ $json.chat_id }},={{ $json.service }}"
+        }
       },
       "id": "7a7dfafc-5ffd-4fbf-a9ea-4a3fba5a8a6b",
       "name": "Закрыть диалог в n8n_dialogs1",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [1520, 4656],
-      "credentials": { "postgres": { "id": "5tWDSrTUFp4DiJlP", "name": "Postgres account" } }
+      "position": [
+        1520,
+        4656
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "5tWDSrTUFp4DiJlP",
+          "name": "Postgres account"
+        }
+      }
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
           "conditions": [
             {
               "id": "cond-ai-toggled",
               "leftValue": "={{ $json.event }}",
               "rightValue": "ai_toggled",
-              "operator": { "type": "string", "operation": "equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
             }
           ],
           "combinator": "and"
@@ -275,56 +393,191 @@
       "name": "ИИ переключён?1",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1344, 4832]
+      "position": [
+        1344,
+        4832
+      ]
     },
     {
       "parameters": {
         "operation": "executeQuery",
         "query": "UPDATE n8n_dialogs SET ai_status=$1 WHERE user_id=$2 AND service=$3 AND status='active'",
-        "options": { "queryReplacement": "={{ $json.ai_enabled }},={{ $json.chat_id }},={{ $json.service }}" }
+        "options": {
+          "queryReplacement": "={{ $json.ai_enabled }},={{ $json.chat_id }},={{ $json.service }}"
+        }
       },
       "id": "b9eef3ab-6495-483a-aa4d-b1758ce30288",
       "name": "Обновить ai_status1",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [1568, 4864],
-      "credentials": { "postgres": { "id": "5tWDSrTUFp4DiJlP", "name": "Postgres account" } }
+      "position": [
+        1568,
+        4864
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "5tWDSrTUFp4DiJlP",
+          "name": "Postgres account"
+        }
+      }
     }
   ],
   "connections": {
-    "Webhook исходящих": { "main": [[{ "node": "Константы", "type": "main", "index": 0 }]] },
-    "Константы": { "main": [[{ "node": "Распарсить JSON", "type": "main", "index": 0 }]] },
-    "Распарсить JSON": { "main": [[{ "node": "Switch по type", "type": "main", "index": 0 }]] },
-    "Switch по type": {
+    "Webhook исходящих": {
       "main": [
-        [{ "node": "Подготовить файл", "type": "main", "index": 0 }],
-        [{ "node": "С клавиатурой?", "type": "main", "index": 0 }],
         [
-          { "node": "Форматировать уведомление", "type": "main", "index": 0 },
-          { "node": "Закрытие диалога?1", "type": "main", "index": 0 },
-          { "node": "ИИ переключён?1", "type": "main", "index": 0 }
+          {
+            "node": "Константы",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
-    "Подготовить файл": { "main": [[{ "node": "Отправить ответ оператора", "type": "main", "index": 0 }]] },
+    "Константы": {
+      "main": [
+        [
+          {
+            "node": "Распарсить JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Распарсить JSON": {
+      "main": [
+        [
+          {
+            "node": "Switch по type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch по type": {
+      "main": [
+        [
+          {
+            "node": "Подготовить файл",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "С клавиатурой?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Форматировать уведомление",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Закрытие диалога?1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "ИИ переключён?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Подготовить файл": {
+      "main": [
+        [
+          {
+            "node": "Отправить ответ оператора",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "С клавиатурой?": {
       "main": [
-        [{ "node": "TG sendMessage с кнопками", "type": "main", "index": 0 }],
-        [{ "node": "Нормализовать text→message", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "TG sendMessage с кнопками",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Нормализовать text→message",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Нормализовать text→message": {
-      "main": [[{ "node": "Отправить текст пользователю", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Отправить текст пользователю",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Форматировать уведомление": {
-      "main": [[{ "node": "Получить tg_id операторов", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Получить tg_id операторов",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "Получить tg_id операторов": { "main": [[{ "node": "Отправить оператору", "type": "main", "index": 0 }]] },
+    "Получить tg_id операторов": {
+      "main": [
+        [
+          {
+            "node": "Отправить оператору",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Закрытие диалога?1": {
-      "main": [[{ "node": "Закрыть диалог в n8n_dialogs1", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Закрыть диалог в n8n_dialogs1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "ИИ переключён?1": { "main": [[{ "node": "Обновить ai_status1", "type": "main", "index": 0 }]] }
+    "ИИ переключён?1": {
+      "main": [
+        [
+          {
+            "node": "Обновить ai_status1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
   },
   "pinData": {},
-  "meta": { "templateCredsSetupCompleted": true }
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
 }

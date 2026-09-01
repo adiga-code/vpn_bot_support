@@ -67,6 +67,8 @@ def fmt_dialog(row: dict, tickets: list = None) -> dict:
         "slaSeconds": row.get("sla_seconds_total") or 0,
         "slaStartedAt": row["sla_started_at"].isoformat() if row.get("sla_started_at") else None,
         "returnRequested": bool(row.get("return_requested_at")),
+        # Кто из операторов просит передать ему этот тикет (см. require_dialog_write).
+        "claimRequestedBy": row.get("claim_requested_by"),
         "tickets": tickets or [],
     }
 

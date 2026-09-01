@@ -236,6 +236,9 @@ class DatabaseManager:
             ("dialogs", "sla_started_at",       "TIMESTAMPTZ"),
             ("dialogs", "queued_at",            "TIMESTAMPTZ"),
             ("dialogs", "return_requested_at",  "TIMESTAMPTZ"),
+            # Запрос второго оператора на передачу тикета: кто просит и когда.
+            ("dialogs", "claim_requested_by",   "TEXT"),
+            ("dialogs", "claim_requested_at",   "TIMESTAMPTZ"),
             # messages
             ("messages", "kind",            "TEXT"),
             ("messages", "text",            "TEXT"),
@@ -896,8 +899,11 @@ class DatabaseManager:
             print(f"[sync_n8n] ai_status update error: {e}")
 
     async def set_assigned_operator(self, dialog_id: str, operator_name):
+        """Смена владельца снимает чужой запрос на передачу: он уже исполнен
+        либо потерял смысл."""
         await self.pool.execute(
-            "UPDATE dialogs SET assigned_operator=$1, updated_at=NOW() WHERE dialog_id=$2",
+            "UPDATE dialogs SET assigned_operator=$1, claim_requested_by=NULL, "
+            "claim_requested_at=NULL, updated_at=NOW() WHERE dialog_id=$2",
             operator_name, dialog_id,
         )
 
@@ -1441,6 +1447,7 @@ class DatabaseManager:
             UPDATE dialogs SET
                 status='queue', assigned_operator=NULL, queued_at=NOW(),
                 waiting_reason=NULL, return_requested_at=NULL, closed_at=NULL,
+                claim_requested_by=NULL, claim_requested_at=NULL,
                 {self._SLA_PAUSE_SQL},
                 updated_at=NOW()
             WHERE dialog_id=$1
@@ -1460,7 +1467,9 @@ class DatabaseManager:
         """→ in_progress bound to op_name, bypassing slot limits (manual take /
         transfer / own-ticket return decided by the caller). Starts SLA."""
         await self.pool.execute(f"""
-            UPDATE dialogs SET assigned_operator = $1, {self._CLAIM_STATE_SQL}
+            UPDATE dialogs SET assigned_operator = $1,
+                                  claim_requested_by=NULL, claim_requested_at=NULL,
+                                  {self._CLAIM_STATE_SQL}
             WHERE dialog_id = $2
         """, op_name, dialog_id)
 
@@ -1470,6 +1479,7 @@ class DatabaseManager:
             UPDATE dialogs SET
                 status='ai', assigned_operator=NULL, operator_called=FALSE,
                 queued_at=NULL, waiting_reason=NULL, return_requested_at=NULL,
+                claim_requested_by=NULL, claim_requested_at=NULL,
                 {self._SLA_PAUSE_SQL},
                 updated_at=NOW()
             WHERE dialog_id=$1
@@ -1481,10 +1491,21 @@ class DatabaseManager:
             UPDATE dialogs SET
                 status='closed', closed_at=NOW(), operator_called=FALSE,
                 waiting_reason=NULL, queued_at=NULL, return_requested_at=NULL,
+                claim_requested_by=NULL, claim_requested_at=NULL,
                 {self._SLA_PAUSE_SQL},
                 updated_at=NOW()
             WHERE dialog_id=$1
         """, dialog_id)
+
+    async def set_claim_request(self, dialog_id: str, op_name: str | None):
+        """Запрос на передачу тикета: имя просящего либо None, чтобы снять."""
+        await self.pool.execute(
+            """UPDATE dialogs
+               SET claim_requested_by=$1,
+                   claim_requested_at=CASE WHEN $1::text IS NULL THEN NULL ELSE NOW() END
+               WHERE dialog_id=$2""",
+            op_name, dialog_id,
+        )
 
     async def set_return_requested(self, dialog_id: str):
         """Mark a waiting ticket as 'client replied, wants to come back'."""

@@ -58,7 +58,8 @@ function StarRating({ rating, size = "sm" }) {
 
 // flat — вид для телефона: строка во всю ширину с разделителем вместо карточки
 // с закруглениями, чтобы список читался как обычный мобильный лист.
-function ConvCard({ conv, active, onClick, showServiceTag = false, flat = false }) {
+function ConvCard({ conv, active, onClick, showServiceTag = false, flat = false,
+                    lockedForMe = false }) {
   // escalated but not yet served — grabs attention in «ИИ»/«Очередь»
   const calledUnserved = conv.operatorCalled && ["ai", "queue"].includes(conv.status);
   return (
@@ -127,8 +128,14 @@ function ConvCard({ conv, active, onClick, showServiceTag = false, flat = false 
           </div>
           {conv.assignedOperator && (
             <div className="flex items-center gap-1 mt-1 text-[10px] text-[#6b7280]">
-              <Icon name="user" className="w-2.5 h-2.5 shrink-0" />
+              {/* Замок — тикет в работе у другого оператора, писать в него нельзя */}
+              <Icon name={lockedForMe ? "lock" : "user"} className="w-2.5 h-2.5 shrink-0" />
               <span className="truncate">{conv.assignedOperator}</span>
+              {conv.claimRequestedBy && (
+                <span className="shrink-0 text-[#eab308]" title={`${conv.claimRequestedBy} просит передать`}>
+                  · запрос
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -503,6 +510,7 @@ function DialogsScreen({
   const [showTemplates, setShowTemplates] = useStateD(false);
   const [showTransfer, setShowTransfer] = useStateD(false);
   const [showFolderPick, setShowFolderPick] = useStateD(false);
+  const [actionsOpen, setActionsOpen] = useStateD(false);
   // Шаблоны нужны сразу: по «/» список должен появляться мгновенно, без похода
   // в сеть. Модалка шаблонов берёт этот же массив.
   const [templates, setTemplates] = useStateD([]);
@@ -524,7 +532,7 @@ function DialogsScreen({
   useEffectD(() => { if (activeId) setMobileView("chat"); }, [activeId]);
 
   // Шторки принадлежат конкретному тикету: смена тикета их закрывает.
-  useEffectD(() => { setShowClientSheet(false); setShowActionsSheet(false); }, [active?.id]);
+  useEffectD(() => { setShowClientSheet(false); setShowActionsSheet(false); setActionsOpen(false); }, [active?.id]);
 
   // Sync AI toggle state when active dialog changes; reset composer mode
   useEffectD(() => {
@@ -814,6 +822,37 @@ function DialogsScreen({
     ai: "ИИ", queue: "Очередь", in_progress: "В работе", waiting: "Ожидание", closed: "Закрыт",
   };
 
+  // Пока тикет в работе у одного оператора, второй такого же уровня его только
+  // читает: двое, пишущих клиенту разное, хуже любой задержки с ответом.
+  // Забрать тикет можно кнопкой «Запросить» — владелец передаёт его сам.
+  // Админ не ограничен: иначе разруливать зависшие тикеты было бы некому.
+  const lockedFor = (c) =>
+    currentOperator?.role !== "admin" && !!c?.assignedOperator
+    && c.assignedOperator !== currentOperator?.name
+    && ["in_progress", "waiting"].includes(c.status);
+  const locked = lockedFor(active);
+  const myClaimPending = locked && active?.claimRequestedBy === currentOperator?.name;
+  // Обратная сторона: у меня просят мой тикет.
+  const claimOnMine = !!active?.claimRequestedBy
+    && (active?.assignedOperator === currentOperator?.name || currentOperator?.role === "admin")
+    && active?.claimRequestedBy !== currentOperator?.name;
+
+  async function requestClaim() {
+    if (!active) return;
+    try {
+      await window.apiFetch("POST", `/api/dialogs/${active.id}/claim`);
+      showToast(`Запрос отправлен: ${active.assignedOperator}`);
+    } catch (e) { showToast(e?.detail || "Не удалось отправить запрос"); }
+  }
+
+  async function answerClaim(approve) {
+    if (!active) return;
+    try {
+      await window.apiFetch("POST", `/api/dialogs/${active.id}/claim/${approve ? "approve" : "decline"}`);
+      showToast(approve ? `Тикет передан: ${active.claimRequestedBy}` : "Запрос отклонён");
+    } catch (e) { showToast(e?.detail || "Не удалось ответить на запрос"); }
+  }
+
   // Нижняя навигация уступает место переписке и клавиатуре.
   useEffectD(() => {
     if (onMobileChatOpen) onMobileChatOpen(!!(vp.isMobile && mobileView === "chat" && active));
@@ -833,7 +872,12 @@ function DialogsScreen({
   }
 
   // Действия над тикетом: на десктопе кнопками в шапке, на узких — шторкой.
-  const ticketActions = !active ? [] : [
+  const ticketActions = !active ? [] : locked ? [
+    // Чужой тикет: только попросить его и скопировать ссылку.
+    ...(myClaimPending
+      ? [] : [{ icon: "handRaise", label: "Запросить тикет", run: requestClaim }]),
+    { icon: "link", label: "Скопировать ссылку", run: copyDialogLink },
+  ] : [
     ...(["ai", "queue"].includes(active.status)
       ? [{ icon: "user", label: "Взять в работу", run: handoffToOperator }] : []),
     ...(["in_progress", "waiting"].includes(active.status)
@@ -943,99 +987,119 @@ function DialogsScreen({
       {filtered.map((c) => (
         <ConvCard key={c.id} conv={c} active={!vp.isMobile && c.id === activeId}
                   onClick={() => openDialog(c.id)} showServiceTag={showServiceTag}
-                  flat={vp.isMobile} />
+                  flat={vp.isMobile} lockedForMe={lockedFor(c)} />
       ))}
     </div>
   );
 
-  // Шапка переписки на десктопе: все действия кнопками.
+  // Шапка переписки на десктопе. Раньше сюда выкладывались все действия сразу,
+  // и ряд кнопок вытеснял имя клиента за границы шапки уже на 1440px — центр
+  // это ширина окна минус две боковые колонки, её всегда меньше, чем кажется.
+  // Теперь на виду главное действие и контекст (владелец, замок, папка),
+  // остальное — в меню «⋯»; список тот же ticketActions, что и в шторке на
+  // узких экранах.
+  const primaryAction = !active ? null
+    : locked ? "claim"
+    : ["ai", "queue"].includes(active.status) ? "take"
+    : null;
+  const menuActions = ticketActions.filter((a) =>
+    !(primaryAction === "take" && a.label === "Взять в работу")
+    && !(primaryAction === "claim" && a.label === "Запросить тикет"));
+
   const chatTopBar = active && (
-    <div className="h-[60px] px-5 border-b border-[#2a2a3a] flex items-center justify-between bg-[#13131a]/40">
+    <div className="h-[60px] shrink-0 px-5 border-b border-[#2a2a3a] flex items-center justify-between gap-3 bg-[#13131a]/40 relative z-20">
       <div className="flex items-center gap-3 min-w-0">
         <Avatar initials={active.initials} color={active.avatarColor} size={36} photoUrl={active.photoUrl} />
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <div className="font-medium text-[#f1f1f5] truncate">{active.name}</div>
             <StatusBadge status={active.status} />
             {active.status === "waiting" && <WaitingLabel reason={active.waitingReason} />}
             <SlaTimer slaSeconds={active.slaSeconds} slaStartedAt={active.slaStartedAt} />
           </div>
-          <div className="text-xs text-[#6b7280]">{active.username} · ID {active.tgId}</div>
+          <div className="text-xs text-[#6b7280] truncate">{active.username} · ID {active.tgId}</div>
         </div>
       </div>
+
       <div className="flex items-center gap-2 shrink-0">
-        {["ai", "queue"].includes(active.status) && (
+        {locked && (
+          <span className="flex items-center gap-1.5 text-xs text-[#6b7280] px-1 max-w-[190px]">
+            <Icon name="lock" className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">В работе у {active.assignedOperator}</span>
+          </span>
+        )}
+        {!locked && ["in_progress", "waiting"].includes(active.status) && active.assignedOperator && (
+          <span className="flex items-center gap-1.5 text-xs text-[#6b7280] px-1 max-w-[160px]">
+            <Icon name="user" className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">{active.assignedOperator}</span>
+          </span>
+        )}
+
+        {primaryAction === "take" && (
           <button
             onClick={handoffToOperator}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#A855F7]/15 text-[#C084FC] border border-[#A855F7]/30 hover:bg-[#A855F7]/25 transition flex items-center gap-1.5"
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#A855F7]/15 text-[#C084FC] border border-[#A855F7]/30 hover:bg-[#A855F7]/25 transition flex items-center gap-1.5 whitespace-nowrap"
           >
             <Icon name="user" className="w-3.5 h-3.5" />
             Взять в работу
           </button>
         )}
-        {["in_progress", "waiting"].includes(active.status) && (
-          <>
-            {active.assignedOperator && (
-              <span className="flex items-center gap-1.5 text-xs text-[#6b7280] px-2">
-                <Icon name="user" className="w-3.5 h-3.5" />
-                {active.assignedOperator}
-              </span>
-            )}
-            <button
-              onClick={reopenDialog}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
-            >
-              <Icon name="arrowLeft" className="w-3.5 h-3.5" />
-              Вернуть в очередь
-            </button>
-          </>
-        )}
-        {active.status === "in_progress" && (
+        {primaryAction === "claim" && (
           <button
-            onClick={waitDialog}
-            title="Перевести в «Ожидание» (клиент ждёт ответ)"
-            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#ef4444]/10 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/20 transition flex items-center gap-1.5"
+            onClick={requestClaim}
+            disabled={myClaimPending}
+            title={myClaimPending
+              ? "Владелец ещё не ответил на запрос"
+              : "Попросить владельца передать тикет вам"}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#eab308]/15 text-[#eab308] border border-[#eab308]/30 hover:bg-[#eab308]/25 transition flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50 disabled:cursor-default"
           >
-            <Icon name="clock" className="w-3.5 h-3.5" />
-            В ожидание
+            <Icon name="handRaise" className="w-3.5 h-3.5" />
+            {myClaimPending ? "Запрос отправлен" : "Запросить"}
           </button>
         )}
-        {active.status !== "closed" && (
-          <button
-            onClick={() => setShowTransfer(true)}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
-          >
-            <Icon name="arrowRight" className="w-3.5 h-3.5" />
-            Передать
-          </button>
-        )}
-        {folders.length > 0 && (
+
+        {!locked && folders.length > 0 && (
           <button
             onClick={() => setShowFolderPick(true)}
             title={active.folderName ? `Папка: ${active.folderName}` : "Положить в папку"}
-            className={"px-2.5 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 " +
+            className={"px-2.5 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 max-w-[150px] " +
               (active.folderId
                 ? "border-[#3a3a4a] text-[#f1f1f5] bg-[#1a1a24]"
                 : "border-[#2a2a3a] text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}
           >
-            <span className="text-sm leading-none">{active.folderEmoji || "📁"}</span>
-            <span className="max-w-[90px] truncate">{active.folderName || "Папка"}</span>
+            <span className="text-sm leading-none shrink-0">{active.folderEmoji || "📁"}</span>
+            <span className="truncate">{active.folderName || "Папка"}</span>
           </button>
         )}
-        <button
-          onClick={copyDialogLink}
-          className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded-lg transition"
-          title="Скопировать ссылку на диалог"
-        >
-          <Icon name="link" className="w-4 h-4" />
-        </button>
-        <button
-          onClick={() => setConfirmClose(true)}
-          disabled={active.status === "closed"}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          Закрыть диалог
-        </button>
+
+        <div className="relative">
+          <button
+            onClick={() => setActionsOpen((v) => !v)}
+            title="Действия над тикетом"
+            className={"w-8 h-8 rounded-lg flex items-center justify-center transition " +
+              (actionsOpen ? "bg-[#1a1a24] text-[#f1f1f5]" : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}
+          >
+            <Icon name="dots" className="w-4 h-4" />
+          </button>
+          {actionsOpen && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setActionsOpen(false)}></div>
+              <div className="absolute right-0 top-full mt-1 z-40 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg shadow-2xl py-1 min-w-[210px]">
+                {menuActions.map((a) => (
+                  <button
+                    key={a.label}
+                    onClick={() => { setActionsOpen(false); a.run(); }}
+                    className={"w-full text-left px-3 py-2 text-xs flex items-center gap-2.5 transition hover:bg-[#2a2a3a]/50 " +
+                      (a.danger ? "text-[#f87171]" : "text-[#d1d1d8]")}
+                  >
+                    <Icon name={a.icon} className={"w-4 h-4 shrink-0 " + (a.danger ? "text-[#f87171]" : "text-[#6b7280]")} />
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1056,6 +1120,25 @@ function DialogsScreen({
         </>
       }
     />
+  );
+
+  // Владелец видит просьбу прямо над перепиской — иначе она утонет в системных
+  // сообщениях, а второй оператор будет ждать впустую.
+  const claimBanner = active && claimOnMine && (
+    <div className="px-4 py-2.5 bg-[#eab308]/[.07] border-b border-[#eab308]/25 flex items-center gap-3">
+      <Icon name="handRaise" className="w-4 h-4 text-[#eab308] shrink-0" />
+      <span className="text-xs text-[#eab308] flex-1 min-w-0 truncate">
+        {active.claimRequestedBy} просит передать этот тикет
+      </span>
+      <button onClick={() => answerClaim(true)}
+        className="shrink-0 text-xs px-2.5 py-1 rounded-lg bg-[#eab308]/15 text-[#eab308] hover:bg-[#eab308]/25 transition font-medium">
+        Передать
+      </button>
+      <button onClick={() => answerClaim(false)}
+        className="shrink-0 text-xs px-2.5 py-1 rounded-lg text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition">
+        Отклонить
+      </button>
+    </div>
   );
 
   const closedBanner = active && active.status === "closed" && (
@@ -1114,7 +1197,29 @@ function DialogsScreen({
     </div>
   );
 
-  const composerPane = active && (
+  const lockedComposer = active && locked && (
+    <div className="border-t border-[#2a2a3a] bg-[#13131a]/40 px-4 py-4 flex items-center gap-3"
+         style={vp.isMobile ? { paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" } : undefined}>
+      <Icon name="lock" className="w-4 h-4 text-[#6b7280] shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm text-[#f1f1f5] truncate">
+          Тикет в работе у {active.assignedOperator}
+        </div>
+        <div className="text-[11px] text-[#6b7280]">
+          {myClaimPending
+            ? "Запрос отправлен — ждём, пока владелец передаст тикет"
+            : "Читать можно, отвечать — нет. Попросите передать его вам."}
+        </div>
+      </div>
+      <button onClick={requestClaim} disabled={myClaimPending}
+        className="shrink-0 px-3.5 py-2 rounded-lg text-xs font-semibold bg-[#eab308]/15 text-[#eab308] border border-[#eab308]/30 hover:bg-[#eab308]/25 transition flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-default">
+        <Icon name="handRaise" className="w-3.5 h-3.5" />
+        {myClaimPending ? "Запрос отправлен" : "Запросить"}
+      </button>
+    </div>
+  );
+
+  const composerPane = active && !locked && (
     <div className="border-t border-[#2a2a3a] bg-[#13131a]/40"
          style={vp.isMobile ? { paddingBottom: "env(safe-area-inset-bottom)" } : undefined}>
       <input ref={fileInputRef} type="file" className="hidden"
@@ -1238,6 +1343,7 @@ function DialogsScreen({
       conv={active}
       showToast={showToast}
       compact={compact}
+      readOnly={locked}
       isAdmin={currentOperator?.role === "admin"}
       onTicketClick={(id) => { setShowClientSheet(false); openDialog(id); }}
     />
@@ -1271,8 +1377,10 @@ function DialogsScreen({
   const mobileChatScreen = (
     <div className="h-full flex flex-col min-h-0 bg-[#0d0d12]">
       {chatTopBarCompact}
+      {claimBanner}
       {closedBanner}
       {messagesPane}
+      {lockedComposer}
       {composerPane}
     </div>
   );
@@ -1294,8 +1402,10 @@ function DialogsScreen({
             {active && (
               <>
                 {compact ? chatTopBarCompact : chatTopBar}
+                {claimBanner}
                 {closedBanner}
                 {messagesPane}
+                {lockedComposer}
                 {composerPane}
               </>
             )}
@@ -1676,7 +1786,8 @@ function KeyCard({ item, actions, onAction }) {
   );
 }
 
-function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmin = false }) {
+function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmin = false,
+                        readOnly = false }) {
   const [tab, setTab] = useStateD("profile");
   const [data, setData] = useStateD(null);
   const [loading, setLoading] = useStateD(true);
@@ -1718,7 +1829,9 @@ function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmi
     setForm({ spec, preset: preset || {} });
   }
 
-  const actions = (data && data.actions) || [];
+  // Чужой тикет — только чтение: продлевать подписку и банить клиента должен
+  // тот, кто с ним разговаривает.
+  const actions = readOnly ? [] : ((data && data.actions) || []);
   const byGroup = (g) => actions.filter((a) => a.group === g);
   // Действия над конкретным ключом рисуются на его карточке.
   const keyScoped = byGroup("keys").filter((a) => a.fields.some((f) => f.type === "key"));

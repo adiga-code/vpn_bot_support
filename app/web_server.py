@@ -456,7 +456,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/reply")
     async def reply(dialog_id: str, body: ReplyBody, operator: dict = Depends(require_auth)):
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
 
         op_name = body.operator_name or operator["name"] or "Оператор"
         msg_row = await db.save_message(
@@ -510,7 +510,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/dismiss_called")
     async def dismiss_called(dialog_id: str, operator: dict = Depends(require_auth)):
-        await require_dialog(dialog_id, operator)
+        await require_dialog_write(dialog_id, operator)
         await db.pool.execute(
             "UPDATE dialogs SET operator_called=FALSE WHERE dialog_id=$1", dialog_id
         )
@@ -545,7 +545,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/toggle_ai")
     async def toggle_ai(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
         new_value = not dialog["ai_enabled"]
         await db.update_ai_enabled(dialog_id, new_value)
         await db.sync_n8n_dialog_ai_status(dialog["chat_id"], new_value, dialog)
@@ -560,7 +560,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/handoff")
     async def handoff(dialog_id: str, body: HandoffBody = HandoffBody(), operator: dict = Depends(require_auth)):
-        await require_dialog(dialog_id, operator)
+        await require_dialog_write(dialog_id, operator)
         op_name = body.operator_name or operator["name"] or "Оператор"
         updated = await routing.take_in_work(dialog_id, op_name)
         if not updated:
@@ -569,7 +569,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/reopen-closed")
     async def reopen_closed_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
         if dialog["status"] != "closed":
             raise HTTPException(400, "Dialog is not closed")
         active = await db.get_active_dialog_by_chat_id(
@@ -583,7 +583,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/reopen")
     async def reopen_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
         if dialog["status"] == "closed":
             raise HTTPException(400, "Cannot reopen closed dialog")
         # → queue for another operator; the AI is NOT re-enabled — the ticket
@@ -595,7 +595,7 @@ def build_app(
     async def wait_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
         """Manual «В ожидание»: pause an in_progress ticket (red label
         «клиент ждёт ответ») while the operator waits for the team."""
-        await require_dialog(dialog_id, operator)
+        await require_dialog_write(dialog_id, operator)
         try:
             await routing.set_waiting_manual(dialog_id, operator["name"])
         except ValueError:
@@ -604,7 +604,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/transfer")
     async def transfer_dialog(dialog_id: str, body: TransferBody, operator: dict = Depends(require_auth)):
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
         if operator["role"] != "admin" and dialog.get("assigned_operator") != operator["name"]:
             raise HTTPException(403, "Can only transfer your own dialogs")
         target = await db.get_operator_by_name(body.operator_name)
@@ -616,9 +616,89 @@ def build_app(
         await routing.transfer(dialog_id, body.operator_name)
         return {"ok": True}
 
+    # ── Запрос на передачу тикета ─────────────────────────────────────────────
+    # Пока тикет в работе у одного оператора, второй его только читает
+    # (require_dialog_write). Забрать тикет он может, попросив владельца:
+    # тот жмёт «Передать» и тикет переходит штатным transfer-ом.
+
+    async def _claim_state(dialog_id: str) -> dict:
+        """Свежий диалог + рассылка обновления тем, кто его видит."""
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+                           updated["service_id"])
+        return updated
+
+    @app.post("/api/dialogs/{dialog_id}/claim")
+    async def claim_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
+        """«Запросить»: второй оператор просит владельца отдать ему тикет."""
+        dialog = await require_dialog(dialog_id, operator)
+        owner = dialog.get("assigned_operator")
+        if not owner or dialog["status"] not in ("in_progress", "waiting"):
+            raise HTTPException(400, "Этот тикет ни за кем не закреплён — берите его в работу")
+        if owner == operator["name"]:
+            raise HTTPException(400, "Тикет уже ваш")
+        if dialog.get("claim_requested_by") == operator["name"]:
+            return {"ok": True, "detail": "Запрос уже отправлен"}
+        await db.set_claim_request(dialog_id, operator["name"])
+        msg_row = await db.save_message(
+            dialog_id, "system", f"{operator['name']} просит передать тикет")
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                            "message": _fmt_message(msg_row)}, dialog["service_id"])
+        await _claim_state(dialog_id)
+        # Точечно владельцу — чтобы просьба не потерялась среди чужих событий.
+        owner_row = await db.get_operator_by_name(owner)
+        if owner_row:
+            await ws.send_to_operator(owner_row["id"], {
+                "type": "claim_requested", "dialog_id": dialog_id,
+                "by": operator["name"], "client": dialog.get("user_name") or dialog_id,
+            })
+        # И в Телеграм — владелец может быть не за панелью.
+        await n8n.schedule_notify("claim_requested", {
+            "dialog_id": dialog_id, "operator_name": operator["name"],
+            "owner_name": owner, "username": dialog.get("user_username") or dialog_id,
+        }, dialog)
+        return {"ok": True}
+
+    async def _require_claim_owner(dialog_id: str, operator: dict) -> dict:
+        """Отвечать на запрос вправе владелец тикета и админ."""
+        dialog = await require_dialog(dialog_id, operator)
+        if not dialog.get("claim_requested_by"):
+            raise HTTPException(400, "По этому тикету запроса нет")
+        if (operator["role"] != "admin"
+                and dialog.get("assigned_operator") != operator["name"]):
+            raise HTTPException(403, "Ответить на запрос может только владелец тикета")
+        return dialog
+
+    @app.post("/api/dialogs/{dialog_id}/claim/approve")
+    async def approve_claim(dialog_id: str, operator: dict = Depends(require_auth)):
+        dialog = await _require_claim_owner(dialog_id, operator)
+        target_name = dialog["claim_requested_by"]
+        target = await db.get_operator_by_name(target_name)
+        if not target:
+            await db.set_claim_request(dialog_id, None)
+            raise HTTPException(404, "Просивший оператор больше не существует")
+        if dialog["service_id"] not in await db.get_operator_service_ids(target):
+            await db.set_claim_request(dialog_id, None)
+            raise HTTPException(400, "У оператора нет доступа к сервису этого тикета")
+        # transfer сам снимет запрос (set_assigned_operator / move_to_in_progress).
+        await routing.transfer(dialog_id, target_name)
+        return {"ok": True, "operator_name": target_name}
+
+    @app.post("/api/dialogs/{dialog_id}/claim/decline")
+    async def decline_claim(dialog_id: str, operator: dict = Depends(require_auth)):
+        dialog = await _require_claim_owner(dialog_id, operator)
+        who = dialog["claim_requested_by"]
+        await db.set_claim_request(dialog_id, None)
+        msg_row = await db.save_message(
+            dialog_id, "system", f"{operator['name']} оставил тикет за собой (запрос {who} отклонён)")
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                            "message": _fmt_message(msg_row)}, dialog["service_id"])
+        await _claim_state(dialog_id)
+        return {"ok": True}
+
     @app.post("/api/dialogs/{dialog_id}/close")
     async def close_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
         # Transition + system message + broadcasts + n8n sync + queue drain
         await routing.close(dialog_id, dialog["chat_id"], operator["name"])
         if chat_client:
@@ -674,7 +754,7 @@ def build_app(
             raise HTTPException(400, f"Неизвестное действие: {action}")
         if action in _CUSTOMER_DANGEROUS and operator["role"] != "admin":
             raise HTTPException(403, "Действие доступно только администратору")
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
         service = await db.get_service(dialog["service_id"])
         result = await customers.execute(service, dialog, action, body or {},
                                          operator=operator["name"])
