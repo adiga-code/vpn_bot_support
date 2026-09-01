@@ -466,10 +466,8 @@ function TransferModal({ activeDialog, operators, currentOperator, onTransfer, o
                 <div className="text-sm text-[#f1f1f5]">{op.name}</div>
                 <div className="text-xs text-[#6b7280]">{op.role === "admin" ? "Администратор" : "Агент"}</div>
               </div>
-              <span className={"flex items-center gap-1 text-xs " + (op.online ? "text-[#22c55e]" : "text-zinc-500")}>
-                <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
-                {op.online ? "Онлайн" : "Офлайн"}
-              </span>
+              <PresenceLabel online={op.online} paused={op.paused} lastSeen={op.lastSeen}
+                             className="shrink-0 max-w-[152px]" />
             </button>
           ))}
         </div>

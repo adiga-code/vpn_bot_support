@@ -781,7 +781,10 @@
               }));
             } else if (data.type === "operator_status") {
               setOpsState((prev) =>
-                prev.map((o) => o.id === data.op_id ? { ...o, online: data.online, paused: data.paused ?? o.paused } : o)
+                prev.map((o) => o.id === data.op_id
+                  ? { ...o, online: data.online, paused: data.paused ?? o.paused,
+                      lastSeen: data.last_seen ?? o.lastSeen }
+                  : o)
               );
               setCurrentOperator((prev) =>
                 prev && prev.id === data.op_id ? { ...prev, paused: data.paused ?? prev.paused } : prev

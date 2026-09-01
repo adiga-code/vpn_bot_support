@@ -297,12 +297,7 @@ function OperatorsSection({ operators, services = [], setOperators, showToast, o
                 (op.role === "admin" ? "bg-[#A855F7]/15 text-[#C084FC] border-[#A855F7]/30" : "bg-[#1a1a24] text-[#f1f1f5] border-[#2a2a3a]")}>
                 {op.role === "admin" ? "Администратор" : "Агент"}
               </span>
-              <span className="inline-flex items-center gap-1.5 text-xs">
-                <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? (op.paused ? "bg-[#eab308]" : "bg-[#22c55e]") : "bg-zinc-600")}></span>
-                <span className={op.online ? (op.paused ? "text-[#eab308]" : "text-[#22c55e]") : "text-[#6b7280]"}>
-                  {op.online ? (op.paused ? "На паузе" : "Онлайн") : "Офлайн"}
-                </span>
-              </span>
+              <PresenceLabel online={op.online} paused={op.paused} lastSeen={op.lastSeen} />
             </div>
             <div className="mt-2.5">
               <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-1.5">Доступ к ВПН</div>
@@ -343,7 +338,7 @@ function OperatorsSection({ operators, services = [], setOperators, showToast, o
               <th className="text-left px-3 py-3 font-medium">Telegram</th>
               <th className="text-left px-3 py-3 font-medium">Роль</th>
               <th className="text-left px-3 py-3 font-medium">Доступ к ВПН</th>
-              <th className="text-left px-3 py-3 font-medium">Статус</th>
+              <th className="text-left px-3 py-3 font-medium w-[200px]">Статус</th>
               <th className="text-right px-5 py-3 font-medium w-[120px]">Действия</th>
             </tr>
           </thead>
@@ -393,12 +388,7 @@ function OperatorsSection({ operators, services = [], setOperators, showToast, o
                   )}
                 </td>
                 <td className="px-3 py-3">
-                  <span className="inline-flex items-center gap-1.5 text-xs">
-                    <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? (op.paused ? "bg-[#eab308]" : "bg-[#22c55e]") : "bg-zinc-600")}></span>
-                    <span className={op.online ? (op.paused ? "text-[#eab308]" : "text-[#22c55e]") : "text-[#6b7280]"}>
-                      {op.online ? (op.paused ? "На паузе" : "Онлайн") : "Офлайн"}
-                    </span>
-                  </span>
+                  <PresenceLabel online={op.online} paused={op.paused} lastSeen={op.lastSeen} />
                 </td>
                 <td className="px-5 py-3">
                   <div className="flex items-center justify-end gap-1">

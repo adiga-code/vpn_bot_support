@@ -255,6 +255,9 @@ class DatabaseManager:
             ("operators", "notif_prefs",   "TEXT"),
             ("operators", "password_hash", "TEXT"),
             ("operators", "offline_since", "TIMESTAMPTZ"),
+            # «Был в сети»: отдельно от offline_since, который гасится при
+            # переподключении, потому что обслуживает грейс-таймер маршрутизации.
+            ("operators", "last_seen_at",  "TIMESTAMPTZ"),
         ]
         for table, col, typedef in new_cols:
             await conn.execute(
@@ -910,7 +913,12 @@ class DatabaseManager:
         return result == "DELETE 1"
 
     async def set_operator_online(self, op_id: int, online: bool):
-        await self.pool.execute("UPDATE operators SET online=$1 WHERE id=$2", online, op_id)
+        """last_seen_at ставится на обоих переходах: у ушедшего это момент
+        разрыва последней вкладки, у пришедшего — момент, когда он снова был
+        в сети (пока он online, метка всё равно не показывается)."""
+        await self.pool.execute(
+            "UPDATE operators SET online=$1, last_seen_at=NOW() WHERE id=$2", online, op_id
+        )
 
     async def set_operator_paused(self, op_id: int, paused: bool):
         await self.pool.execute("UPDATE operators SET paused=$1 WHERE id=$2", paused, op_id)
@@ -1438,7 +1446,8 @@ class DatabaseManager:
         their tickets unless they reconnect in time."""
         await self.pool.execute(
             """UPDATE operators
-               SET online=FALSE, offline_since=COALESCE(offline_since, NOW())
+               SET online=FALSE, offline_since=COALESCE(offline_since, NOW()),
+                   last_seen_at=COALESCE(last_seen_at, NOW())
                WHERE COALESCE(online, FALSE) = TRUE"""
         )
 

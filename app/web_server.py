@@ -1364,6 +1364,11 @@ def build_app(
                 # start the offline grace timer; the routing sweeper releases
                 # the operator's in_progress tickets when it expires
                 await db.set_operator_offline_since(departed_id, True)
-                await ws.broadcast({"type": "operator_status", "op_id": departed_id, "online": False, "paused": False})
+                # last_seen проставлен в set_operator_online — перечитываем, чтобы
+                # в списке операторов сразу встало «был в сети», а не «не заходил».
+                departed = await db.get_operator(departed_id)
+                await ws.broadcast({"type": "operator_status", "op_id": departed_id,
+                                    "online": False, "paused": False,
+                                    "last_seen": _fmt_operator(departed)["lastSeen"] if departed else None})
 
     return app

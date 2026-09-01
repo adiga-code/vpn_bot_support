@@ -96,6 +96,34 @@ function SlaTimer({ slaSeconds, slaStartedAt, className = "" }) {
   );
 }
 
+// «16:12 - 25.02.2026» — формат, в котором операторы читают время последнего
+// визита коллеги. Он же используется в ленте действий клиента.
+function fmtDateTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())} - ` +
+         `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}`;
+}
+
+// Присутствие оператора. Раньше здесь стояло «Офлайн», из которого не понять,
+// ждать человека или забирать тикет; теперь видно, когда он был в сети.
+function PresenceLabel({ online, paused, lastSeen, className = "" }) {
+  const state = online
+    ? (paused
+        ? { dot: "bg-[#eab308]", text: "text-[#eab308]", label: "На паузе" }
+        : { dot: "bg-[#22c55e]", text: "text-[#22c55e]", label: "Онлайн" })
+    : { dot: "bg-zinc-600", text: "text-[#6b7280]",
+        label: lastSeen ? `был в сети ${fmtDateTime(lastSeen)}` : "не заходил" };
+  return (
+    <span className={"inline-flex items-center gap-1.5 text-xs min-w-0 " + className}>
+      <span className={"w-1.5 h-1.5 rounded-full shrink-0 " + state.dot}></span>
+      <span className={state.text + " truncate"}>{state.label}</span>
+    </span>
+  );
+}
+
 function PlanBadge({ plan }) {
   const map = {
     Pro: "bg-gradient-to-r from-[#A855F7] to-[#4F8EF7] text-white",
@@ -558,7 +586,7 @@ function Toast({ msg, type = "ok" }) {
 }
 
 Object.assign(window, { Avatar, StatusBadge, WaitingLabel, SlaTimer, fmtSla, PlanBadge, SubStatus, Icon, Toast,
-                        ModalOverlay,
+                        ModalOverlay, fmtDateTime, PresenceLabel,
                         ServiceSwitcher, ServicePill, ContextChip, ServiceDot,
                         useViewport, contrastOn, BottomSheet, ServiceRail, ServiceTile,
                         MobileAppBar, AppBarButton, MobileNav });

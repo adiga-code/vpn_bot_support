@@ -104,5 +104,8 @@ def fmt_operator(op: dict) -> dict:
         "color": op.get("color") or "#4F8EF7",
         "online": op.get("online", False),
         "paused": op.get("paused", False),
+        # «Был в сети» вместо безликого «Офлайн»: когда оператор в последний раз
+        # держал вкладку панели открытой.
+        "lastSeen": op["last_seen_at"].isoformat() if op.get("last_seen_at") else None,
         "notifPrefs": notif_prefs,
     }
