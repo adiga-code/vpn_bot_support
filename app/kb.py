@@ -73,8 +73,15 @@ def _translit(text: str) -> str:
     return "".join(_TRANSLIT.get(ch, ch) for ch in text.lower())
 
 
-def _make_slug(title: str, existing: set[str]) -> str:
-    base = re.sub(r"[^a-z0-9]+", "-", _translit(title).strip())[:60].strip("-") or "chunk"
+def _make_slug(title: str, existing: set[str], prefix: str = "") -> str:
+    """`prefix` (обычно номер раздела, уже переведённый в дефисы: "02-1-") идёт
+    ПЕРЕД обрезкой транслита на 60 символов, а не после — иначе у длинных
+    заголовков с общим началом ("Ограничения мобильного интернета: обычная
+    проблема или белые списки — ...") транслит обрезается в одну и ту же
+    строку, номер раздела теряется, и слаги схлопываются в один: последний
+    чанк с таким id в цикле загрузки молча перезаписывает все предыдущие
+    (и в kb_articles, и в Qdrant — оба ключа по id детерминированы)."""
+    base = (prefix + re.sub(r"[^a-z0-9]+", "-", _translit(title).strip()))[:60].strip("-") or "chunk"
     slug = base
     i = 2
     while slug in existing:
@@ -82,6 +89,32 @@ def _make_slug(title: str, existing: set[str]) -> str:
         i += 1
     existing.add(slug)
     return slug
+
+
+def _split_by_paragraphs(body: str, max_words: int = 350) -> list[str]:
+    """Разбить длинный текст по границам абзацев, а не потоком слов — иначе
+    готовая пошаговая инструкция («Открыв меню бота… Нажмите…») рвётся
+    посередине шага. Абзац длиннее предела сам по себе не режется: это
+    страховка от одного гигантского ### на другом документе, а не жёсткая
+    гарантия верхней границы — рвать инструкцию хуже, чем изредка превысить
+    лимит на один цельный абзац."""
+    paragraphs = [p for p in re.split(r"\n\s*\n", body) if p.strip()]
+    if not paragraphs:
+        return [body] if body.strip() else []
+    parts: list[str] = []
+    current: list[str] = []
+    count = 0
+    for p in paragraphs:
+        words = len(p.split())
+        if current and count + words > max_words:
+            parts.append("\n\n".join(current))
+            current, count = [p], words
+        else:
+            current.append(p)
+            count += words
+    if current:
+        parts.append("\n\n".join(current))
+    return parts or [body]
 
 
 def _guess_category(title: str, keywords: list[str]) -> str:
@@ -100,40 +133,83 @@ def _guess_category(title: str, keywords: list[str]) -> str:
     return "faq"
 
 
+def _extract_keywords(block: str) -> list[str]:
+    """Достаёт строку «Запросы: a; b; c», терпимо к markdown-обрамлению вокруг
+    метки (например «**Запросы:**»)."""
+    m = re.search(r"(?mi)^\s*[*_]*Запросы:[*_]*\s*(.+?)\s*$", block)
+    if not m:
+        return []
+    return [k.strip(" .*_") for k in m.group(1).split(";") if k.strip(" .*_")]
+
+
+def _num_prefix(header: str) -> tuple[str, str]:
+    """(текст заголовка без номера, номер как дефисный слаг-префикс).
+    "02.1 Как определить" → ("Как определить", "02-1-"); без номера — ("", "")."""
+    m = re.match(r"^(\d+(?:\.\d+)*)[.)]?\s*", header)
+    if not m:
+        return header, ""
+    return header[m.end():].strip(), m.group(1).replace(".", "-") + "-"
+
+
 def parse_markdown_sections(text: str) -> list[dict] | None:
     """Deterministically split a structured markdown document into KB chunks.
 
-    Expects sections delimited by "## " headers, optionally with a
-    "Запросы: ..." line of user search phrases that becomes the keywords.
-    Returns None when the document has fewer than two sections, so the
-    caller can fall back to LLM chunking for unstructured documents.
+    Каждая тема "## " делится дальше по своим "### " сценариям — так один
+    чанк покрывает узкий сценарий, а не всю раздутую тему целиком, и векторный
+    поиск попадает точнее. Каждый чанк несёт заголовок родительской "## "-темы
+    как контекст и наследует её строку «Запросы:» (метка может быть жирной).
+    "## "-раздел без "### "-подпунктов остаётся одним чанком (как раньше).
+    Чанк длиннее ~350 слов режется дальше по границам абзацев — см.
+    `_split_by_paragraphs`. Возвращает None, если в документе меньше двух
+    "## "-разделов — тогда вызывающий код падает на чанкинг через LLM.
     """
     parts = re.split(r"(?m)^##\s+", text)
-    if len(parts) < 3:  # parts[0] is the preamble before the first header
+    if len(parts) < 3:  # parts[0] — преамбула до первого заголовка
         return None
     seen: set[str] = set()
-    chunks = []
-    for part in parts[1:]:
-        header, _, body = part.partition("\n")
-        header = header.strip()
-        num_match = re.match(r"^(\d+)[.)]?\s*", header)
-        title = header[num_match.end():].strip() if num_match else header
-        body = re.sub(r"\n-{3,}\s*$", "", body.strip())
+    chunks: list[dict] = []
+
+    def add(title: str, body: str, keywords: list[str], id_prefix: str):
+        body = re.sub(r"\n-{3,}\s*$", "", (body or "").strip())
         if len(body) < 20:
+            return
+        pieces = _split_by_paragraphs(body)
+        for i, piece in enumerate(pieces):
+            part_title = title if i == 0 else f"{title} — часть {i + 1}"
+            slug = _make_slug(part_title, seen, prefix=id_prefix)
+            chunks.append({
+                "id":       slug,
+                "title":    part_title,
+                "category": _guess_category(title, keywords),
+                "keywords": keywords,
+                "content":  f"{part_title}\n\n{piece}",
+            })
+
+    for part in parts[1:]:
+        header, _, section_body = part.partition("\n")
+        parent_title, parent_prefix = _num_prefix(header.strip())
+        parent_kw = _extract_keywords(section_body)
+
+        sub_parts = re.split(r"(?m)^###\s+", section_body)
+        subs = sub_parts[1:]
+        if not subs:
+            # Подпунктов нет — тема остаётся одним чанком целиком.
+            add(parent_title, section_body, parent_kw, parent_prefix)
             continue
-        keywords = []
-        kw_match = re.search(r"(?m)^Запросы:\s*(.+)$", body)
-        if kw_match:
-            keywords = [k.strip(" .") for k in kw_match.group(1).split(";") if k.strip(" .")]
-        prefix = f"{num_match.group(1)}-" if num_match else ""
-        slug = _make_slug(prefix + title, seen)
-        chunks.append({
-            "id":       slug,
-            "title":    title,
-            "category": _guess_category(title, keywords),
-            "keywords": keywords,
-            "content":  f"{title}\n\n{body}",
-        })
+        # Текст до первого "### " (определения, строка «Запросы:») — свой
+        # чанк, без самой строки «Запросы:».
+        intro = re.sub(r"(?mi)^\s*[*_]*Запросы:.*$", "", sub_parts[0]).strip()
+        if len(intro) >= 20:
+            add(parent_title, intro, parent_kw, parent_prefix)
+        for sp in subs:
+            sub_header, _, sub_body = sp.partition("\n")
+            sub_title, sub_prefix = _num_prefix(sub_header.strip())
+            title = f"{parent_title} — {sub_title}".strip(" —") if sub_title else parent_title
+            # Номер у "### " уже включает номер родителя ("02.1"), поэтому
+            # свой префикс достаточен и без родительского — конфликтов между
+            # темами он не даёт.
+            add(title, sub_body, parent_kw + _extract_keywords(sub_body),
+                sub_prefix or parent_prefix)
     return chunks or None
 
 
@@ -312,12 +388,19 @@ async def delete_from_qdrant(article_id: str, qdrant_url: str, collection: str):
 
 async def process_document(
     text: str, chat_client: "ChatClient", openai_key: str, qdrant_url: str, collection: str,
+    db=None, service_id: int = None,
 ) -> list[dict]:
     """Full pipeline: text → chunks → embeddings (OpenAI) → Qdrant.
 
     Structured markdown ("## " sections) is split deterministically; the
     chat LLM is only a fallback for unstructured documents.
-    """
+
+    `db`/`service_id` — если заданы, загрузка ПОЛНОСТЬЮ заменяет прежнюю базу
+    знаний этого сервиса, а не дополняет её: старая версия документа стирается
+    после того, как новая успешно собрана и провекторизована (если чанкинг или
+    эмбеддинги упали, рабочая база остаётся нетронутой). Без переустановки
+    раздел, удалённый из документа при правке, навсегда оставался бы в поиске
+    ИИ — с мелкими чанками по "### " это особенно заметно."""
     try:
         chunks = parse_markdown_sections(text)
         if chunks:
@@ -330,6 +413,9 @@ async def process_document(
             return []
         print(f"[KB] Created {len(chunks)} chunks, embedding...")
         chunks = await embed_chunks(chunks, openai_key)
+        if db is not None and service_id is not None:
+            await db.reset_kb(service_id)
+            await delete_collection(qdrant_url, collection)
         await ensure_collection(qdrant_url, collection)
         await upsert_to_qdrant(chunks, qdrant_url, collection)
         print(f"[KB] Upserted {len(chunks)} vectors to Qdrant collection '{collection}'")

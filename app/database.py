@@ -236,6 +236,9 @@ class DatabaseManager:
             ("dialogs", "sla_started_at",       "TIMESTAMPTZ"),
             ("dialogs", "queued_at",            "TIMESTAMPTZ"),
             ("dialogs", "return_requested_at",  "TIMESTAMPTZ"),
+            # Запрос второго оператора на передачу тикета: кто просит и когда.
+            ("dialogs", "claim_requested_by",   "TEXT"),
+            ("dialogs", "claim_requested_at",   "TIMESTAMPTZ"),
             # messages
             ("messages", "kind",            "TEXT"),
             ("messages", "text",            "TEXT"),
@@ -255,6 +258,9 @@ class DatabaseManager:
             ("operators", "notif_prefs",   "TEXT"),
             ("operators", "password_hash", "TEXT"),
             ("operators", "offline_since", "TIMESTAMPTZ"),
+            # «Был в сети»: отдельно от offline_since, который гасится при
+            # переподключении, потому что обслуживает грейс-таймер маршрутизации.
+            ("operators", "last_seen_at",  "TIMESTAMPTZ"),
         ]
         for table, col, typedef in new_cols:
             await conn.execute(
@@ -441,6 +447,39 @@ class DatabaseManager:
 
         await self._migrate_monitoring(conn)
         await self._migrate_customer(conn)
+        await self._migrate_folders(conn)
+
+    async def _migrate_folders(self, conn):
+        """Папки-ярлыки: второй, независимый срез списка тикетов поверх статусов.
+        Тикет остаётся в своём статусном разделе («В работе», «Ожидание») и
+        дополнительно лежит в папке, куда его положил оператор.
+
+        Папка принадлежит ВПН-сервису: у каждого свои поводы раскладывать
+        тикеты, а одноимённые папки двух сервисов в одном ряду читались бы как
+        одна."""
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ticket_folders (
+                id         SERIAL PRIMARY KEY,
+                service_id INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+                name       TEXT NOT NULL,
+                emoji      TEXT NOT NULL DEFAULT '📁',
+                color      TEXT NOT NULL DEFAULT '#4F8EF7',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS ticket_folders_service_idx "
+            "ON ticket_folders (service_id, sort_order, id)"
+        )
+        # SET NULL, а не CASCADE: удаление папки не должно уносить тикеты.
+        await conn.execute(
+            "ALTER TABLE dialogs ADD COLUMN IF NOT EXISTS folder_id INTEGER "
+            "REFERENCES ticket_folders(id) ON DELETE SET NULL"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS dialogs_folder_idx ON dialogs (folder_id)"
+        )
 
     async def _migrate_monitoring(self, conn):
         """Мониторинг серверов был глобальным (SERVERS в .env) — переносим его в
@@ -649,6 +688,58 @@ class DatabaseManager:
         counts.update({r["service_id"]: int(r["cnt"]) for r in rows})
         return counts
 
+    # ── Папки тикетов ─────────────────────────────────────────────────────────
+
+    async def get_folders(self, service_ids: list[int]) -> list[dict]:
+        if not service_ids:
+            return []
+        rows = await self.pool.fetch(
+            """SELECT f.*, COUNT(d.dialog_id) FILTER (WHERE d.status <> 'closed') AS open_count
+               FROM ticket_folders f
+                    LEFT JOIN dialogs d ON d.folder_id = f.id
+               WHERE f.service_id = ANY($1::int[])
+               GROUP BY f.id
+               ORDER BY f.sort_order, f.id""",
+            service_ids,
+        )
+        return [dict(r) for r in rows]
+
+    async def get_folder(self, folder_id: int) -> Optional[dict]:
+        row = await self.pool.fetchrow("SELECT * FROM ticket_folders WHERE id=$1", folder_id)
+        return dict(row) if row else None
+
+    async def create_folder(self, service_id: int, name: str, emoji: str,
+                            color: str) -> dict:
+        sort_order = await self.pool.fetchval(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM ticket_folders WHERE service_id=$1",
+            service_id,
+        )
+        row = await self.pool.fetchrow(
+            """INSERT INTO ticket_folders (service_id, name, emoji, color, sort_order)
+               VALUES ($1,$2,$3,$4,$5) RETURNING *""",
+            service_id, name, emoji, color, sort_order,
+        )
+        return dict(row)
+
+    async def update_folder(self, folder_id: int, name: str, emoji: str, color: str,
+                            sort_order: int = None) -> Optional[dict]:
+        row = await self.pool.fetchrow(
+            """UPDATE ticket_folders
+               SET name=$1, emoji=$2, color=$3, sort_order=COALESCE($4, sort_order)
+               WHERE id=$5 RETURNING *""",
+            name, emoji, color, sort_order, folder_id,
+        )
+        return dict(row) if row else None
+
+    async def delete_folder(self, folder_id: int) -> bool:
+        result = await self.pool.execute("DELETE FROM ticket_folders WHERE id=$1", folder_id)
+        return result == "DELETE 1"
+
+    async def set_dialog_folder(self, dialog_id: str, folder_id: int | None):
+        await self.pool.execute(
+            "UPDATE dialogs SET folder_id=$1 WHERE dialog_id=$2", folder_id, dialog_id
+        )
+
     # ── Dialogs ───────────────────────────────────────────────────────────────
 
     async def upsert_dialog(
@@ -719,8 +810,10 @@ class DatabaseManager:
         SELECT d.*, s.slug AS service_slug, s.name AS service_name,
                s.color AS service_color, s.emoji AS service_emoji,
                s.qdrant_collection, s.n8n_webhook_url,
-               s.business_connection_id
+               s.business_connection_id,
+               f.name AS folder_name, f.emoji AS folder_emoji, f.color AS folder_color
         FROM dialogs d JOIN services s ON s.id = d.service_id
+                  LEFT JOIN ticket_folders f ON f.id = d.folder_id
     """
 
     async def get_all_dialogs(self, service_ids: list[int]) -> list[dict]:
@@ -749,6 +842,27 @@ class DatabaseManager:
             service_id, chat_id, exclude_dialog_id,
         )
         return dict(row) if row else None
+
+    async def get_customer_activity(self, service_id: int, chat_id: str,
+                                    limit: int = 100) -> list[dict]:
+        """Что операторы делали с АККАУНТОМ клиента из панели — по всем его
+        тикетам, а не только текущему. Отдельной таблицы не нужно: такие
+        действия оставляют системный след вида «Оператор: что сделал»
+        (см. эндпоинт customer/{action}), он и есть журнал.
+
+        Двоеточие в LIKE — и есть отбор: маршрутные записи («Диалог назначен
+        оператору X», «Тикет передан оператору Y») его не содержат, и в ленту
+        действий над аккаунтом им не место — они уже видны в переписке и в
+        разделе «Обращения»."""
+        rows = await self.pool.fetch(
+            """SELECT m.id, m.text, m.created_at, m.dialog_id
+               FROM messages m JOIN dialogs d ON d.dialog_id = m.dialog_id
+               WHERE d.service_id = $1 AND d.chat_id = $2 AND m.kind = 'system'
+                 AND m.text LIKE '%: %'
+               ORDER BY m.created_at DESC LIMIT $3""",
+            service_id, str(chat_id), int(limit),
+        )
+        return [dict(r) for r in rows]
 
     async def get_dialog_history(
         self, service_id: int, chat_id: str, exclude_dialog_id: str = "",
@@ -806,8 +920,11 @@ class DatabaseManager:
             print(f"[sync_n8n] ai_status update error: {e}")
 
     async def set_assigned_operator(self, dialog_id: str, operator_name):
+        """Смена владельца снимает чужой запрос на передачу: он уже исполнен
+        либо потерял смысл."""
         await self.pool.execute(
-            "UPDATE dialogs SET assigned_operator=$1, updated_at=NOW() WHERE dialog_id=$2",
+            "UPDATE dialogs SET assigned_operator=$1, claim_requested_by=NULL, "
+            "claim_requested_at=NULL, updated_at=NOW() WHERE dialog_id=$2",
             operator_name, dialog_id,
         )
 
@@ -841,6 +958,12 @@ class DatabaseManager:
             "UPDATE messages SET delivery_status=$1, delivery_error=$2 WHERE id=$3",
             status, error, message_id,
         )
+
+    async def get_message(self, message_id: int) -> Optional[dict]:
+        """Одно сообщение по id — нужно резервной отправке, чтобы повторить
+        именно тот текст и то вложение, которые не дошли."""
+        row = await self.pool.fetchrow("SELECT * FROM messages WHERE id=$1", int(message_id))
+        return dict(row) if row else None
 
     async def get_messages(self, dialog_id: str) -> list[dict]:
         rows = await self.pool.fetch(
@@ -910,7 +1033,12 @@ class DatabaseManager:
         return result == "DELETE 1"
 
     async def set_operator_online(self, op_id: int, online: bool):
-        await self.pool.execute("UPDATE operators SET online=$1 WHERE id=$2", online, op_id)
+        """last_seen_at ставится на обоих переходах: у ушедшего это момент
+        разрыва последней вкладки, у пришедшего — момент, когда он снова был
+        в сети (пока он online, метка всё равно не показывается)."""
+        await self.pool.execute(
+            "UPDATE operators SET online=$1, last_seen_at=NOW() WHERE id=$2", online, op_id
+        )
 
     async def set_operator_paused(self, op_id: int, paused: bool):
         await self.pool.execute("UPDATE operators SET paused=$1 WHERE id=$2", paused, op_id)
@@ -1346,6 +1474,7 @@ class DatabaseManager:
             UPDATE dialogs SET
                 status='queue', assigned_operator=NULL, queued_at=NOW(),
                 waiting_reason=NULL, return_requested_at=NULL, closed_at=NULL,
+                claim_requested_by=NULL, claim_requested_at=NULL,
                 {self._SLA_PAUSE_SQL},
                 updated_at=NOW()
             WHERE dialog_id=$1
@@ -1365,7 +1494,9 @@ class DatabaseManager:
         """→ in_progress bound to op_name, bypassing slot limits (manual take /
         transfer / own-ticket return decided by the caller). Starts SLA."""
         await self.pool.execute(f"""
-            UPDATE dialogs SET assigned_operator = $1, {self._CLAIM_STATE_SQL}
+            UPDATE dialogs SET assigned_operator = $1,
+                                  claim_requested_by=NULL, claim_requested_at=NULL,
+                                  {self._CLAIM_STATE_SQL}
             WHERE dialog_id = $2
         """, op_name, dialog_id)
 
@@ -1375,6 +1506,7 @@ class DatabaseManager:
             UPDATE dialogs SET
                 status='ai', assigned_operator=NULL, operator_called=FALSE,
                 queued_at=NULL, waiting_reason=NULL, return_requested_at=NULL,
+                claim_requested_by=NULL, claim_requested_at=NULL,
                 {self._SLA_PAUSE_SQL},
                 updated_at=NOW()
             WHERE dialog_id=$1
@@ -1386,10 +1518,21 @@ class DatabaseManager:
             UPDATE dialogs SET
                 status='closed', closed_at=NOW(), operator_called=FALSE,
                 waiting_reason=NULL, queued_at=NULL, return_requested_at=NULL,
+                claim_requested_by=NULL, claim_requested_at=NULL,
                 {self._SLA_PAUSE_SQL},
                 updated_at=NOW()
             WHERE dialog_id=$1
         """, dialog_id)
+
+    async def set_claim_request(self, dialog_id: str, op_name: str | None):
+        """Запрос на передачу тикета: имя просящего либо None, чтобы снять."""
+        await self.pool.execute(
+            """UPDATE dialogs
+               SET claim_requested_by=$1,
+                   claim_requested_at=CASE WHEN $1::text IS NULL THEN NULL ELSE NOW() END
+               WHERE dialog_id=$2""",
+            op_name, dialog_id,
+        )
 
     async def set_return_requested(self, dialog_id: str):
         """Mark a waiting ticket as 'client replied, wants to come back'."""
@@ -1438,7 +1581,8 @@ class DatabaseManager:
         their tickets unless they reconnect in time."""
         await self.pool.execute(
             """UPDATE operators
-               SET online=FALSE, offline_since=COALESCE(offline_since, NOW())
+               SET online=FALSE, offline_since=COALESCE(offline_since, NOW()),
+                   last_seen_at=COALESCE(last_seen_at, NOW())
                WHERE COALESCE(online, FALSE) = TRUE"""
         )
 

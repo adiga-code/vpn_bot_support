@@ -34,8 +34,18 @@ function DaySeparator({ label }) {
   );
 }
 
-function DeliveryStatus({ status }) {
+function DeliveryStatus({ status, error }) {
   if (!status || status === "failed") return null;
+  // Резервный канал: сообщение дошло, но не тем путём, каким должно было —
+  // жёлтые галочки, а причина обхода в подсказке.
+  if (status === "delivered_fallback") {
+    return (
+      <span className="ml-1 font-bold text-[#eab308]"
+            title={"business-чат не принял: " + (error || "—")}>
+        ✓✓
+      </span>
+    );
+  }
   const delivered = status === "delivered";
   return (
     <span className={"ml-1 font-bold " + (delivered ? "text-[#4F8EF7]" : "text-[#6b7280]")}>
@@ -58,7 +68,8 @@ function StarRating({ rating, size = "sm" }) {
 
 // flat — вид для телефона: строка во всю ширину с разделителем вместо карточки
 // с закруглениями, чтобы список читался как обычный мобильный лист.
-function ConvCard({ conv, active, onClick, showServiceTag = false, flat = false }) {
+function ConvCard({ conv, active, onClick, showServiceTag = false, flat = false,
+                    lockedForMe = false }) {
   // escalated but not yet served — grabs attention in «ИИ»/«Очередь»
   const calledUnserved = conv.operatorCalled && ["ai", "queue"].includes(conv.status);
   return (
@@ -100,6 +111,11 @@ function ConvCard({ conv, active, onClick, showServiceTag = false, flat = false 
             <div className="flex items-center gap-1.5 min-w-0">
               {/* В режиме «Все сервисы» — чей это тикет */}
               {showServiceTag && <ServiceDot color={conv.serviceColor} name={conv.serviceName} />}
+              {conv.folderEmoji && (
+                <span title={"Папка: " + conv.folderName} className="shrink-0 text-[11px] leading-none">
+                  {conv.folderEmoji}
+                </span>
+              )}
               <div className="text-sm font-medium text-[#f1f1f5] truncate">{conv.name}</div>
             </div>
             <div className="text-[10px] text-[#6b7280] shrink-0">{conv.time}</div>
@@ -122,8 +138,14 @@ function ConvCard({ conv, active, onClick, showServiceTag = false, flat = false 
           </div>
           {conv.assignedOperator && (
             <div className="flex items-center gap-1 mt-1 text-[10px] text-[#6b7280]">
-              <Icon name="user" className="w-2.5 h-2.5 shrink-0" />
+              {/* Замок — тикет в работе у другого оператора, писать в него нельзя */}
+              <Icon name={lockedForMe ? "lock" : "user"} className="w-2.5 h-2.5 shrink-0" />
               <span className="truncate">{conv.assignedOperator}</span>
+              {conv.claimRequestedBy && (
+                <span className="shrink-0 text-[#eab308]" title={`${conv.claimRequestedBy} просит передать`}>
+                  · запрос
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -247,8 +269,11 @@ function MessageBubble({ msg, onImageClick, compact = false }) {
   if (msg.kind === "operator") {
     const hasFile = msg.fileType && msg.fileType !== "text";
     const failed = msg.deliveryStatus === "failed";
+    const viaFallback = msg.deliveryStatus === "delivered_fallback";
     const bubbleBorder = failed
       ? "bg-[#A855F7]/15 border border-[#ef4444]/60 text-[#f1f1f5]"
+      : viaFallback
+      ? "bg-[#A855F7]/15 border border-[#eab308]/50 text-[#f1f1f5]"
       : "bg-[#A855F7]/15 border border-[#A855F7]/30 text-[#f1f1f5]";
     return (
       <div className="flex justify-end">
@@ -262,10 +287,16 @@ function MessageBubble({ msg, onImageClick, compact = false }) {
           }
           <div className="text-[10px] text-[#6b7280] mt-1 mr-2 text-right">
             {msg.operator} · {msgTime(msg)}
-            <DeliveryStatus status={msg.deliveryStatus} />
+            <DeliveryStatus status={msg.deliveryStatus} error={msg.deliveryError} />
           </div>
           {failed && msg.deliveryError && (
             <div className="text-[10px] text-[#ef4444] mt-0.5 mr-2 text-right">✗ {msg.deliveryError}</div>
+          )}
+          {viaFallback && (
+            <div className="text-[10px] text-[#eab308] mt-0.5 mr-2 text-right"
+                 title={msg.deliveryError || ""}>
+              доставлено резервным каналом
+            </div>
           )}
         </div>
       </div>
@@ -393,9 +424,9 @@ function TemplatePickerModal({ onSelect, onClose, templates }) {
   }, [templates, group, search]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+    <ModalOverlay onClose={onClose}>
       <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-2xl flex flex-col"
-           style={{ maxHeight: "70vh" }} onClick={e => e.stopPropagation()}>
+           style={{ maxHeight: "70vh" }}>
         {/* Search header */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-[#2a2a3a] shrink-0">
           <Icon name="search" className="w-4 h-4 text-[#6b7280] shrink-0" />
@@ -436,7 +467,7 @@ function TemplatePickerModal({ onSelect, onClose, templates }) {
           </div>
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -448,8 +479,8 @@ function TransferModal({ activeDialog, operators, currentOperator, onTransfer, o
     (op.role === "admin" || (op.serviceIds || []).includes(activeDialog?.serviceId))
   );
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm">
         <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
           <div className="font-medium text-sm text-[#f1f1f5]">Передать тикет</div>
           <button onClick={onClose} className="text-[#6b7280] hover:text-[#f1f1f5]"><Icon name="x" className="w-4 h-4" /></button>
@@ -466,15 +497,13 @@ function TransferModal({ activeDialog, operators, currentOperator, onTransfer, o
                 <div className="text-sm text-[#f1f1f5]">{op.name}</div>
                 <div className="text-xs text-[#6b7280]">{op.role === "admin" ? "Администратор" : "Агент"}</div>
               </div>
-              <span className={"flex items-center gap-1 text-xs " + (op.online ? "text-[#22c55e]" : "text-zinc-500")}>
-                <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
-                {op.online ? "Онлайн" : "Офлайн"}
-              </span>
+              <PresenceLabel online={op.online} paused={op.paused} lastSeen={op.lastSeen}
+                             className="shrink-0 max-w-[152px]" />
             </button>
           ))}
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -485,6 +514,7 @@ function DialogsScreen({
   onReply, onToggleAI, onClose, onHandoff, onReopen, onWait,
   currentOperator, operators,
   showServiceTag = false,
+  serviceId = null, folders = [],
   viewport, mobileChrome, onMobileChatOpen,
 }) {
   const [searchQ, setSearchQ] = useStateD("");
@@ -498,6 +528,8 @@ function DialogsScreen({
   const [confirmClose, setConfirmClose] = useStateD(false);
   const [showTemplates, setShowTemplates] = useStateD(false);
   const [showTransfer, setShowTransfer] = useStateD(false);
+  const [showFolderPick, setShowFolderPick] = useStateD(false);
+  const [actionsOpen, setActionsOpen] = useStateD(false);
   // Шаблоны нужны сразу: по «/» список должен появляться мгновенно, без похода
   // в сеть. Модалка шаблонов берёт этот же массив.
   const [templates, setTemplates] = useStateD([]);
@@ -519,7 +551,7 @@ function DialogsScreen({
   useEffectD(() => { if (activeId) setMobileView("chat"); }, [activeId]);
 
   // Шторки принадлежат конкретному тикету: смена тикета их закрывает.
-  useEffectD(() => { setShowClientSheet(false); setShowActionsSheet(false); }, [active?.id]);
+  useEffectD(() => { setShowClientSheet(false); setShowActionsSheet(false); setActionsOpen(false); }, [active?.id]);
 
   // Sync AI toggle state when active dialog changes; reset composer mode
   useEffectD(() => {
@@ -618,15 +650,17 @@ function DialogsScreen({
   };
   const MY_SECTIONS  = ["wip", "waiting", "closed"];
   const ALL_SECTIONS = ["wip", "waiting", "queue", "ai", "closed"];
-  const ALL_MAIN = ["wip", "waiting", "queue"];
-  const ALL_MORE = ["ai", "closed"];
-  const [moreOpen, setMoreOpen] = useStateD(false);
+
+  // Папки видны только при выбранном ВПН-е: они пер-сервисные, и одноимённые
+  // папки двух сервисов в одном ряду читались бы как одна.
+  const visibleFolders = serviceId === null ? [] : folders;
+  const isFolder = (f) => String(f).startsWith("folder:");
+  const folderIdOf = (f) => Number(String(f).slice(7));
 
   function switchView(v) {
     setView(v);
-    setMoreOpen(false);
     const valid = v === "my" ? MY_SECTIONS : ALL_SECTIONS;
-    if (!valid.includes(filter)) setFilter("wip");
+    if (!isFolder(filter) && !valid.includes(filter)) setFilter("wip");
   }
 
   const baseList = useMemoD(() =>
@@ -637,7 +671,11 @@ function DialogsScreen({
   );
 
   const filtered = useMemoD(() => {
-    let list = baseList.filter((c) => c.status === SECTION_STATUS[filter]);
+    // В папке показываем открытые тикеты: закрытые живут в своём разделе,
+    // иначе счётчик папки и её содержимое расходились бы.
+    let list = isFolder(filter)
+      ? baseList.filter((c) => c.folderId === folderIdOf(filter) && c.status !== "closed")
+      : baseList.filter((c) => c.status === SECTION_STATUS[filter]);
     if (searchQ.trim()) {
       const q = searchQ.toLowerCase();
       list = list.filter(
@@ -659,8 +697,35 @@ function DialogsScreen({
     for (const id of ALL_SECTIONS) {
       res[id] = baseList.filter((c) => c.status === SECTION_STATUS[id]).length;
     }
+    for (const f of visibleFolders) {
+      res["folder:" + f.id] = baseList.filter(
+        (c) => c.folderId === f.id && c.status !== "closed").length;
+    }
     return res;
-  }, [baseList]);
+  }, [baseList, visibleFolders]);
+
+  // Один список вкладок на обе раскладки: статусные разделы, разделитель,
+  // папки. Ряд прокручивается — новые папки не ломают вёрстку.
+  const sectionTabs = useMemoD(() => {
+    const statuses = (view === "my" ? MY_SECTIONS : ALL_SECTIONS).map((id) => ({
+      key: id, icon: SECTION_META[id].icon, label: SECTION_META[id].label,
+    }));
+    return statuses.concat(visibleFolders.map((f) => ({
+      key: "folder:" + f.id, icon: f.emoji, label: f.name, color: f.color,
+    })));
+  }, [view, visibleFolders]);
+
+  async function setDialogFolder(folderId) {
+    setShowFolderPick(false);
+    if (!active) return;
+    try {
+      await window.apiFetch("POST", `/api/dialogs/${active.id}/folder`, { folder_id: folderId });
+      const f = folders.find((x) => x.id === folderId);
+      showToast(f ? `Тикет в папке «${f.name}»` : "Тикет вынут из папки");
+    } catch (e) {
+      showToast(e?.status === 423 ? e.detail : "Не удалось изменить папку");
+    }
+  }
 
   async function handleTransfer(operatorName) {
     setShowTransfer(false);
@@ -776,6 +841,37 @@ function DialogsScreen({
     ai: "ИИ", queue: "Очередь", in_progress: "В работе", waiting: "Ожидание", closed: "Закрыт",
   };
 
+  // Пока тикет в работе у одного оператора, второй такого же уровня его только
+  // читает: двое, пишущих клиенту разное, хуже любой задержки с ответом.
+  // Забрать тикет можно кнопкой «Запросить» — владелец передаёт его сам.
+  // Админ не ограничен: иначе разруливать зависшие тикеты было бы некому.
+  const lockedFor = (c) =>
+    currentOperator?.role !== "admin" && !!c?.assignedOperator
+    && c.assignedOperator !== currentOperator?.name
+    && ["in_progress", "waiting"].includes(c.status);
+  const locked = lockedFor(active);
+  const myClaimPending = locked && active?.claimRequestedBy === currentOperator?.name;
+  // Обратная сторона: у меня просят мой тикет.
+  const claimOnMine = !!active?.claimRequestedBy
+    && (active?.assignedOperator === currentOperator?.name || currentOperator?.role === "admin")
+    && active?.claimRequestedBy !== currentOperator?.name;
+
+  async function requestClaim() {
+    if (!active) return;
+    try {
+      await window.apiFetch("POST", `/api/dialogs/${active.id}/claim`);
+      showToast(`Запрос отправлен: ${active.assignedOperator}`);
+    } catch (e) { showToast(e?.detail || "Не удалось отправить запрос"); }
+  }
+
+  async function answerClaim(approve) {
+    if (!active) return;
+    try {
+      await window.apiFetch("POST", `/api/dialogs/${active.id}/claim/${approve ? "approve" : "decline"}`);
+      showToast(approve ? `Тикет передан: ${active.claimRequestedBy}` : "Запрос отклонён");
+    } catch (e) { showToast(e?.detail || "Не удалось ответить на запрос"); }
+  }
+
   // Нижняя навигация уступает место переписке и клавиатуре.
   useEffectD(() => {
     if (onMobileChatOpen) onMobileChatOpen(!!(vp.isMobile && mobileView === "chat" && active));
@@ -795,7 +891,12 @@ function DialogsScreen({
   }
 
   // Действия над тикетом: на десктопе кнопками в шапке, на узких — шторкой.
-  const ticketActions = !active ? [] : [
+  const ticketActions = !active ? [] : locked ? [
+    // Чужой тикет: только попросить его и скопировать ссылку.
+    ...(myClaimPending
+      ? [] : [{ icon: "handRaise", label: "Запросить тикет", run: requestClaim }]),
+    { icon: "link", label: "Скопировать ссылку", run: copyDialogLink },
+  ] : [
     ...(["ai", "queue"].includes(active.status)
       ? [{ icon: "user", label: "Взять в работу", run: handoffToOperator }] : []),
     ...(["in_progress", "waiting"].includes(active.status)
@@ -804,6 +905,9 @@ function DialogsScreen({
       ? [{ icon: "clock", label: "В ожидание", run: waitDialog }] : []),
     ...(active.status !== "closed"
       ? [{ icon: "arrowRight", label: "Передать оператору", run: () => setShowTransfer(true) }] : []),
+    ...(folders.length > 0
+      ? [{ icon: "grid", label: active.folderId ? "Сменить папку" : "Положить в папку",
+           run: () => setShowFolderPick(true) }] : []),
     { icon: "link", label: "Скопировать ссылку", run: copyDialogLink },
     ...(active.status !== "closed"
       ? [{ icon: "x", label: "Закрыть диалог", danger: true, run: () => setConfirmClose(true) }] : []),
@@ -834,68 +938,31 @@ function DialogsScreen({
         ))}
       </div>
       {searchField}
-      <div className="flex gap-1 text-[11px] relative">
-        {(view === "my" ? MY_SECTIONS : ALL_MAIN).map((id) => (
-          <button
-            key={id}
-            onClick={() => { setFilter(id); setMoreOpen(false); }}
-            className={
-              "flex-1 px-1 py-1.5 rounded-md font-medium transition flex flex-col items-center gap-0.5 " +
-              (filter === id
-                ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
-                : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
-            }
-          >
-            <span className="text-sm leading-none">{SECTION_META[id].icon}</span>
-            <span className="whitespace-nowrap">{SECTION_META[id].label}</span>
-            <span className="opacity-60">{counts[id]}</span>
-          </button>
-        ))}
-        {view === "all" && (
-          <>
+      {/* Ряд разделов прокручивается вправо: статусных пять, а папок сколько
+          угодно, и «ещё»-меню, в которое раньше прятались ИИ и Закрытые,
+          столько уже не вместит. */}
+      <div className="flex gap-1 text-[11px] overflow-x-auto scrollbar-thin pb-0.5">
+        {sectionTabs.map((t, i) => (
+          <React.Fragment key={t.key}>
+            {i > 0 && !isFolder(sectionTabs[i - 1].key) && isFolder(t.key) && (
+              <div className="w-px shrink-0 my-1.5 bg-[#2a2a3a]"></div>
+            )}
             <button
-              onClick={() => setMoreOpen((v) => !v)}
-              title="Ещё разделы"
+              onClick={() => setFilter(t.key)}
+              title={t.label}
               className={
-                "px-2 py-1.5 rounded-md font-medium transition flex flex-col items-center justify-center gap-0.5 " +
-                (ALL_MORE.includes(filter)
+                "shrink-0 min-w-[56px] max-w-[104px] px-1.5 py-1.5 rounded-md font-medium transition flex flex-col items-center gap-0.5 " +
+                (filter === t.key
                   ? "bg-[#4F8EF7]/15 text-[#7BA8F9]"
                   : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")
               }
             >
-              {ALL_MORE.includes(filter) ? (
-                <>
-                  <span className="text-sm leading-none">{SECTION_META[filter].icon}</span>
-                  <span className="whitespace-nowrap">{SECTION_META[filter].label}</span>
-                  <span className="opacity-60">{counts[filter]}</span>
-                </>
-              ) : (
-                <span className="text-base leading-none px-0.5">⋯</span>
-              )}
+              <span className="text-sm leading-none">{t.icon}</span>
+              <span className="max-w-full truncate">{t.label}</span>
+              <span className="opacity-60">{counts[t.key] || 0}</span>
             </button>
-            {moreOpen && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setMoreOpen(false)}></div>
-                <div className="absolute right-0 top-full mt-1 z-20 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg shadow-2xl py-1 min-w-[150px]">
-                  {ALL_MORE.map((id) => (
-                    <button
-                      key={id}
-                      onClick={() => { setFilter(id); setMoreOpen(false); }}
-                      className={
-                        "w-full text-left px-3 py-2 flex items-center gap-2 transition " +
-                        (filter === id ? "text-[#7BA8F9]" : "text-[#d1d1d8] hover:bg-[#2a2a3a]/50")
-                      }
-                    >
-                      <span>{SECTION_META[id].icon}</span>
-                      <span>{SECTION_META[id].label}</span>
-                      <span className="opacity-60 ml-auto">{counts[id]}</span>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </>
-        )}
+          </React.Fragment>
+        ))}
       </div>
     </div>
   );
@@ -915,15 +982,16 @@ function DialogsScreen({
         ))}
       </div>
       <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
-        {(view === "my" ? MY_SECTIONS : ALL_SECTIONS).map((id) => (
-          <button key={id} onClick={() => setFilter(id)}
-            aria-label={"Раздел: " + SECTION_META[id].label}
+        {sectionTabs.map((t) => (
+          <button key={t.key} onClick={() => setFilter(t.key)}
+            aria-label={"Раздел: " + t.label}
             className={"shrink-0 min-h-[44px] px-3.5 rounded-full text-[12.5px] font-medium border transition " +
-              (filter === id
+              (filter === t.key
                 ? "bg-[#4F8EF7] border-[#4F8EF7] text-white"
                 : "bg-[#13131a] border-[#2a2a3a] text-[#9095a3]")}>
-            {SECTION_META[id].label}
-            {counts[id] > 0 && <span className="ml-1 font-mono opacity-75">{counts[id]}</span>}
+            {isFolder(t.key) && <span className="mr-1">{t.icon}</span>}
+            {t.label}
+            {counts[t.key] > 0 && <span className="ml-1 font-mono opacity-75">{counts[t.key]}</span>}
           </button>
         ))}
       </div>
@@ -938,86 +1006,119 @@ function DialogsScreen({
       {filtered.map((c) => (
         <ConvCard key={c.id} conv={c} active={!vp.isMobile && c.id === activeId}
                   onClick={() => openDialog(c.id)} showServiceTag={showServiceTag}
-                  flat={vp.isMobile} />
+                  flat={vp.isMobile} lockedForMe={lockedFor(c)} />
       ))}
     </div>
   );
 
-  // Шапка переписки на десктопе: все действия кнопками.
+  // Шапка переписки на десктопе. Раньше сюда выкладывались все действия сразу,
+  // и ряд кнопок вытеснял имя клиента за границы шапки уже на 1440px — центр
+  // это ширина окна минус две боковые колонки, её всегда меньше, чем кажется.
+  // Теперь на виду главное действие и контекст (владелец, замок, папка),
+  // остальное — в меню «⋯»; список тот же ticketActions, что и в шторке на
+  // узких экранах.
+  const primaryAction = !active ? null
+    : locked ? "claim"
+    : ["ai", "queue"].includes(active.status) ? "take"
+    : null;
+  const menuActions = ticketActions.filter((a) =>
+    !(primaryAction === "take" && a.label === "Взять в работу")
+    && !(primaryAction === "claim" && a.label === "Запросить тикет"));
+
   const chatTopBar = active && (
-    <div className="h-[60px] px-5 border-b border-[#2a2a3a] flex items-center justify-between bg-[#13131a]/40">
+    <div className="h-[60px] shrink-0 px-5 border-b border-[#2a2a3a] flex items-center justify-between gap-3 bg-[#13131a]/40 relative z-20">
       <div className="flex items-center gap-3 min-w-0">
         <Avatar initials={active.initials} color={active.avatarColor} size={36} photoUrl={active.photoUrl} />
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <div className="font-medium text-[#f1f1f5] truncate">{active.name}</div>
             <StatusBadge status={active.status} />
             {active.status === "waiting" && <WaitingLabel reason={active.waitingReason} />}
             <SlaTimer slaSeconds={active.slaSeconds} slaStartedAt={active.slaStartedAt} />
           </div>
-          <div className="text-xs text-[#6b7280]">{active.username} · ID {active.tgId}</div>
+          <div className="text-xs text-[#6b7280] truncate">{active.username} · ID {active.tgId}</div>
         </div>
       </div>
+
       <div className="flex items-center gap-2 shrink-0">
-        {["ai", "queue"].includes(active.status) && (
+        {locked && (
+          <span className="flex items-center gap-1.5 text-xs text-[#6b7280] px-1 max-w-[190px]">
+            <Icon name="lock" className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">В работе у {active.assignedOperator}</span>
+          </span>
+        )}
+        {!locked && ["in_progress", "waiting"].includes(active.status) && active.assignedOperator && (
+          <span className="flex items-center gap-1.5 text-xs text-[#6b7280] px-1 max-w-[160px]">
+            <Icon name="user" className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">{active.assignedOperator}</span>
+          </span>
+        )}
+
+        {primaryAction === "take" && (
           <button
             onClick={handoffToOperator}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#A855F7]/15 text-[#C084FC] border border-[#A855F7]/30 hover:bg-[#A855F7]/25 transition flex items-center gap-1.5"
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#A855F7]/15 text-[#C084FC] border border-[#A855F7]/30 hover:bg-[#A855F7]/25 transition flex items-center gap-1.5 whitespace-nowrap"
           >
             <Icon name="user" className="w-3.5 h-3.5" />
             Взять в работу
           </button>
         )}
-        {["in_progress", "waiting"].includes(active.status) && (
-          <>
-            {active.assignedOperator && (
-              <span className="flex items-center gap-1.5 text-xs text-[#6b7280] px-2">
-                <Icon name="user" className="w-3.5 h-3.5" />
-                {active.assignedOperator}
-              </span>
-            )}
-            <button
-              onClick={reopenDialog}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
-            >
-              <Icon name="arrowLeft" className="w-3.5 h-3.5" />
-              Вернуть в очередь
-            </button>
-          </>
-        )}
-        {active.status === "in_progress" && (
+        {primaryAction === "claim" && (
           <button
-            onClick={waitDialog}
-            title="Перевести в «Ожидание» (клиент ждёт ответ)"
-            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#ef4444]/10 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/20 transition flex items-center gap-1.5"
+            onClick={requestClaim}
+            disabled={myClaimPending}
+            title={myClaimPending
+              ? "Владелец ещё не ответил на запрос"
+              : "Попросить владельца передать тикет вам"}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#eab308]/15 text-[#eab308] border border-[#eab308]/30 hover:bg-[#eab308]/25 transition flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50 disabled:cursor-default"
           >
-            <Icon name="clock" className="w-3.5 h-3.5" />
-            В ожидание
+            <Icon name="handRaise" className="w-3.5 h-3.5" />
+            {myClaimPending ? "Запрос отправлен" : "Запросить"}
           </button>
         )}
-        {active.status !== "closed" && (
+
+        {!locked && folders.length > 0 && (
           <button
-            onClick={() => setShowTransfer(true)}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] border border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition flex items-center gap-1.5"
+            onClick={() => setShowFolderPick(true)}
+            title={active.folderName ? `Папка: ${active.folderName}` : "Положить в папку"}
+            className={"px-2.5 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 max-w-[150px] " +
+              (active.folderId
+                ? "border-[#3a3a4a] text-[#f1f1f5] bg-[#1a1a24]"
+                : "border-[#2a2a3a] text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}
           >
-            <Icon name="arrowRight" className="w-3.5 h-3.5" />
-            Передать
+            <span className="text-sm leading-none shrink-0">{active.folderEmoji || "📁"}</span>
+            <span className="truncate">{active.folderName || "Папка"}</span>
           </button>
         )}
-        <button
-          onClick={copyDialogLink}
-          className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded-lg transition"
-          title="Скопировать ссылку на диалог"
-        >
-          <Icon name="link" className="w-4 h-4" />
-        </button>
-        <button
-          onClick={() => setConfirmClose(true)}
-          disabled={active.status === "closed"}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          Закрыть диалог
-        </button>
+
+        <div className="relative">
+          <button
+            onClick={() => setActionsOpen((v) => !v)}
+            title="Действия над тикетом"
+            className={"w-8 h-8 rounded-lg flex items-center justify-center transition " +
+              (actionsOpen ? "bg-[#1a1a24] text-[#f1f1f5]" : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}
+          >
+            <Icon name="dots" className="w-4 h-4" />
+          </button>
+          {actionsOpen && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setActionsOpen(false)}></div>
+              <div className="absolute right-0 top-full mt-1 z-40 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg shadow-2xl py-1 min-w-[210px]">
+                {menuActions.map((a) => (
+                  <button
+                    key={a.label}
+                    onClick={() => { setActionsOpen(false); a.run(); }}
+                    className={"w-full text-left px-3 py-2 text-xs flex items-center gap-2.5 transition hover:bg-[#2a2a3a]/50 " +
+                      (a.danger ? "text-[#f87171]" : "text-[#d1d1d8]")}
+                  >
+                    <Icon name={a.icon} className={"w-4 h-4 shrink-0 " + (a.danger ? "text-[#f87171]" : "text-[#6b7280]")} />
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1038,6 +1139,25 @@ function DialogsScreen({
         </>
       }
     />
+  );
+
+  // Владелец видит просьбу прямо над перепиской — иначе она утонет в системных
+  // сообщениях, а второй оператор будет ждать впустую.
+  const claimBanner = active && claimOnMine && (
+    <div className="px-4 py-2.5 bg-[#eab308]/[.07] border-b border-[#eab308]/25 flex items-center gap-3">
+      <Icon name="handRaise" className="w-4 h-4 text-[#eab308] shrink-0" />
+      <span className="text-xs text-[#eab308] flex-1 min-w-0 truncate">
+        {active.claimRequestedBy} просит передать этот тикет
+      </span>
+      <button onClick={() => answerClaim(true)}
+        className="shrink-0 text-xs px-2.5 py-1 rounded-lg bg-[#eab308]/15 text-[#eab308] hover:bg-[#eab308]/25 transition font-medium">
+        Передать
+      </button>
+      <button onClick={() => answerClaim(false)}
+        className="shrink-0 text-xs px-2.5 py-1 rounded-lg text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] transition">
+        Отклонить
+      </button>
+    </div>
   );
 
   const closedBanner = active && active.status === "closed" && (
@@ -1096,7 +1216,29 @@ function DialogsScreen({
     </div>
   );
 
-  const composerPane = active && (
+  const lockedComposer = active && locked && (
+    <div className="border-t border-[#2a2a3a] bg-[#13131a]/40 px-4 py-4 flex items-center gap-3"
+         style={vp.isMobile ? { paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" } : undefined}>
+      <Icon name="lock" className="w-4 h-4 text-[#6b7280] shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm text-[#f1f1f5] truncate">
+          Тикет в работе у {active.assignedOperator}
+        </div>
+        <div className="text-[11px] text-[#6b7280]">
+          {myClaimPending
+            ? "Запрос отправлен — ждём, пока владелец передаст тикет"
+            : "Читать можно, отвечать — нет. Попросите передать его вам."}
+        </div>
+      </div>
+      <button onClick={requestClaim} disabled={myClaimPending}
+        className="shrink-0 px-3.5 py-2 rounded-lg text-xs font-semibold bg-[#eab308]/15 text-[#eab308] border border-[#eab308]/30 hover:bg-[#eab308]/25 transition flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-default">
+        <Icon name="handRaise" className="w-3.5 h-3.5" />
+        {myClaimPending ? "Запрос отправлен" : "Запросить"}
+      </button>
+    </div>
+  );
+
+  const composerPane = active && !locked && (
     <div className="border-t border-[#2a2a3a] bg-[#13131a]/40"
          style={vp.isMobile ? { paddingBottom: "env(safe-area-inset-bottom)" } : undefined}>
       <input ref={fileInputRef} type="file" className="hidden"
@@ -1220,6 +1362,7 @@ function DialogsScreen({
       conv={active}
       showToast={showToast}
       compact={compact}
+      readOnly={locked}
       isAdmin={currentOperator?.role === "admin"}
       onTicketClick={(id) => { setShowClientSheet(false); openDialog(id); }}
     />
@@ -1253,8 +1396,10 @@ function DialogsScreen({
   const mobileChatScreen = (
     <div className="h-full flex flex-col min-h-0 bg-[#0d0d12]">
       {chatTopBarCompact}
+      {claimBanner}
       {closedBanner}
       {messagesPane}
+      {lockedComposer}
       {composerPane}
     </div>
   );
@@ -1276,8 +1421,10 @@ function DialogsScreen({
             {active && (
               <>
                 {compact ? chatTopBarCompact : chatTopBar}
+                {claimBanner}
                 {closedBanner}
                 {messagesPane}
+                {lockedComposer}
                 {composerPane}
               </>
             )}
@@ -1317,11 +1464,8 @@ function DialogsScreen({
 
       {/* Lightbox */}
       {lightboxUrl && (
-        <div
-          onClick={() => setLightboxUrl(null)}
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-8"
-        >
-          <div className="relative max-w-4xl max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setLightboxUrl(null)} className="bg-black/80 p-8">
+          <div className="relative max-w-4xl max-h-[90vh]">
             <img src={lightboxUrl} alt="" className="max-w-full max-h-[90vh] rounded-xl object-contain" />
             <button
               onClick={() => setLightboxUrl(null)}
@@ -1330,13 +1474,13 @@ function DialogsScreen({
               <Icon name="x" />
             </button>
           </div>
-        </div>
+        </ModalOverlay>
       )}
 
       {/* Close confirm */}
       {confirmClose && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirmClose(false)}>
-          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setConfirmClose(false)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
             <div className="font-semibold text-[#f1f1f5] mb-1">Закрыть диалог?</div>
             <div className="text-sm text-[#6b7280] mb-5">Пользователь сможет открыть новый, написав в чат.</div>
             <div className="flex justify-end gap-2">
@@ -1348,10 +1492,36 @@ function DialogsScreen({
               </button>
             </div>
           </div>
-        </div>
+        </ModalOverlay>
       )}
       {showTemplates && <TemplatePickerModal onSelect={pickTemplate} templates={templates}
                                              onClose={() => setShowTemplates(false)} />}
+      <ActionShell open={showFolderPick} onClose={() => setShowFolderPick(false)}
+                   compact={compact} title="Папка тикета" subtitle={active?.name}>
+        <div className="space-y-1.5">
+          {folders.map((f) => (
+            <button key={f.id} onClick={() => setDialogFolder(f.id)}
+              className={"w-full min-h-[44px] px-3 rounded-lg flex items-center gap-2.5 text-left border transition " +
+                (active?.folderId === f.id
+                  ? "bg-[#1a1a24] border-[#3a3a4a] text-[#f1f1f5]"
+                  : "border-[#2a2a3a] text-[#d1d1d8] hover:bg-[#1a1a24]")}>
+              <span className="w-7 h-7 shrink-0 rounded-lg flex items-center justify-center text-base"
+                    style={{ background: f.color + "22", border: `1px solid ${f.color}55` }}>
+                {f.emoji}
+              </span>
+              <span className="flex-1 min-w-0 truncate text-sm">{f.name}</span>
+              {active?.folderId === f.id && <Icon name="check" className="w-4 h-4 text-[#22c55e] shrink-0" />}
+            </button>
+          ))}
+          {active?.folderId && (
+            <button onClick={() => setDialogFolder(null)}
+              className="w-full min-h-[44px] px-3 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] text-left">
+              Убрать из папки
+            </button>
+          )}
+        </div>
+      </ActionShell>
+
       {showTransfer && (
         <TransferModal
           activeDialog={active}
@@ -1470,10 +1640,8 @@ function ActionShell({ open, onClose, title, subtitle, compact, children }) {
   }
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
-         onClick={onClose}>
-      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm"
-           onClick={(e) => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose} zIndex={60}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-sm">
         <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="font-medium text-sm text-[#f1f1f5] truncate">{title}</div>
@@ -1485,7 +1653,7 @@ function ActionShell({ open, onClose, title, subtitle, compact, children }) {
         </div>
         <div className="p-5">{children}</div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -1637,7 +1805,120 @@ function KeyCard({ item, actions, onAction }) {
   );
 }
 
-function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmin = false }) {
+// Лента «Действия»: всё, что случилось с аккаунтом клиента — и его руками, и
+// операторскими. Данные собираются из внешней API (оплаты, журнал бота) и из
+// самой панели, поэтому источник у каждой строки подписан.
+const ACTIVITY_KINDS = {
+  payment:  { icon: "💳", label: "Оплаты",      tone: "text-[#22c55e]" },
+  deposit:  { icon: "💰", label: "Пополнения",  tone: "text-[#22c55e]" },
+  key:      { icon: "🔑", label: "Ключи",       tone: "text-[#7BA8F9]" },
+  device:   { icon: "📱", label: "Устройства",  tone: "text-[#7BA8F9]" },
+  user:     { icon: "👤", label: "Профиль",     tone: "text-[#C084FC]" },
+  message:  { icon: "✉️", label: "Сообщения",   tone: "text-[#9095a3]" },
+  panel:    { icon: "🛟", label: "Панель",      tone: "text-[#eab308]" },
+};
+
+function ActivityTab({ convId, showToast }) {
+  const [data, setData] = useStateD(null);     // {items, sources}
+  const [loading, setLoading] = useStateD(true);
+  const [kind, setKind] = useStateD("all");
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    try { setData(await window.apiFetch("GET", `/api/dialogs/${convId}/activity`)); }
+    catch { setData({ items: [], sources: [] }); }
+    setLoading(false);
+  }, [convId]);
+
+  // Лениво: три-четыре запроса во внешнюю API не должны тормозить открытие
+  // тикета, поэтому лента грузится при первом заходе на вкладку.
+  useEffectD(() => { load(); }, [load]);
+
+  const items = data?.items || [];
+  const kinds = useMemoD(() => {
+    const seen = [];
+    for (const e of items) if (!seen.includes(e.kind)) seen.push(e.kind);
+    return seen;
+  }, [items]);
+  const shown = kind === "all" ? items : items.filter((e) => e.kind === kind);
+  const failed = (data?.sources || []).filter((s) => !s.ok);
+
+  if (loading && !data) return <div className="text-center text-xs text-[#6b7280] py-8">Загрузка ленты…</div>;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold flex-1">
+          {items.length} событий
+        </span>
+        <button onClick={load} disabled={loading} title="Обновить ленту"
+                className="w-7 h-7 shrink-0 rounded-lg flex items-center justify-center text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] disabled:opacity-40">
+          <Icon name="refresh" className={"w-3.5 h-3.5 " + (loading ? "animate-spin" : "")} />
+        </button>
+      </div>
+
+      {failed.length > 0 && (
+        <div className="rounded-lg px-2.5 py-2 text-[11px] border bg-[#f59e0b]/10 border-[#f59e0b]/30 text-[#f59e0b]">
+          Часть истории недоступна: {failed.map((s) => `${s.name} — ${s.error}`).join("; ")}
+        </div>
+      )}
+
+      {kinds.length > 1 && (
+        <div className="flex gap-1 flex-wrap">
+          {["all", ...kinds].map((k) => (
+            <button key={k} onClick={() => setKind(k)}
+              className={"px-2 py-1 rounded-md text-[11px] font-medium border transition " +
+                (kind === k ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
+                            : "border-[#2a2a3a] text-[#6b7280] hover:text-[#f1f1f5]")}>
+              {k === "all" ? "Все" : `${(ACTIVITY_KINDS[k] || {}).icon || "•"} ${(ACTIVITY_KINDS[k] || {}).label || k}`}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {shown.length === 0 && (
+        <div className="text-center text-xs text-[#6b7280] py-6">Событий нет</div>
+      )}
+
+      <div className="space-y-1.5">
+        {shown.map((e, i) => {
+          const meta = ACTIVITY_KINDS[e.kind] || { icon: "•", tone: "text-[#9095a3]" };
+          return (
+            <div key={i} className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 text-xs">
+              <div className="flex items-start gap-2">
+                <span className="shrink-0 text-[13px] leading-5">{meta.icon}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-[#f1f1f5] truncate">{e.title}</span>
+                    {e.amount != null && e.amount !== 0 && (
+                      <span className={"shrink-0 tabular-nums font-medium " + meta.tone}>
+                        {e.amount} {e.currency}
+                      </span>
+                    )}
+                  </div>
+                  {e.detail && <div className="text-[10px] text-[#6b7280] mt-0.5 break-words">{e.detail}</div>}
+                  <div className="flex items-center justify-between gap-2 mt-0.5 text-[10px] text-[#6b7280]">
+                    <span className="truncate">{e.actor || "—"}</span>
+                    <span className="shrink-0">{fmtDateTime(e.at)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {(data?.sources || []).length > 0 && (
+        <div className="text-[10px] text-[#3a3a4a] pt-1">
+          источники: {(data.sources || []).map((s) => s.name).join(", ")}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmin = false,
+                        readOnly = false }) {
   const [tab, setTab] = useStateD("profile");
   const [data, setData] = useStateD(null);
   const [loading, setLoading] = useStateD(true);
@@ -1679,7 +1960,9 @@ function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmi
     setForm({ spec, preset: preset || {} });
   }
 
-  const actions = (data && data.actions) || [];
+  // Чужой тикет — только чтение: продлевать подписку и банить клиента должен
+  // тот, кто с ним разговаривает.
+  const actions = readOnly ? [] : ((data && data.actions) || []);
   const byGroup = (g) => actions.filter((a) => a.group === g);
   // Действия над конкретным ключом рисуются на его карточке.
   const keyScoped = byGroup("keys").filter((a) => a.fields.some((f) => f.type === "key"));
@@ -1689,7 +1972,10 @@ function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmi
     { id: "profile",   label: "Профиль" },
     { id: "keys",      label: "Ключи",    count: data?.keys?.length },
     { id: "referrals", label: "Рефералы", count: data?.referrals?.length },
-    { id: "history",   label: "История",  count: (conv.tickets || []).length },
+    // «История» разъехалась надвое: прошлые обращения — это тикеты, а
+    // «Действия» — что происходило с самим аккаунтом клиента.
+    { id: "tickets",   label: "Обращения", count: (conv.tickets || []).length },
+    { id: "activity",  label: "Действия" },
   ];
 
   return (
@@ -1908,8 +2194,11 @@ function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmi
           </>
         )}
 
-        {/* ── История обращений ───────────────────────────────────────────── */}
-        {tab === "history" && (
+        {/* ── Действия над аккаунтом клиента ──────────────────────────────── */}
+        {tab === "activity" && <ActivityTab convId={conv.id} showToast={showToast} />}
+
+        {/* ── Прошлые обращения ───────────────────────────────────────────── */}
+        {tab === "tickets" && (
           <div className="space-y-1.5">
             {(conv.tickets || []).length === 0 && (
               <div className="text-center text-xs text-[#6b7280] py-6">Нет закрытых обращений</div>

@@ -67,6 +67,8 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       hint: "сообщение клиентам сервиса" },
     { id: "templates",  label: "Шаблоны",       icon: "template",  adminOnly: true,  scope: "service",
       hint: "быстрые ответы по «/»" },
+    { id: "folders",    label: "Папки",         icon: "grid",      adminOnly: true,  scope: "service",
+      hint: "свои разделы в списке тикетов" },
   ];
   const sections = allSections.filter(s => !s.adminOnly || isAdmin);
 
@@ -110,6 +112,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       {section === "sounds"        && <SoundsSection showToast={showToast} />}
       {section === "broadcast"     && <BroadcastSection showToast={showToast} service={svc} />}
       {section === "templates"     && <TemplatesSection showToast={showToast} service={svc} />}
+      {section === "folders"       && <FoldersSection showToast={showToast} service={svc} />}
     </>
   );
 
@@ -118,8 +121,8 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       {modalOpen && <OperatorModal editing={editingOp} services={services} onClose={() => setModalOpen(false)} onSave={saveOperator} />}
 
       {confirmDelete && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirmDelete(null)}>
-          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setConfirmDelete(null)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
             <div className="font-semibold text-[#f1f1f5] mb-1">Удалить оператора?</div>
             <div className="text-sm text-[#6b7280] mb-5">«{confirmDelete.name}» больше не сможет отвечать.</div>
             <div className="flex justify-end gap-2">
@@ -127,7 +130,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
               <button onClick={() => deleteOperator(confirmDelete)} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30">Удалить</button>
             </div>
           </div>
-        </div>
+        </ModalOverlay>
       )}
     </>
   );
@@ -297,12 +300,7 @@ function OperatorsSection({ operators, services = [], setOperators, showToast, o
                 (op.role === "admin" ? "bg-[#A855F7]/15 text-[#C084FC] border-[#A855F7]/30" : "bg-[#1a1a24] text-[#f1f1f5] border-[#2a2a3a]")}>
                 {op.role === "admin" ? "Администратор" : "Агент"}
               </span>
-              <span className="inline-flex items-center gap-1.5 text-xs">
-                <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? (op.paused ? "bg-[#eab308]" : "bg-[#22c55e]") : "bg-zinc-600")}></span>
-                <span className={op.online ? (op.paused ? "text-[#eab308]" : "text-[#22c55e]") : "text-[#6b7280]"}>
-                  {op.online ? (op.paused ? "На паузе" : "Онлайн") : "Офлайн"}
-                </span>
-              </span>
+              <PresenceLabel online={op.online} paused={op.paused} lastSeen={op.lastSeen} />
             </div>
             <div className="mt-2.5">
               <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-1.5">Доступ к ВПН</div>
@@ -343,7 +341,7 @@ function OperatorsSection({ operators, services = [], setOperators, showToast, o
               <th className="text-left px-3 py-3 font-medium">Telegram</th>
               <th className="text-left px-3 py-3 font-medium">Роль</th>
               <th className="text-left px-3 py-3 font-medium">Доступ к ВПН</th>
-              <th className="text-left px-3 py-3 font-medium">Статус</th>
+              <th className="text-left px-3 py-3 font-medium w-[200px]">Статус</th>
               <th className="text-right px-5 py-3 font-medium w-[120px]">Действия</th>
             </tr>
           </thead>
@@ -393,12 +391,7 @@ function OperatorsSection({ operators, services = [], setOperators, showToast, o
                   )}
                 </td>
                 <td className="px-3 py-3">
-                  <span className="inline-flex items-center gap-1.5 text-xs">
-                    <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? (op.paused ? "bg-[#eab308]" : "bg-[#22c55e]") : "bg-zinc-600")}></span>
-                    <span className={op.online ? (op.paused ? "text-[#eab308]" : "text-[#22c55e]") : "text-[#6b7280]"}>
-                      {op.online ? (op.paused ? "На паузе" : "Онлайн") : "Офлайн"}
-                    </span>
-                  </span>
+                  <PresenceLabel online={op.online} paused={op.paused} lastSeen={op.lastSeen} />
                 </td>
                 <td className="px-5 py-3">
                   <div className="flex items-center justify-end gap-1">
@@ -745,11 +738,12 @@ function ServicesSection({ showToast, onChanged }) {
         5. Загрузите базу знаний и задайте промпт — они пер-сервисные.
       </div>
 
-      {modal && <ServiceModal editing={modal.id ? modal : null} onSave={save} onClose={() => setModal(null)} />}
+      {modal && <ServiceModal editing={modal.id ? modal : null} onSave={save}
+                              showToast={showToast} onClose={() => setModal(null)} />}
 
       {confirmDel && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirmDel(null)}>
-          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setConfirmDel(null)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
             <div className="font-semibold text-[#f1f1f5] mb-1">Удалить сервис «{confirmDel.name}»?</div>
             <div className="text-sm text-[#6b7280] mb-5">
               Вместе с ним удалятся все его диалоги, сообщения, статьи базы знаний и коллекция
@@ -760,7 +754,7 @@ function ServicesSection({ showToast, onChanged }) {
               <button onClick={() => remove(confirmDel)} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30">Удалить</button>
             </div>
           </div>
-        </div>
+        </ModalOverlay>
       )}
     </div>
   );
@@ -769,7 +763,220 @@ function ServicesSection({ showToast, onChanged }) {
 // Подключение ВПН-сервиса. На виду только то, что нельзя не заполнить:
 // название, адрес и токен Support API, business_id аккаунта поддержки.
 // Слаг, цвет, эмодзи и вебхук n8n заполняются сами и лежат под «Дополнительно».
-function ServiceModal({ editing, onSave, onClose }) {
+// Резервный канал доставки. Ответ оператора уходит через n8n в business-чат
+// Telegram, и тот иногда отвечает BUSINESS_PEER_USAGE_MISSING — сообщение
+// теряется. Здесь подключается тот же аккаунт поддержки по MTProto: панель
+// повторит отправку им и покажет результат прямо в переписке.
+//
+// Авторизация требует сохранённого сервиса: коду из Телеграм нужно, куда
+// вернуться, а у несохранённого сервиса ещё нет id.
+function FallbackBlock({ service, showToast }) {
+  const [appId, setAppId] = useStateT(service?.fallbackAppId ? String(service.fallbackAppId) : "");
+  const [appHash, setAppHash] = useStateT("");
+  const [phone, setPhone] = useStateT(service?.fallbackPhone || "");
+  const [code, setCode] = useStateT("");
+  const [password, setPassword] = useStateT("");
+  const [session, setSession] = useStateT("");
+  // idle | code | 2fa
+  const [step, setStep] = useStateT("idle");
+  const [busy, setBusy] = useStateT(false);
+  const [state, setState] = useStateT({
+    enabled: !!service?.fallbackEnabled,
+    account: service?.fallbackAccount || "",
+    linked: !!service?.hasFallbackSession,
+  });
+  const [check, setCheck] = useStateT(null);
+
+  const base = service ? `/api/services/${service.id}/fallback` : null;
+
+  async function call(path, body, method = "POST") {
+    setBusy(true);
+    try {
+      return await window.apiFetch(method, base + path, body);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendCode() {
+    setCheck(null);
+    try {
+      await call("/send-code", { app_id: Number(appId), app_hash: appHash.trim(), phone: phone.trim() });
+      setStep("code");
+      showToast("Код отправлен в Телеграм");
+    } catch (e) { setCheck({ ok: false, error: e?.detail || "Не удалось отправить код" }); }
+  }
+
+  async function signIn() {
+    setCheck(null);
+    try {
+      const r = await call("/sign-in", { code: code.trim(), password });
+      if (r.needs2fa) { setStep("2fa"); showToast("Нужен пароль двухфакторки"); return; }
+      setState({ enabled: true, account: r.account, linked: true });
+      setStep("idle"); setCode(""); setPassword(""); setAppHash("");
+      showToast(`Аккаунт подключён: ${r.account}`);
+    } catch (e) { setCheck({ ok: false, error: e?.detail || "Не удалось войти" }); }
+  }
+
+  async function useSession() {
+    setCheck(null);
+    try {
+      const r = await call("/session", { app_id: Number(appId), app_hash: appHash.trim(),
+                                         phone: phone.trim(), session: session.trim() });
+      setCheck(r);
+      if (r.ok) {
+        setState({ enabled: true, account: r.account, linked: true });
+        setSession(""); setAppHash("");
+        showToast(`Аккаунт подключён: ${r.account}`);
+      }
+    } catch (e) { setCheck({ ok: false, error: e?.detail || "Сессия не подошла" }); }
+  }
+
+  async function test() {
+    setCheck("…");
+    try { setCheck(await call("/test", {})); }
+    catch (e) { setCheck({ ok: false, error: e?.detail || "Не удалось проверить" }); }
+  }
+
+  async function toggle() {
+    const next = !state.enabled;
+    try {
+      await call("", { enabled: next }, "PATCH");
+      setState((s) => ({ ...s, enabled: next }));
+    } catch { showToast("Не удалось переключить"); }
+  }
+
+  async function forget() {
+    try {
+      await call("", undefined, "DELETE");
+      setState({ enabled: false, account: "", linked: false });
+      setCheck(null);
+      showToast("Аккаунт отвязан");
+    } catch { showToast("Не удалось отвязать"); }
+  }
+
+  const input = "w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50";
+
+  if (!service) {
+    return (
+      <div className="text-[11px] text-[#6b7280] bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5">
+        Резервная отправка настраивается после сохранения сервиса — коду из
+        Телеграм нужно, куда вернуться.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {state.linked ? (
+        <>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm text-[#f1f1f5] truncate">
+                Аккаунт {state.account || "подключён"}
+              </div>
+              <div className="text-[10px] text-[#6b7280]">
+                {state.enabled
+                  ? "Панель повторит недоставленный ответ этим аккаунтом"
+                  : "Канал выключен — недоставленные ответы останутся недоставленными"}
+              </div>
+            </div>
+            <Switch on={state.enabled} onChange={toggle} />
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={test} disabled={busy || check === "…"}
+              className="px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40">
+              {check === "…" ? "Проверяем…" : "Проверить"}
+            </button>
+            <button type="button" onClick={forget} disabled={busy}
+              className="px-3 py-2 rounded-lg border border-[#ef4444]/30 text-xs text-[#ef4444] hover:bg-[#ef4444]/10 disabled:opacity-40">
+              Отвязать
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">app_id</label>
+              <input value={appId} onChange={(e) => setAppId(e.target.value.replace(/\D/g, ""))}
+                placeholder="123456" className={input + " font-mono text-xs"} />
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">Телефон</label>
+              <input value={phone} onChange={(e) => setPhone(e.target.value)}
+                placeholder="+79990000000" className={input + " font-mono text-xs"} />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">app_hash</label>
+            <input type="password" value={appHash} onChange={(e) => setAppHash(e.target.value)}
+              placeholder="из my.telegram.org" className={input + " font-mono text-xs"} />
+          </div>
+
+          {step === "idle" && (
+            <button type="button" onClick={sendCode}
+              disabled={busy || !appId || !appHash.trim() || !phone.trim()}
+              className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold disabled:opacity-40">
+              {busy ? "Отправляем код…" : "Подключить аккаунт"}
+            </button>
+          )}
+
+          {step !== "idle" && (
+            <div className="space-y-3 border-l-2 border-[#4F8EF7]/40 pl-3">
+              <div>
+                <label className="block text-xs text-[#6b7280] mb-1.5">Код из Телеграм</label>
+                <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="12345"
+                  className={input + " font-mono"} />
+              </div>
+              {step === "2fa" && (
+                <div>
+                  <label className="block text-xs text-[#6b7280] mb-1.5">Пароль двухфакторки</label>
+                  <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                    className={input} />
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={signIn} disabled={busy || (!code.trim() && step !== "2fa")}
+                  className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold disabled:opacity-40">
+                  {busy ? "Входим…" : "Войти"}
+                </button>
+                <button type="button" onClick={() => { setStep("idle"); setCode(""); setPassword(""); }}
+                  className="px-3 py-2 rounded-lg text-xs text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">
+                  Отмена
+                </button>
+              </div>
+            </div>
+          )}
+
+          <details className="text-[11px] text-[#6b7280]">
+            <summary className="cursor-pointer hover:text-[#d1d1d8]">Уже есть строка сессии</summary>
+            <div className="mt-2 space-y-2">
+              <textarea value={session} onChange={(e) => setSession(e.target.value)} rows={3}
+                placeholder="StringSession, сгенерированная снаружи"
+                className={input + " font-mono text-[10px] resize-y"} />
+              <button type="button" onClick={useSession}
+                disabled={busy || !appId || !appHash.trim() || !session.trim()}
+                className="px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40">
+                Использовать сессию
+              </button>
+            </div>
+          </details>
+        </>
+      )}
+
+      {check && check !== "…" && (
+        <div className={"rounded-lg px-3 py-2 text-[11px] border " + (check.ok
+          ? "bg-[#22c55e]/10 border-[#22c55e]/25 text-[#22c55e]"
+          : "bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]")}>
+          {check.ok ? <>Связь есть: <b>{check.account}</b></> : check.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ServiceModal({ editing, onSave, onClose, showToast }) {
   const [name,  setName]  = useStateT(editing?.name  || "");
   const [slug,  setSlug]  = useStateT(editing?.slug  || "");
   const [color, setColor] = useStateT(editing?.color || SERVICE_COLORS[0]);
@@ -780,6 +987,7 @@ function ServiceModal({ editing, onSave, onClose }) {
   const [token, setToken] = useStateT("");
   const [business, setBusiness] = useStateT(editing?.businessId || "");
   const [more, setMore] = useStateT(false);
+  const [fb, setFb] = useStateT(false);
   const [check, setCheck] = useStateT(null);      // null | "…" | {ok, ...}
   const [rwUrl, setRwUrl] = useStateT(editing?.remnawaveBaseUrl || "");
   const [rwToken, setRwToken] = useStateT("");
@@ -838,8 +1046,8 @@ function ServiceModal({ editing, onSave, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden" onClick={(e) => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose}>
+      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden">
         <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
           <div className="font-semibold text-[#f1f1f5]">{editing ? "Редактировать сервис" : "Новый ВПН-сервис"}</div>
           <button type="button" onClick={onClose} className="p-1 text-[#6b7280] hover:text-[#f1f1f5] rounded"><Icon name="x" /></button>
@@ -938,6 +1146,35 @@ function ServiceModal({ editing, onSave, onClose }) {
             </div>
           </div>
 
+          <div className="pt-1 border-t border-[#2a2a3a]/60">
+            <button type="button" onClick={() => setFb((v) => !v)}
+              className="w-full flex items-center gap-1.5 text-[11px] text-[#6b7280] hover:text-[#d1d1d8] py-1">
+              <Icon name={fb ? "chevronDown" : "chevronRight"} className="w-3.5 h-3.5" />
+              Резервная отправка
+              <span className={"ml-auto text-[10px] " +
+                (editing?.hasFallbackSession
+                  ? (editing?.fallbackEnabled ? "text-[#22c55e]" : "text-[#eab308]")
+                  : "text-[#3a3a4a]")}>
+                {editing?.hasFallbackSession
+                  ? (editing?.fallbackEnabled
+                      ? (editing.fallbackAccount || "включена")
+                      : "выключена")
+                  : "не настроена"}
+              </span>
+            </button>
+            {fb && (
+              <div className="mt-2 mb-1">
+                <div className="text-[10px] text-[#6b7280] mb-3 leading-relaxed">
+                  Если n8n не смог доставить ответ в business-чат (например,
+                  <span className="font-mono text-[#7BA8F9]"> BUSINESS_PEER_USAGE_MISSING</span>),
+                  панель повторит отправку по MTProto от этого же аккаунта поддержки
+                  и покажет результат в переписке.
+                </div>
+                <FallbackBlock service={editing} showToast={showToast} />
+              </div>
+            )}
+          </div>
+
           <button type="button" onClick={() => setMore((v) => !v)}
             className="w-full flex items-center gap-1.5 text-[11px] text-[#6b7280] hover:text-[#d1d1d8] pt-1">
             <Icon name={more ? "chevronDown" : "chevronRight"} className="w-3.5 h-3.5" />
@@ -1005,7 +1242,7 @@ function ServiceModal({ editing, onSave, onClose }) {
           </button>
         </div>
       </form>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -1032,8 +1269,8 @@ function OperatorModal({ editing, services = [], onClose, onSave }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden" onClick={(e) => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose}>
+      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden">
         <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
           <div className="font-semibold text-[#f1f1f5]">{editing ? "Редактировать" : "Добавить оператора"}</div>
           <button type="button" onClick={onClose} className="p-1 text-[#6b7280] hover:text-[#f1f1f5] rounded"><Icon name="x" /></button>
@@ -1116,7 +1353,7 @@ function OperatorModal({ editing, services = [], onClose, onSave }) {
           </button>
         </div>
       </form>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -1432,6 +1669,13 @@ function KBSection({ service }) {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = "";
+    // Загрузка заменяет базу знаний целиком, а не дополняет её — иначе разделы,
+    // удалённые из документа при правке, навсегда оставались бы в поиске ИИ.
+    // Поэтому спрашиваем, когда есть что потерять.
+    if (articles && articles.length > 0 &&
+        !window.confirm(`Загрузка заменит базу знаний целиком: ${articles.length} ` +
+                        `чанков будут удалены, вместо них встанут чанки из нового файла. ` +
+                        `Продолжить?`)) return;
     setUploading(true);
     setUploadErr(null);
     try {
@@ -1486,7 +1730,10 @@ function KBSection({ service }) {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-[#f1f1f5]">База знаний</h1>
-          <div className="text-xs text-[#6b7280] mt-0.5">{articles.length} чанков · используется ИИ для поиска</div>
+          <div className="text-xs text-[#6b7280] mt-0.5">
+            {articles.length} чанков · используется ИИ для поиска ·
+            {" "}<span className="text-[#f59e0b]">загрузка заменяет базу целиком</span>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {uploading && <span className="text-xs text-[#6b7280] animate-pulse">Обработка ИИ...</span>}
@@ -1891,8 +2138,8 @@ function BroadcastSection({ showToast, service }) {
       </div>
 
       {confirm && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirm(false)}>
-          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={e => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setConfirm(false)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
             <div className="font-semibold text-[#f1f1f5] mb-2">Отправить рассылку?</div>
             <div className="text-sm text-[#6b7280] mb-4 leading-relaxed">
               Сообщение получат все пользователи, которые когда-либо писали боту. Отменить нельзя.
@@ -1907,7 +2154,7 @@ function BroadcastSection({ showToast, service }) {
               </button>
             </div>
           </div>
-        </div>
+        </ModalOverlay>
       )}
     </div>
   );
@@ -1947,8 +2194,8 @@ function TemplateModal({ template, groups, onSave, onClose }) {
     onSave({ ...form, id: template?.id });
   }
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-lg" onClick={e => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-lg">
         <div className="font-semibold text-[#f1f1f5] mb-4">{template ? "Редактировать шаблон" : "Добавить шаблон"}</div>
         <form onSubmit={submit} className="space-y-4">
           <div>
@@ -1980,7 +2227,209 @@ function TemplateModal({ template, groups, onSave, onClose }) {
           </div>
         </form>
       </div>
+    </ModalOverlay>
+  );
+}
+
+// ── Секция «Папки»: свои разделы списка тикетов ──────────────────────────────
+// Папка — ярлык поверх статуса: тикет остаётся в «В работе» или «Ожидании» и
+// дополнительно лежит в папке, куда его положил оператор. Папки пер-сервисные.
+
+const FOLDER_EMOJI = ["📁", "🔥", "⭐", "💳", "🐞", "🔒", "📌", "🚚", "🎯", "🧊", "📞", "🧾"];
+
+function FoldersSection({ showToast, service }) {
+  const [folders, setFolders] = useStateT(null);
+  const [modal, setModal] = useStateT(null);      // {} — новая, объект — правка
+  const [confirmDel, setConfirmDel] = useStateT(null);
+  const [busy, setBusy] = useStateT(false);
+
+  async function reload() {
+    try {
+      setFolders(await window.apiFetch("GET", "/api/folders" + svcQuery(service)));
+    } catch { setFolders([]); }
+  }
+  useEffectT(() => { setFolders(null); if (service) reload(); }, [service?.id]);
+
+  async function save(form) {
+    try {
+      if (form.id) {
+        await window.apiFetch("PUT", `/api/folders/${form.id}`, form);
+        showToast("Папка обновлена");
+      } else {
+        await window.apiFetch("POST", "/api/folders" + svcQuery(service), form);
+        showToast("Папка создана");
+      }
+      setModal(null);
+      reload();
+    } catch (e) { showToast(e?.detail || "Ошибка сохранения"); }
+  }
+
+  async function remove(f) {
+    try {
+      await window.apiFetch("DELETE", `/api/folders/${f.id}`);
+      showToast("Папка удалена");
+      reload();
+    } catch (e) { showToast(e?.detail || "Ошибка удаления"); }
+    setConfirmDel(null);
+  }
+
+  // Порядок правится стрелками: меняем sort_order соседей местами.
+  async function move(index, delta) {
+    const next = index + delta;
+    if (next < 0 || next >= folders.length) return;
+    const a = folders[index], b = folders[next];
+    setBusy(true);
+    try {
+      await window.apiFetch("PUT", `/api/folders/${a.id}`,
+        { name: a.name, emoji: a.emoji, color: a.color, sort_order: b.sortOrder });
+      await window.apiFetch("PUT", `/api/folders/${b.id}`,
+        { name: b.name, emoji: b.emoji, color: b.color, sort_order: a.sortOrder });
+      await reload();
+    } catch { showToast("Не удалось изменить порядок"); }
+    setBusy(false);
+  }
+
+  if (folders === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+
+  return (
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold text-[#f1f1f5]">Папки</h1>
+          <div className="text-xs text-[#6b7280] mt-0.5">
+            Свои разделы в списке тикетов — рядом со статусными
+          </div>
+        </div>
+        <button onClick={() => setModal({})}
+          className="shrink-0 px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5">
+          <Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />
+          Добавить папку
+        </button>
+      </div>
+
+      <ServiceBanner service={service} hint="папки свои у каждого ВПН-а" />
+
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden divide-y divide-[#2a2a3a]/40">
+        {folders.length === 0 && (
+          <div className="px-5 py-10 text-center text-xs text-[#6b7280]">
+            Папок нет. Тикеты раскладываются по ним вручную — из меню действий над тикетом.
+          </div>
+        )}
+        {folders.map((f, i) => (
+          <div key={f.id} className="px-4 py-3 flex items-center gap-3 hover:bg-[#1a1a24]/40 transition">
+            <span className="w-9 h-9 shrink-0 rounded-[11px] flex items-center justify-center text-lg"
+                  style={{ background: f.color + "22", border: `1px solid ${f.color}55` }}>
+              {f.emoji}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm text-[#f1f1f5] truncate">{f.name}</div>
+              <div className="text-[11px] text-[#6b7280]">
+                {f.openCount > 0 ? `${f.openCount} открытых тикетов` : "пусто"}
+              </div>
+            </div>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <button onClick={() => move(i, -1)} disabled={busy || i === 0} aria-label="Выше"
+                className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded disabled:opacity-25">↑</button>
+              <button onClick={() => move(i, 1)} disabled={busy || i === folders.length - 1} aria-label="Ниже"
+                className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded disabled:opacity-25">↓</button>
+              <button onClick={() => setModal(f)} aria-label="Изменить"
+                className="p-1.5 text-[#6b7280] hover:text-[#7BA8F9] hover:bg-[#4F8EF7]/10 rounded transition"><Icon name="edit" className="w-4 h-4" /></button>
+              <button onClick={() => setConfirmDel(f)} aria-label="Удалить"
+                className="p-1.5 text-[#6b7280] hover:text-[#ef4444] hover:bg-[#ef4444]/10 rounded transition"><Icon name="trash" className="w-4 h-4" /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {modal && <FolderModal editing={modal.id ? modal : null}
+                             onSave={save} onClose={() => setModal(null)} />}
+
+      {confirmDel && (
+        <ModalOverlay onClose={() => setConfirmDel(null)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
+            <div className="font-semibold text-[#f1f1f5] mb-1">Удалить папку «{confirmDel.name}»?</div>
+            <div className="text-sm text-[#6b7280] mb-5">
+              Тикеты не пропадут — они просто перестанут быть разложенными.
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirmDel(null)} className="px-3 py-1.5 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+              <button onClick={() => remove(confirmDel)} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30">Удалить</button>
+            </div>
+          </div>
+        </ModalOverlay>
+      )}
     </div>
+  );
+}
+
+function FolderModal({ editing, onSave, onClose }) {
+  const [name, setName] = useStateT(editing?.name || "");
+  const [emoji, setEmoji] = useStateT(editing?.emoji || FOLDER_EMOJI[0]);
+  const [color, setColor] = useStateT(editing?.color || SERVICE_COLORS[0]);
+
+  function submit(e) {
+    e?.preventDefault();
+    if (!name.trim()) return;
+    onSave({ id: editing?.id, name: name.trim(), emoji: emoji.trim() || "📁", color });
+  }
+
+  return (
+    <ModalOverlay onClose={onClose}>
+      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden">
+        <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
+          <div className="font-semibold text-[#f1f1f5]">{editing ? "Редактировать папку" : "Новая папка"}</div>
+          <button type="button" onClick={onClose} className="p-1 text-[#6b7280] hover:text-[#f1f1f5] rounded"><Icon name="x" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="flex items-center gap-3">
+            <span className="w-11 h-11 shrink-0 rounded-xl flex items-center justify-center text-xl"
+                  style={{ background: color + "22", border: `1px solid ${color}55` }}>
+              {emoji || "📁"}
+            </span>
+            <div className="flex-1 min-w-0">
+              <label className="block text-xs text-[#6b7280] mb-1.5">Название</label>
+              <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Оплаты"
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">
+              Эмодзи <span className="text-[#3a3a4a]">— или впишите своё</span>
+            </label>
+            <div className="flex items-center gap-2">
+              <input value={emoji} onChange={(e) => setEmoji(e.target.value)} maxLength={4}
+                className="w-16 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-2 py-2 text-base text-center text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50" />
+              <div className="flex flex-wrap gap-1 flex-1">
+                {FOLDER_EMOJI.map((e) => (
+                  <button key={e} type="button" onClick={() => setEmoji(e)}
+                    className={"w-8 h-8 rounded-lg text-base transition " +
+                      (emoji === e ? "bg-[#1a1a24] ring-1 ring-[#4F8EF7]/50" : "hover:bg-[#1a1a24]")}>
+                    {e}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Цвет</label>
+            <div className="flex flex-wrap gap-2">
+              {SERVICE_COLORS.map((c) => (
+                <button key={c} type="button" onClick={() => setColor(c)}
+                  className={"w-7 h-7 rounded-lg transition " + (color === c ? "ring-2 ring-offset-2 ring-offset-[#13131a] ring-white/60" : "")}
+                  style={{ background: c }}></button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="px-5 py-4 border-t border-[#2a2a3a] flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+          <button type="submit" disabled={!name.trim()}
+            className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold disabled:opacity-40">
+            {editing ? "Сохранить" : "Создать"}
+          </button>
+        </div>
+      </form>
+    </ModalOverlay>
   );
 }
 

@@ -492,6 +492,9 @@
         return saved && saved !== "all" ? Number(saved) : null;
       });
       const [aiPromptPreview, setAiPromptPreview] = useState("");
+      // Папки-ярлыки выбранного ВПН-а. В режиме «Все сервисы» их не показываем:
+      // они пер-сервисные, и одноимённые папки двух ВПН-ов слились бы в одну.
+      const [folders, setFolders] = useState([]);
 
       const activeKey = (sid) => "hd_active:" + (sid === null ? "all" : sid);
       const [activeId,        setActiveIdRaw]     = useState(null);
@@ -502,12 +505,20 @@
       };
       const currentServiceIdRef = useRef(currentServiceId);
       useEffect(() => { currentServiceIdRef.current = currentServiceId; }, [currentServiceId]);
+      // Обработчик WebSocket создаётся один раз и замыкает старые значения —
+      // сервис для папок он читает через ref, как и текущий сервис.
+      const foldersServiceIdRef = useRef(null);
 
       const activeService = currentServiceId === null
         ? null
         : services.find((s) => s.id === currentServiceId) || null;
       // Конкретный сервис для настроек: в режиме «Все» — первый доступный.
       const settingsServiceId = currentServiceId ?? (services[0]?.id ?? null);
+      // Папки пер-сервисные: в режиме «Все сервисы» одноимённые папки двух
+      // ВПН-ов в одном ряду читались бы как одна, поэтому там их не показываем.
+      // Но когда сервис всего один, «Все» и есть этот сервис — прятать нечего,
+      // а переключателя, чтобы выбрать его явно, в такой установке просто нет.
+      const foldersServiceId = currentServiceId ?? (services.length === 1 ? services[0].id : null);
       const [opsState,        setOpsState]        = useState([]);
       const [dataLoading,     setDataLoading]     = useState(false);
       const [notifOpen,       setNotifOpen]       = useState(false);
@@ -602,6 +613,12 @@
         } catch { return []; }
       }, []);
 
+      const loadFolders = React.useCallback(async (sid) => {
+        if (sid === null || sid === undefined) { setFolders([]); return; }
+        try { setFolders(await apiGet(`/api/folders?service_id=${sid}`)); }
+        catch { setFolders([]); }
+      }, []);
+
       const selectService = (sid) => {
         if (sid === currentServiceId) return;
         localStorage.setItem("hd_service", sid === null ? "all" : String(sid));
@@ -669,6 +686,12 @@
         }).catch((e) => console.error("Failed to load initial data:", e))
           .finally(() => setDataLoading(false));
       }, [authState, currentServiceId]);
+
+      useEffect(() => {
+        foldersServiceIdRef.current = foldersServiceId;
+        if (authState !== "app") return;
+        loadFolders(foldersServiceId);
+      }, [authState, foldersServiceId, loadFolders]);
 
       // Превью промпта ИИ для контекстной полосы под пилюлями.
       useEffect(() => {
@@ -764,6 +787,10 @@
                   ? s
                   : { ...s, activeCount: data.counts[String(s.id)] }
               ));
+            } else if (data.type === "folders_changed") {
+              // Админ завёл, переименовал или удалил папку — ряд разделов у всех
+              // должен обновиться, не дожидаясь перезагрузки вкладки.
+              loadFolders(foldersServiceIdRef.current);
             } else if (data.type === "services_changed") {
               // Список сервисов или флаги доступа изменились админом.
               loadServices();
@@ -781,7 +808,10 @@
               }));
             } else if (data.type === "operator_status") {
               setOpsState((prev) =>
-                prev.map((o) => o.id === data.op_id ? { ...o, online: data.online, paused: data.paused ?? o.paused } : o)
+                prev.map((o) => o.id === data.op_id
+                  ? { ...o, online: data.online, paused: data.paused ?? o.paused,
+                      lastSeen: data.last_seen ?? o.lastSeen }
+                  : o)
               );
               setCurrentOperator((prev) =>
                 prev && prev.id === data.op_id ? { ...prev, paused: data.paused ?? prev.paused } : prev
@@ -808,7 +838,7 @@
           clearInterval(pingInterval);
           if (wsRef.current) wsRef.current.close();
         };
-      }, [authState, loadServices]);
+      }, [authState, loadServices, loadFolders]);
 
       // ── Lazy-load messages + history ──────────────────────────────────────
 
@@ -1042,6 +1072,8 @@
                 currentOperator={currentOperator}
                 operators={opsState}
                 showServiceTag={currentServiceId === null}
+                serviceId={foldersServiceId}
+                folders={folders}
                 viewport={viewport}
                 mobileChrome={mobileChrome}
                 onMobileChatOpen={setMobileChatOpen}

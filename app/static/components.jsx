@@ -96,6 +96,34 @@ function SlaTimer({ slaSeconds, slaStartedAt, className = "" }) {
   );
 }
 
+// «16:12 - 25.02.2026» — формат, в котором операторы читают время последнего
+// визита коллеги. Он же используется в ленте действий клиента.
+function fmtDateTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())} - ` +
+         `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}`;
+}
+
+// Присутствие оператора. Раньше здесь стояло «Офлайн», из которого не понять,
+// ждать человека или забирать тикет; теперь видно, когда он был в сети.
+function PresenceLabel({ online, paused, lastSeen, className = "" }) {
+  const state = online
+    ? (paused
+        ? { dot: "bg-[#eab308]", text: "text-[#eab308]", label: "На паузе" }
+        : { dot: "bg-[#22c55e]", text: "text-[#22c55e]", label: "Онлайн" })
+    : { dot: "bg-zinc-600", text: "text-[#6b7280]",
+        label: lastSeen ? `был в сети ${fmtDateTime(lastSeen)}` : "не заходил" };
+  return (
+    <span className={"inline-flex items-center gap-1.5 text-xs min-w-0 " + className}>
+      <span className={"w-1.5 h-1.5 rounded-full shrink-0 " + state.dot}></span>
+      <span className={state.text + " truncate"}>{state.label}</span>
+    </span>
+  );
+}
+
 function PlanBadge({ plan }) {
   const map = {
     Pro: "bg-gradient-to-r from-[#A855F7] to-[#4F8EF7] text-white",
@@ -165,6 +193,8 @@ function Icon({ name, className = "w-4 h-4", strokeWidth = 1.75 }) {
     dots:      <><circle cx="12" cy="5" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="12" cy="19" r="1.6" /></>,
     pause:     <><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></>,
     logout:    <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></>,
+    lock:      <><rect x="4" y="10" width="16" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></>,
+    handRaise: <><path d="M12 11V4.5a1.5 1.5 0 0 1 3 0V12" /><path d="M9 12V6.5a1.5 1.5 0 0 0-3 0V14a7 7 0 0 0 7 7h1a6 6 0 0 0 6-6v-4.5a1.5 1.5 0 0 0-3 0" /></>,
   };
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -310,6 +340,37 @@ function contrastOn(hex) {
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
   return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? "#0d0d12" : "#fff";
+}
+
+// Подложка модального окна. Закрывает окно только если на ней прошли ОБА
+// события мыши — и нажатие, и отпускание. Прежний вариант ловил `click`, а он
+// всплывает до общего предка: выделение текста в поле, законченное за краем
+// формы, читалось как клик по подложке, и окно закрывалось с набранным.
+// Escape закрывает всегда — раньше это умела только шторка.
+function ModalOverlay({ onClose, zIndex = 50, className = "", children }) {
+  const downOnBackdrop = useRef(false);
+
+  useEffect(() => {
+    if (!onClose) return;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      style={{ zIndex }}
+      onMouseDown={(e) => { downOnBackdrop.current = e.target === e.currentTarget; }}
+      onMouseUp={(e) => {
+        if (downOnBackdrop.current && e.target === e.currentTarget && onClose) onClose();
+        downOnBackdrop.current = false;
+      }}
+      className={"fixed inset-0 backdrop-blur-sm flex items-center justify-center " +
+        (className || "bg-black/60 p-4")}
+    >
+      {children}
+    </div>
+  );
 }
 
 // Шторка снизу: затемнение, «грабер», закрытие по свайпу вниз, тапу вне и Esc.
@@ -527,6 +588,7 @@ function Toast({ msg, type = "ok" }) {
 }
 
 Object.assign(window, { Avatar, StatusBadge, WaitingLabel, SlaTimer, fmtSla, PlanBadge, SubStatus, Icon, Toast,
+                        ModalOverlay, fmtDateTime, PresenceLabel,
                         ServiceSwitcher, ServicePill, ContextChip, ServiceDot,
                         useViewport, contrastOn, BottomSheet, ServiceRail, ServiceTile,
                         MobileAppBar, AppBarButton, MobileNav });

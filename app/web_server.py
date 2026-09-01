@@ -200,6 +200,46 @@ class ApiCheckBody(BaseModel):
     # пустым Bearer и рисует «Связи нет» на исправном сервисе.
     service_id: Optional[int] = None
 
+class FolderBody(BaseModel):
+    """Папка-ярлык: имя и эмодзи задаёт админ, цвет — из той же палитры, что
+    у сервисов."""
+    name: str
+    emoji: str = "📁"
+    color: str = "#4F8EF7"
+    sort_order: Optional[int] = None
+
+
+class DialogFolderBody(BaseModel):
+    # null — вынуть тикет из папки
+    folder_id: Optional[int] = None
+
+
+class FallbackAuthBody(BaseModel):
+    """Шаг 1 авторизации резервного аккаунта: реквизиты приложения с
+    my.telegram.org и телефон аккаунта поддержки."""
+    app_id: int
+    app_hash: str
+    phone: str
+
+
+class FallbackCodeBody(BaseModel):
+    """Шаг 2: код из Телеграм и, если он стоит, пароль двухфакторки."""
+    code: str = ""
+    password: str = ""
+
+
+class FallbackSessionBody(BaseModel):
+    """Готовая строка сессии, сгенерированная снаружи — вместо шагов с кодом."""
+    app_id: int
+    app_hash: str
+    phone: str = ""
+    session: str
+
+
+class FallbackToggleBody(BaseModel):
+    enabled: bool
+
+
 class OperatorServicesBody(BaseModel):
     service_ids: list[int] = []
 
@@ -233,6 +273,7 @@ def build_app(
     routing: RoutingEngine,
     customers: CustomerService,
     health: ServiceHealthMonitor,
+    fallback=None,
 ) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
@@ -308,6 +349,25 @@ def build_app(
             raise HTTPException(404)
         if dialog["service_id"] not in await db.get_operator_service_ids(operator):
             raise HTTPException(403, "Нет доступа к этому сервису")
+        return dialog
+
+    async def require_dialog_write(dialog_id: str, operator: dict) -> dict:
+        """То же плюс владение: пока тикет в работе у одного оператора, второй
+        такого же уровня его только читает — двое, пишущих клиенту разное, хуже
+        любой задержки с ответом. Забрать тикет он может кнопкой «Запросить»:
+        владелец передаёт его сам.
+
+        Админ не ограничен — иначе разруливать зависшие тикеты было бы некому.
+        Комментарии и заметки под этот гард не попадают: ради них второй
+        оператор в чужой тикет и заходит.
+
+        423 Locked, а не 403: «тикет занят» и «нет доступа к сервису» — разные
+        вещи, и фронт должен уметь их различить."""
+        dialog = await require_dialog(dialog_id, operator)
+        owner = dialog.get("assigned_operator")
+        if (operator["role"] != "admin" and owner and owner != operator["name"]
+                and dialog["status"] in ("in_progress", "waiting")):
+            raise HTTPException(423, f"Тикет в работе у оператора {owner}")
         return dialog
 
     # ── Static / index ────────────────────────────────────────────────────────
@@ -431,7 +491,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/reply")
     async def reply(dialog_id: str, body: ReplyBody, operator: dict = Depends(require_auth)):
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
 
         op_name = body.operator_name or operator["name"] or "Оператор"
         msg_row = await db.save_message(
@@ -450,7 +510,23 @@ def build_app(
             message_id=msg_row["id"], service=dialog,
         )
         if not delivered:
-            await db.update_message_delivery(msg_row["id"], "failed", "Очередь недоступна")
+            # До n8n сообщение не доехало вовсе — пробуем резервный канал сразу,
+            # подтверждения доставки ждать неоткуда.
+            status, error = "failed", "Очередь недоступна"
+            if fallback:
+                ok, detail = await fallback.send(
+                    dialog["service_id"], dialog["chat_id"], body.text, body.file_url)
+                if detail:
+                    note = ("Очередь недоступна — " +
+                            (detail if ok else f"резервная отправка тоже не удалась: {detail}"))
+                    sys_row = await db.save_message(dialog_id, "system", note)
+                    await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                                        "message": _fmt_message(sys_row)}, dialog["service_id"])
+                    if ok:
+                        status, delivered = "delivered_fallback", True
+                    else:
+                        error = f"Очередь недоступна · резерв: {detail}"
+            await db.update_message_delivery(msg_row["id"], status, error)
         await db.clear_unread(dialog_id)
 
         await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
@@ -485,7 +561,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/dismiss_called")
     async def dismiss_called(dialog_id: str, operator: dict = Depends(require_auth)):
-        await require_dialog(dialog_id, operator)
+        await require_dialog_write(dialog_id, operator)
         await db.pool.execute(
             "UPDATE dialogs SET operator_called=FALSE WHERE dialog_id=$1", dialog_id
         )
@@ -520,7 +596,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/toggle_ai")
     async def toggle_ai(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
         new_value = not dialog["ai_enabled"]
         await db.update_ai_enabled(dialog_id, new_value)
         await db.sync_n8n_dialog_ai_status(dialog["chat_id"], new_value, dialog)
@@ -535,7 +611,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/handoff")
     async def handoff(dialog_id: str, body: HandoffBody = HandoffBody(), operator: dict = Depends(require_auth)):
-        await require_dialog(dialog_id, operator)
+        await require_dialog_write(dialog_id, operator)
         op_name = body.operator_name or operator["name"] or "Оператор"
         updated = await routing.take_in_work(dialog_id, op_name)
         if not updated:
@@ -544,7 +620,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/reopen-closed")
     async def reopen_closed_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
         if dialog["status"] != "closed":
             raise HTTPException(400, "Dialog is not closed")
         active = await db.get_active_dialog_by_chat_id(
@@ -558,7 +634,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/reopen")
     async def reopen_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
         if dialog["status"] == "closed":
             raise HTTPException(400, "Cannot reopen closed dialog")
         # → queue for another operator; the AI is NOT re-enabled — the ticket
@@ -570,7 +646,7 @@ def build_app(
     async def wait_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
         """Manual «В ожидание»: pause an in_progress ticket (red label
         «клиент ждёт ответ») while the operator waits for the team."""
-        await require_dialog(dialog_id, operator)
+        await require_dialog_write(dialog_id, operator)
         try:
             await routing.set_waiting_manual(dialog_id, operator["name"])
         except ValueError:
@@ -579,7 +655,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/transfer")
     async def transfer_dialog(dialog_id: str, body: TransferBody, operator: dict = Depends(require_auth)):
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
         if operator["role"] != "admin" and dialog.get("assigned_operator") != operator["name"]:
             raise HTTPException(403, "Can only transfer your own dialogs")
         target = await db.get_operator_by_name(body.operator_name)
@@ -591,9 +667,89 @@ def build_app(
         await routing.transfer(dialog_id, body.operator_name)
         return {"ok": True}
 
+    # ── Запрос на передачу тикета ─────────────────────────────────────────────
+    # Пока тикет в работе у одного оператора, второй его только читает
+    # (require_dialog_write). Забрать тикет он может, попросив владельца:
+    # тот жмёт «Передать» и тикет переходит штатным transfer-ом.
+
+    async def _claim_state(dialog_id: str) -> dict:
+        """Свежий диалог + рассылка обновления тем, кто его видит."""
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+                           updated["service_id"])
+        return updated
+
+    @app.post("/api/dialogs/{dialog_id}/claim")
+    async def claim_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
+        """«Запросить»: второй оператор просит владельца отдать ему тикет."""
+        dialog = await require_dialog(dialog_id, operator)
+        owner = dialog.get("assigned_operator")
+        if not owner or dialog["status"] not in ("in_progress", "waiting"):
+            raise HTTPException(400, "Этот тикет ни за кем не закреплён — берите его в работу")
+        if owner == operator["name"]:
+            raise HTTPException(400, "Тикет уже ваш")
+        if dialog.get("claim_requested_by") == operator["name"]:
+            return {"ok": True, "detail": "Запрос уже отправлен"}
+        await db.set_claim_request(dialog_id, operator["name"])
+        msg_row = await db.save_message(
+            dialog_id, "system", f"{operator['name']} просит передать тикет")
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                            "message": _fmt_message(msg_row)}, dialog["service_id"])
+        await _claim_state(dialog_id)
+        # Точечно владельцу — чтобы просьба не потерялась среди чужих событий.
+        owner_row = await db.get_operator_by_name(owner)
+        if owner_row:
+            await ws.send_to_operator(owner_row["id"], {
+                "type": "claim_requested", "dialog_id": dialog_id,
+                "by": operator["name"], "client": dialog.get("user_name") or dialog_id,
+            })
+        # И в Телеграм — владелец может быть не за панелью.
+        await n8n.schedule_notify("claim_requested", {
+            "dialog_id": dialog_id, "operator_name": operator["name"],
+            "owner_name": owner, "username": dialog.get("user_username") or dialog_id,
+        }, dialog)
+        return {"ok": True}
+
+    async def _require_claim_owner(dialog_id: str, operator: dict) -> dict:
+        """Отвечать на запрос вправе владелец тикета и админ."""
+        dialog = await require_dialog(dialog_id, operator)
+        if not dialog.get("claim_requested_by"):
+            raise HTTPException(400, "По этому тикету запроса нет")
+        if (operator["role"] != "admin"
+                and dialog.get("assigned_operator") != operator["name"]):
+            raise HTTPException(403, "Ответить на запрос может только владелец тикета")
+        return dialog
+
+    @app.post("/api/dialogs/{dialog_id}/claim/approve")
+    async def approve_claim(dialog_id: str, operator: dict = Depends(require_auth)):
+        dialog = await _require_claim_owner(dialog_id, operator)
+        target_name = dialog["claim_requested_by"]
+        target = await db.get_operator_by_name(target_name)
+        if not target:
+            await db.set_claim_request(dialog_id, None)
+            raise HTTPException(404, "Просивший оператор больше не существует")
+        if dialog["service_id"] not in await db.get_operator_service_ids(target):
+            await db.set_claim_request(dialog_id, None)
+            raise HTTPException(400, "У оператора нет доступа к сервису этого тикета")
+        # transfer сам снимет запрос (set_assigned_operator / move_to_in_progress).
+        await routing.transfer(dialog_id, target_name)
+        return {"ok": True, "operator_name": target_name}
+
+    @app.post("/api/dialogs/{dialog_id}/claim/decline")
+    async def decline_claim(dialog_id: str, operator: dict = Depends(require_auth)):
+        dialog = await _require_claim_owner(dialog_id, operator)
+        who = dialog["claim_requested_by"]
+        await db.set_claim_request(dialog_id, None)
+        msg_row = await db.save_message(
+            dialog_id, "system", f"{operator['name']} оставил тикет за собой (запрос {who} отклонён)")
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                            "message": _fmt_message(msg_row)}, dialog["service_id"])
+        await _claim_state(dialog_id)
+        return {"ok": True}
+
     @app.post("/api/dialogs/{dialog_id}/close")
     async def close_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
         # Transition + system message + broadcasts + n8n sync + queue drain
         await routing.close(dialog_id, dialog["chat_id"], operator["name"])
         if chat_client:
@@ -649,7 +805,7 @@ def build_app(
             raise HTTPException(400, f"Неизвестное действие: {action}")
         if action in _CUSTOMER_DANGEROUS and operator["role"] != "admin":
             raise HTTPException(403, "Действие доступно только администратору")
-        dialog = await require_dialog(dialog_id, operator)
+        dialog = await require_dialog_write(dialog_id, operator)
         service = await db.get_service(dialog["service_id"])
         result = await customers.execute(service, dialog, action, body or {},
                                          operator=operator["name"])
@@ -665,6 +821,37 @@ def build_app(
             await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
                                 "message": _fmt_message(msg_row)}, dialog["service_id"])
         return {"ok": True, "message": result.message, "data": result.data or {}}
+
+    @app.get("/api/dialogs/{dialog_id}/activity")
+    async def get_customer_activity(dialog_id: str, limit: int = 100,
+                                    operator: dict = Depends(require_auth)):
+        """Лента «Действия»: всё, что происходило с аккаунтом клиента — оплаты и
+        пополнения, продления и сбросы ключей, баны, изменения баланса, — и то,
+        что делали операторы из самой панели.
+
+        Внешний источник и наша БД собираются в один список по времени. Отчёт об
+        источниках уходит рядом: если журнал бота закрыт скоупом токена, оператор
+        должен видеть, чего он НЕ видит, а не решить, что ничего не было."""
+        dialog = await require_dialog(dialog_id, operator)
+        service = await db.get_service(dialog["service_id"])
+        events, sources = await customers.activity(service, dialog, limit)
+        items = [e.to_dict() for e in events]
+
+        for row in await db.get_customer_activity(dialog["service_id"], dialog["chat_id"], limit):
+            text = row.get("text") or ""
+            # Строка записана как «Оператор: что сделал» — имя слева от первого
+            # двоеточия, по этому же признаку она и отобрана в запросе.
+            actor, _, rest = text.partition(": ")
+            items.append({
+                "at": row["created_at"].isoformat() if row.get("created_at") else "",
+                "kind": "panel", "title": rest or text, "detail": "",
+                "actor": actor if rest else "", "amount": None, "currency": "₽",
+                "source": "панель",
+            })
+        sources.append({"name": "панель", "ok": True, "error": ""})
+
+        items.sort(key=lambda e: e.get("at") or "", reverse=True)
+        return {"items": items[:limit], "sources": sources}
 
     @app.get("/api/settings/customer")
     async def get_customer_settings(service_id: Optional[int] = None,
@@ -802,8 +989,9 @@ def build_app(
 
     # ── Services (ВПН-ы) ──────────────────────────────────────────────────────
 
-    def _fmt_service(s: dict, count: int = 0, api: dict = None) -> dict:
+    def _fmt_service(s: dict, count: int = 0, api: dict = None, fb: dict = None) -> dict:
         cfg = (api or {}).get("config") or {}
+        fb_cfg = (fb or {}).get("config") or {}
         return {
             "id": s["id"], "slug": s["slug"], "name": s["name"],
             "color": s["color"], "emoji": s.get("emoji"),
@@ -821,6 +1009,13 @@ def build_app(
             # для bot_api/http эти поля значат другое, показывать их не нужно.
             "remnawaveBaseUrl": cfg.get("base_url") or "" if (api or {}).get("provider") == "remnawave" else "",
             "hasRemnawaveToken": bool(cfg.get("token")) if (api or {}).get("provider") == "remnawave" else False,
+            # Резервная отправка. app_hash и строка сессии — секреты и наружу не
+            # уходят никогда, ровно как токен Support API.
+            "fallbackEnabled": bool((fb or {}).get("enabled")),
+            "fallbackAppId": fb_cfg.get("app_id") or "",
+            "fallbackPhone": fb_cfg.get("phone") or "",
+            "fallbackAccount": fb_cfg.get("account") or "",
+            "hasFallbackSession": bool(fb_cfg.get("session")),
         }
 
     async def _save_service_api(service_id: int, base_url: str, token: str) -> None:
@@ -946,7 +1141,8 @@ def build_app(
         out = []
         for s in await db.get_services(only_active=False):
             api = await db.get_setting_json("customer", None, s["id"]) or {}
-            out.append(_fmt_service(s, 0, api))
+            fb = await db.get_setting_json("fallback_sender", None, s["id"]) or {}
+            out.append(_fmt_service(s, 0, api, fb))
         return out
 
     @app.post("/api/services")
@@ -977,7 +1173,8 @@ def build_app(
             print(f"[services] ensure_collection failed: {e}")
         await ws.broadcast({"type": "services_changed"})
         return _fmt_service(service, 0,
-                            await db.get_setting_json("customer", None, service["id"]))
+                            await db.get_setting_json("customer", None, service["id"]),
+                            await db.get_setting_json("fallback_sender", None, service["id"]))
 
     @app.put("/api/services/{service_id}")
     async def update_service(service_id: int, body: ServiceBody,
@@ -997,7 +1194,8 @@ def build_app(
         await _save_service_remnawave(service, body.remnawave_base_url, body.remnawave_token)
         await ws.broadcast({"type": "services_changed"})
         return _fmt_service(service, 0,
-                            await db.get_setting_json("customer", None, service_id))
+                            await db.get_setting_json("customer", None, service_id),
+                            await db.get_setting_json("fallback_sender", None, service_id))
 
     @app.delete("/api/services/{service_id}")
     async def delete_service(service_id: int, operator: dict = Depends(require_auth)):
@@ -1018,6 +1216,164 @@ def build_app(
             print(f"[services] delete_collection failed: {e}")
         await ws.broadcast({"type": "services_changed"})
         return {"ok": True}
+
+    # ── Резервная отправка ────────────────────────────────────────────────────
+    # Ответ оператора уходит через n8n в business-чат Telegram, и тот иногда
+    # отвечает BUSINESS_PEER_USAGE_MISSING. Резервный канал шлёт то же самое по
+    # MTProto от того же аккаунта поддержки — клиент видит сообщение в той же
+    # переписке. Настраивается в форме сервиса.
+
+    async def _require_fallback(service_id: int, operator: dict) -> dict:
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not fallback:
+            raise HTTPException(503, "Резервная отправка не собрана в этой установке")
+        service = await db.get_service(service_id)
+        if not service:
+            raise HTTPException(404, "Сервис не найден")
+        return service
+
+    @app.post("/api/services/{service_id}/fallback/send-code")
+    async def fallback_send_code(service_id: int, body: FallbackAuthBody,
+                                 operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        try:
+            return await fallback.send_code(service_id, body.app_id, body.app_hash,
+                                            body.phone.strip())
+        except Exception as e:
+            raise HTTPException(400, str(e)[:200])
+
+    @app.post("/api/services/{service_id}/fallback/sign-in")
+    async def fallback_sign_in(service_id: int, body: FallbackCodeBody,
+                               operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        try:
+            return await fallback.sign_in(service_id, body.code.strip(), body.password)
+        except Exception as e:
+            raise HTTPException(400, str(e)[:200])
+
+    @app.post("/api/services/{service_id}/fallback/session")
+    async def fallback_set_session(service_id: int, body: FallbackSessionBody,
+                                   operator: dict = Depends(require_auth)):
+        """Строка сессии, сгенерированная снаружи. Сразу проверяем её боем: без
+        проверки админ узнал бы об опечатке на первом же несработавшем фолбеке."""
+        await _require_fallback(service_id, operator)
+        stored = await fallback.settings(service_id)
+        await fallback.save(service_id, {
+            **stored, "enabled": True,
+            "config": {**(stored.get("config") or {}), "app_id": body.app_id,
+                       "app_hash": body.app_hash, "phone": body.phone.strip(),
+                       "session": body.session.strip(), "account": ""},
+        })
+        result = await fallback.check(service_id)
+        if result.get("ok"):
+            fresh = await fallback.settings(service_id)
+            await fallback.save(service_id, {
+                **fresh, "config": {**(fresh.get("config") or {}),
+                                    "account": result.get("account") or ""}})
+        return result
+
+    @app.post("/api/services/{service_id}/fallback/test")
+    async def fallback_test(service_id: int, operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        return await fallback.check(service_id)
+
+    @app.patch("/api/services/{service_id}/fallback")
+    async def fallback_toggle(service_id: int, body: FallbackToggleBody,
+                              operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        stored = await fallback.settings(service_id)
+        await fallback.save(service_id, {**stored, "enabled": body.enabled})
+        return {"ok": True, "enabled": body.enabled}
+
+    @app.delete("/api/services/{service_id}/fallback")
+    async def fallback_forget(service_id: int, operator: dict = Depends(require_auth)):
+        """Отвязать аккаунт: сессия удаляется, канал выключается."""
+        await _require_fallback(service_id, operator)
+        await fallback.save(service_id, {"enabled": False, "config": {}})
+        return {"ok": True}
+
+    # ── Папки тикетов ─────────────────────────────────────────────────────────
+    # Папка — второй срез списка поверх статусов: тикет остаётся в «В работе»
+    # или «Ожидании» и дополнительно лежит в папке, куда его положил оператор.
+    # Создаёт и правит папки админ, раскладывает по ним — любой оператор.
+
+    def _fmt_folder(f: dict) -> dict:
+        return {"id": f["id"], "serviceId": f["service_id"], "name": f["name"],
+                "emoji": f.get("emoji") or "📁", "color": f.get("color") or "#4F8EF7",
+                "sortOrder": f.get("sort_order") or 0,
+                "openCount": int(f.get("open_count") or 0)}
+
+    async def require_folder(folder_id: int, operator: dict) -> dict:
+        folder = await db.get_folder(folder_id)
+        if not folder:
+            raise HTTPException(404, "Папка не найдена")
+        if folder["service_id"] not in await db.get_operator_service_ids(operator):
+            raise HTTPException(403, "Нет доступа к этому сервису")
+        return folder
+
+    @app.get("/api/folders")
+    async def get_folders(service_id: Optional[int] = None,
+                          operator: dict = Depends(require_auth)):
+        """С service_id — папки одного ВПН-а; без него — всех доступных."""
+        ids = await db.get_operator_service_ids(operator)
+        if service_id is not None:
+            if service_id not in ids:
+                raise HTTPException(403, "Нет доступа к этому сервису")
+            ids = [service_id]
+        return [_fmt_folder(f) for f in await db.get_folders(ids)]
+
+    @app.post("/api/folders")
+    async def create_folder(body: FolderBody, service_id: Optional[int] = None,
+                            operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not body.name.strip():
+            raise HTTPException(400, "Название обязательно")
+        service = await require_service(service_id, operator)
+        folder = await db.create_folder(service["id"], body.name.strip(),
+                                        body.emoji.strip() or "📁", body.color)
+        await ws.broadcast({"type": "folders_changed", "service_id": service["id"]})
+        return _fmt_folder(folder)
+
+    @app.put("/api/folders/{folder_id}")
+    async def update_folder(folder_id: int, body: FolderBody,
+                            operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        folder = await require_folder(folder_id, operator)
+        if not body.name.strip():
+            raise HTTPException(400, "Название обязательно")
+        updated = await db.update_folder(folder_id, body.name.strip(),
+                                         body.emoji.strip() or "📁", body.color,
+                                         body.sort_order)
+        await ws.broadcast({"type": "folders_changed", "service_id": folder["service_id"]})
+        return _fmt_folder(updated)
+
+    @app.delete("/api/folders/{folder_id}")
+    async def delete_folder(folder_id: int, operator: dict = Depends(require_auth)):
+        """Тикеты из удалённой папки не пропадают — просто перестают быть
+        разложенными (folder_id → NULL по внешнему ключу)."""
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        folder = await require_folder(folder_id, operator)
+        await db.delete_folder(folder_id)
+        await ws.broadcast({"type": "folders_changed", "service_id": folder["service_id"]})
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/folder")
+    async def set_dialog_folder(dialog_id: str, body: DialogFolderBody,
+                                operator: dict = Depends(require_auth)):
+        dialog = await require_dialog_write(dialog_id, operator)
+        if body.folder_id is not None:
+            folder = await require_folder(body.folder_id, operator)
+            if folder["service_id"] != dialog["service_id"]:
+                raise HTTPException(400, "Папка другого сервиса")
+        await db.set_dialog_folder(dialog_id, body.folder_id)
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+                           updated["service_id"])
+        return {"ok": True, "folderId": body.folder_id}
 
     # ── Operators ─────────────────────────────────────────────────────────────
 
@@ -1201,9 +1557,12 @@ def build_app(
         if not text.strip():
             raise HTTPException(400, "File is empty")
         # У каждого сервиса своя коллекция Qdrant — базы знаний не смешиваются.
+        # db+service_id заставляют process_document полностью заменить прежнюю
+        # базу знаний сервиса новой — иначе разделы, удалённые из документа при
+        # правке, навсегда оставались бы в поиске ИИ.
         chunks = await process_document(
             text, kb_chat_client, settings.OPENAI_API_KEY, settings.QDRANT_URL,
-            service["qdrant_collection"],
+            service["qdrant_collection"], db=db, service_id=service["id"],
         )
         for c in chunks:
             await db.save_kb_article(
@@ -1421,6 +1780,11 @@ def build_app(
                 # start the offline grace timer; the routing sweeper releases
                 # the operator's in_progress tickets when it expires
                 await db.set_operator_offline_since(departed_id, True)
-                await ws.broadcast({"type": "operator_status", "op_id": departed_id, "online": False, "paused": False})
+                # last_seen проставлен в set_operator_online — перечитываем, чтобы
+                # в списке операторов сразу встало «был в сети», а не «не заходил».
+                departed = await db.get_operator(departed_id)
+                await ws.broadcast({"type": "operator_status", "op_id": departed_id,
+                                    "online": False, "paused": False,
+                                    "last_seen": _fmt_operator(departed)["lastSeen"] if departed else None})
 
     return app

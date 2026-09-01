@@ -190,9 +190,16 @@ ALTER TABLE n8n_dialogs ALTER COLUMN id SET DEFAULT nextval('n8n_dialogs_id_seq'
 - Поля `user_message`: `type, business_id, service, dialog_id, chat_id,
   user_username, user_name, message, ai_enabled, file_id, file_type`.
 - Поля `delivery_confirmation`: `type, message_id, dialog_id, status, error`.
-  Без них в панели не появятся галочки доставки.
+  Без них в панели не появятся галочки доставки. Текст `error` панель
+  показывает оператору и по нему же запускает резервную отправку по MTProto,
+  если та настроена (README, «Резервная отправка ответа»), — не глушите
+  ошибку пустой строкой.
 - Значения `type` исходящих: `manager_message`, `send_to_user`,
   `operator_notify`.
+- События `operator_notify`: `new_dialog`, `operator_called`, `dialog_closed`,
+  `ai_toggled`, `claim_requested`, `server_down`, `bot_down`. Незнакомое
+  событие нода «Форматировать уведомление» выведет как есть — уведомление
+  дойдёт, просто некрасивым.
 
 Нужен `business_id` **или** `service` — по ним панель понимает, какому ВПН-у
 принадлежит тикет. Если нет ни того, ни другого, всё сваливается в первый
