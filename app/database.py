@@ -843,6 +843,27 @@ class DatabaseManager:
         )
         return dict(row) if row else None
 
+    async def get_customer_activity(self, service_id: int, chat_id: str,
+                                    limit: int = 100) -> list[dict]:
+        """Что операторы делали с АККАУНТОМ клиента из панели — по всем его
+        тикетам, а не только текущему. Отдельной таблицы не нужно: такие
+        действия оставляют системный след вида «Оператор: что сделал»
+        (см. эндпоинт customer/{action}), он и есть журнал.
+
+        Двоеточие в LIKE — и есть отбор: маршрутные записи («Диалог назначен
+        оператору X», «Тикет передан оператору Y») его не содержат, и в ленту
+        действий над аккаунтом им не место — они уже видны в переписке и в
+        разделе «Обращения»."""
+        rows = await self.pool.fetch(
+            """SELECT m.id, m.text, m.created_at, m.dialog_id
+               FROM messages m JOIN dialogs d ON d.dialog_id = m.dialog_id
+               WHERE d.service_id = $1 AND d.chat_id = $2 AND m.kind = 'system'
+                 AND m.text LIKE '%: %'
+               ORDER BY m.created_at DESC LIMIT $3""",
+            service_id, str(chat_id), int(limit),
+        )
+        return [dict(r) for r in rows]
+
     async def get_dialog_history(
         self, service_id: int, chat_id: str, exclude_dialog_id: str = "",
     ) -> list[dict]:

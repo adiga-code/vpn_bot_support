@@ -91,6 +91,28 @@ class Payment:
 
 
 @dataclass
+class ActivityEvent:
+    """Одно событие в ленте «Действия»: что произошло с аккаунтом клиента и по
+    чьей воле. Источник — внешняя API (оплаты, журнал бота) либо сама панель
+    (что сделал оператор в карточке клиента)."""
+
+    at: str = ""                    # ISO; пустое — источник не сказал когда
+    kind: str = "user"              # payment | deposit | key | device | user | message | ticket
+    title: str = ""
+    detail: str = ""
+    actor: str = ""                 # оператор, «клиент», «система»
+    amount: Optional[float] = None
+    currency: str = "₽"
+    source: str = ""                # чем добыто: bot_api, audit, panel
+
+    def to_dict(self) -> dict:
+        return {"at": self.at, "kind": self.kind, "title": self.title,
+                "detail": self.detail, "actor": self.actor,
+                "amount": self.amount, "currency": self.currency,
+                "source": self.source}
+
+
+@dataclass
 class Device:
     id: str = ""
     name: str = ""
@@ -376,6 +398,13 @@ class CustomerProvider(ABC):
         выдачи ключа. Формат: {"servers": [{"value": …, "label": …}], …}."""
         return {}
 
+    async def activity(self, chat_id: str, limit: int = 100) -> list:
+        """Лента действий: оплаты, пополнения, продления, сбросы ключей, баны —
+        всё, что случилось с аккаунтом клиента, и его самого, и администраторов.
+        Возвращает list[ActivityEvent]. Не умеет источник — NotSupported, и
+        вкладка покажет только то, что записала сама панель."""
+        raise NotSupported
+
     # ── Действия ──────────────────────────────────────────────────────────────
     # Базовые реализации только объявляют контракт. Провайдер переопределяет
     # те, что поддерживает его API, — по этому и строится supports().
@@ -609,6 +638,28 @@ class CustomerService:
         except Exception as e:
             print(f"[customer] options: {e}")
         return opts
+
+    async def activity(self, service: dict, dialog: dict, limit: int = 100) -> tuple:
+        """(события, отчёт об источниках). Отчёт нужен вкладке: если журнал бота
+        закрыт скоупом токена, оператор должен видеть, чего он НЕ видит, а не
+        решить, что с аккаунтом ничего не происходило."""
+        provider = await self.provider_for(service)
+        if not provider:
+            name = (await self.settings(service["id"])).get("provider") or "—"
+            return [], [{"name": name, "ok": False, "error": "источник не зарегистрирован"}]
+        try:
+            events = await provider.activity(str(dialog["chat_id"]), limit)
+        except NotSupported:
+            return [], [{"name": provider.source, "ok": False,
+                         "error": "источник не умеет отдавать историю действий"}]
+        except Exception as e:
+            print(f"[customer] activity {provider.source}: {e}")
+            return [], [{"name": provider.source, "ok": False, "error": str(e)[:200]}]
+        # Провайдер может вернуть (события, отчёт) — тогда он сам знает, какие
+        # его разделы не ответили.
+        if isinstance(events, tuple):
+            return events
+        return events, [{"name": provider.source, "ok": True, "error": ""}]
 
     async def supports(self, service: dict) -> list[str]:
         provider = await self.provider_for(service)

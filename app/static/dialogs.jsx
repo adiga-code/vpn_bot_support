@@ -1786,6 +1786,118 @@ function KeyCard({ item, actions, onAction }) {
   );
 }
 
+// Лента «Действия»: всё, что случилось с аккаунтом клиента — и его руками, и
+// операторскими. Данные собираются из внешней API (оплаты, журнал бота) и из
+// самой панели, поэтому источник у каждой строки подписан.
+const ACTIVITY_KINDS = {
+  payment:  { icon: "💳", label: "Оплаты",      tone: "text-[#22c55e]" },
+  deposit:  { icon: "💰", label: "Пополнения",  tone: "text-[#22c55e]" },
+  key:      { icon: "🔑", label: "Ключи",       tone: "text-[#7BA8F9]" },
+  device:   { icon: "📱", label: "Устройства",  tone: "text-[#7BA8F9]" },
+  user:     { icon: "👤", label: "Профиль",     tone: "text-[#C084FC]" },
+  message:  { icon: "✉️", label: "Сообщения",   tone: "text-[#9095a3]" },
+  panel:    { icon: "🛟", label: "Панель",      tone: "text-[#eab308]" },
+};
+
+function ActivityTab({ convId, showToast }) {
+  const [data, setData] = useStateD(null);     // {items, sources}
+  const [loading, setLoading] = useStateD(true);
+  const [kind, setKind] = useStateD("all");
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    try { setData(await window.apiFetch("GET", `/api/dialogs/${convId}/activity`)); }
+    catch { setData({ items: [], sources: [] }); }
+    setLoading(false);
+  }, [convId]);
+
+  // Лениво: три-четыре запроса во внешнюю API не должны тормозить открытие
+  // тикета, поэтому лента грузится при первом заходе на вкладку.
+  useEffectD(() => { load(); }, [load]);
+
+  const items = data?.items || [];
+  const kinds = useMemoD(() => {
+    const seen = [];
+    for (const e of items) if (!seen.includes(e.kind)) seen.push(e.kind);
+    return seen;
+  }, [items]);
+  const shown = kind === "all" ? items : items.filter((e) => e.kind === kind);
+  const failed = (data?.sources || []).filter((s) => !s.ok);
+
+  if (loading && !data) return <div className="text-center text-xs text-[#6b7280] py-8">Загрузка ленты…</div>;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold flex-1">
+          {items.length} событий
+        </span>
+        <button onClick={load} disabled={loading} title="Обновить ленту"
+                className="w-7 h-7 shrink-0 rounded-lg flex items-center justify-center text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] disabled:opacity-40">
+          <Icon name="refresh" className={"w-3.5 h-3.5 " + (loading ? "animate-spin" : "")} />
+        </button>
+      </div>
+
+      {failed.length > 0 && (
+        <div className="rounded-lg px-2.5 py-2 text-[11px] border bg-[#f59e0b]/10 border-[#f59e0b]/30 text-[#f59e0b]">
+          Часть истории недоступна: {failed.map((s) => `${s.name} — ${s.error}`).join("; ")}
+        </div>
+      )}
+
+      {kinds.length > 1 && (
+        <div className="flex gap-1 flex-wrap">
+          {["all", ...kinds].map((k) => (
+            <button key={k} onClick={() => setKind(k)}
+              className={"px-2 py-1 rounded-md text-[11px] font-medium border transition " +
+                (kind === k ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
+                            : "border-[#2a2a3a] text-[#6b7280] hover:text-[#f1f1f5]")}>
+              {k === "all" ? "Все" : `${(ACTIVITY_KINDS[k] || {}).icon || "•"} ${(ACTIVITY_KINDS[k] || {}).label || k}`}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {shown.length === 0 && (
+        <div className="text-center text-xs text-[#6b7280] py-6">Событий нет</div>
+      )}
+
+      <div className="space-y-1.5">
+        {shown.map((e, i) => {
+          const meta = ACTIVITY_KINDS[e.kind] || { icon: "•", tone: "text-[#9095a3]" };
+          return (
+            <div key={i} className="bg-[#1a1a24] rounded-lg px-3 py-2 border border-[#2a2a3a]/60 text-xs">
+              <div className="flex items-start gap-2">
+                <span className="shrink-0 text-[13px] leading-5">{meta.icon}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-[#f1f1f5] truncate">{e.title}</span>
+                    {e.amount != null && e.amount !== 0 && (
+                      <span className={"shrink-0 tabular-nums font-medium " + meta.tone}>
+                        {e.amount} {e.currency}
+                      </span>
+                    )}
+                  </div>
+                  {e.detail && <div className="text-[10px] text-[#6b7280] mt-0.5 break-words">{e.detail}</div>}
+                  <div className="flex items-center justify-between gap-2 mt-0.5 text-[10px] text-[#6b7280]">
+                    <span className="truncate">{e.actor || "—"}</span>
+                    <span className="shrink-0">{fmtDateTime(e.at)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {(data?.sources || []).length > 0 && (
+        <div className="text-[10px] text-[#3a3a4a] pt-1">
+          источники: {(data.sources || []).map((s) => s.name).join(", ")}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmin = false,
                         readOnly = false }) {
   const [tab, setTab] = useStateD("profile");
@@ -1841,7 +1953,10 @@ function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmi
     { id: "profile",   label: "Профиль" },
     { id: "keys",      label: "Ключи",    count: data?.keys?.length },
     { id: "referrals", label: "Рефералы", count: data?.referrals?.length },
-    { id: "history",   label: "История",  count: (conv.tickets || []).length },
+    // «История» разъехалась надвое: прошлые обращения — это тикеты, а
+    // «Действия» — что происходило с самим аккаунтом клиента.
+    { id: "tickets",   label: "Обращения", count: (conv.tickets || []).length },
+    { id: "activity",  label: "Действия" },
   ];
 
   return (
@@ -2058,8 +2173,11 @@ function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmi
           </>
         )}
 
-        {/* ── История обращений ───────────────────────────────────────────── */}
-        {tab === "history" && (
+        {/* ── Действия над аккаунтом клиента ──────────────────────────────── */}
+        {tab === "activity" && <ActivityTab convId={conv.id} showToast={showToast} />}
+
+        {/* ── Прошлые обращения ───────────────────────────────────────────── */}
+        {tab === "tickets" && (
           <div className="space-y-1.5">
             {(conv.tickets || []).length === 0 && (
               <div className="text-center text-xs text-[#6b7280] py-6">Нет закрытых обращений</div>

@@ -26,12 +26,13 @@ REST-интерфейс самого бота, написанный под вн�
 сообщения, `ok` в ActionResult и `error` в состоянии сервера.
 """
 import asyncio
+import json
 
 import aiohttp
 
 from app.customer import (
-    ActionResult, CustomerProfile, CustomerProvider, Device, KeyInfo, Payment,
-    Referral, register_customer_provider,
+    ActionResult, ActivityEvent, CustomerProfile, CustomerProvider, Device, KeyInfo,
+    Payment, Referral, register_customer_provider,
 )
 
 
@@ -234,6 +235,164 @@ class BotApiProvider(CustomerProvider):
                 for s in servers if isinstance(s, dict)
             ]
         return out
+
+    # ── Лента действий ────────────────────────────────────────────────────────
+
+    # Журнал бота пишет продление, сброс и удаление ключа НА КЛЮЧ, а не на
+    # пользователя, поэтому одного запроса по target_type=user мало: половина
+    # событий, ради которых вкладку и заводили, прошла бы мимо.
+    _AUDIT_KEYS_LIMIT = 5
+
+    _AUDIT_TITLES = {
+        "balance":       "Изменён баланс",
+        "message":       "Отправлено сообщение",
+        "extend":        "Изменён срок ключа",
+        "enable":        "Ключ включён",
+        "disable":       "Ключ выключен",
+        "recreate":      "Ключ пересоздан",
+        "move":          "Смена локации",
+        "trial/reset":   "Пробный период сброшен",
+        "approve":       "Выплата подтверждена",
+        "reject":        "Выплата отклонена",
+    }
+
+    @staticmethod
+    def _audit_title(entry: dict) -> str:
+        """Человеческое название по методу и хвосту пути: /keys/41155/extend →
+        «Изменён срок ключа». Незнакомое действие показываем как есть — лучше
+        сырой путь, чем пропущенное событие."""
+        path = str(entry.get("path") or "")
+        method = str(entry.get("method") or "").upper()
+        tail = path.rstrip("/").split("/")
+        # Устройства разбираем до словаря: у них путь заканчивается на hwid, а
+        # не на действие, и «all» означает сброс всех привязок разом.
+        if "devices" in tail:
+            return "Отвязаны все устройства" if tail[-1] == "all" else "Отвязано устройство"
+        for key, title in BotApiProvider._AUDIT_TITLES.items():
+            if path.endswith("/" + key) or ("/" + key + "/") in path:
+                return title
+        if entry.get("target_type") == "key":
+            if method == "DELETE":
+                return "Ключ удалён"
+            if method == "POST":
+                return "Выдан ключ"
+        if entry.get("target_type") == "user" and method == "PATCH":
+            return "Изменён профиль"
+        return f"{method} {path}"
+
+    @staticmethod
+    def _audit_detail(entry: dict) -> str:
+        """`payload` у них строка с JSON, а не объект. Разворачиваем её в пару
+        понятных полей; неразбираемое показываем как есть, обрезав."""
+        raw = entry.get("payload")
+        if not raw:
+            return ""
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        except (ValueError, TypeError):
+            return str(raw)[:160]
+        if not isinstance(data, dict):
+            return str(raw)[:160]
+        bits = []
+        if "delivered" in data:
+            bits.append("доставлено" if data["delivered"] else "не доставлено")
+        for key, label in (("reason", ""), ("days", "дней"), ("months", "мес."),
+                           ("amount", "сумма"), ("old_value", "было"),
+                           ("new_value", "стало"), ("detail", "")):
+            if data.get(key) not in (None, "", []):
+                bits.append(f"{label} {data[key]}".strip())
+        return " · ".join(bits)[:200]
+
+    async def _audit(self, params: dict) -> list:
+        data = await self._request("GET", "/audit", params={**params, "limit": 50})
+        return (data or {}).get("items") or []
+
+    async def activity(self, chat_id: str, limit: int = 100):
+        """Оплаты, пополнения баланса и журнал действий бота. Каждый раздел
+        добывается отдельно: закрытый скоупом `/audit` не должен уносить с собой
+        платежи, а недоступный биллинг — журнал."""
+        events: list[ActivityEvent] = []
+        sources: list[dict] = []
+
+        def note(name: str, error: str = ""):
+            sources.append({"name": name, "ok": not error, "error": error})
+
+        # Ключи нужны, чтобы спросить журнал по каждому из них.
+        key_ids = []
+        try:
+            user = await self._request("GET", "/users/resolve", params={"value": str(chat_id)})
+            key_ids = [k.get("id") for k in (user.get("keys") or [])
+                       if isinstance(k, dict) and k.get("id")][:self._AUDIT_KEYS_LIMIT]
+        except Exception as e:
+            note("профиль", str(e)[:160])
+
+        async def payments():
+            data = await self._request("GET", f"/users/{chat_id}/payments", params={"limit": 50})
+            return (data or {}).get("items") or []
+
+        async def deposits():
+            data = await self._request("GET", f"/users/{chat_id}/deposits", params={"limit": 50})
+            return (data or {}).get("items") or []
+
+        tasks = [payments(), deposits(),
+                 self._audit({"target_type": "user", "target_id": str(chat_id)})]
+        tasks += [self._audit({"target_type": "key", "target_id": str(k)}) for k in key_ids]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        pays, deps, audit_user = results[0], results[1], results[2]
+        audit_keys = results[3:]
+
+        if isinstance(pays, Exception):
+            note("оплаты", str(pays)[:160])
+        else:
+            note("оплаты")
+            for p in pays:
+                if not isinstance(p, dict):
+                    continue
+                months = p.get("month_count")
+                events.append(ActivityEvent(
+                    at=str(p.get("created_at") or ""), kind="payment",
+                    title="Оплата подписки",
+                    detail=" · ".join(x for x in (
+                        p.get("payment_system") or "",
+                        f"{months} мес." if months else "") if x),
+                    actor="клиент", amount=_num(p.get("amount")), source="bot_api"))
+
+        if isinstance(deps, Exception):
+            note("пополнения", str(deps)[:160])
+        else:
+            note("пополнения")
+            for d in deps:
+                if isinstance(d, dict):
+                    events.append(ActivityEvent(
+                        at=str(d.get("created_at") or ""), kind="deposit",
+                        title="Пополнение баланса", actor="клиент",
+                        amount=_num(d.get("amount")), source="bot_api"))
+
+        # Журнал: одна ошибка на все запросы — скоуп либо есть, либо нет.
+        audit_error = next((str(r) [:160] for r in [audit_user, *audit_keys]
+                            if isinstance(r, Exception)), "")
+        if audit_error:
+            note("журнал бота", audit_error)
+        else:
+            note("журнал бота")
+        seen = set()
+        for chunk in [audit_user, *audit_keys]:
+            if isinstance(chunk, Exception):
+                continue
+            for e in chunk:
+                if not isinstance(e, dict) or e.get("id") in seen:
+                    continue
+                seen.add(e.get("id"))
+                events.append(ActivityEvent(
+                    at=str(e.get("created_at") or ""),
+                    kind="key" if e.get("target_type") == "key" else "user",
+                    title=self._audit_title(e),
+                    detail=self._audit_detail(e),
+                    actor=e.get("actor") or e.get("token_name") or "",
+                    source="журнал бота"))
+
+        return events, sources
 
     # ── Хелперы действий ──────────────────────────────────────────────────────
 

@@ -11,8 +11,8 @@ from datetime import datetime, timedelta, timezone
 import aiohttp
 
 from app.customer import (
-    ACTIONS_BY_NAME, ActionResult, CustomerProfile, CustomerProvider, Device,
-    KeyInfo, Payment, Referral, register_customer_provider,
+    ACTIONS_BY_NAME, ActionResult, ActivityEvent, CustomerProfile, CustomerProvider,
+    Device, KeyInfo, Payment, Referral, register_customer_provider,
 )
 
 
@@ -101,6 +101,25 @@ class MockCustomerProvider(CustomerProvider):
 
     async def options(self, chat_id: str) -> dict:
         return {"servers": MOCK_SERVERS, "plans": MOCK_PLANS}
+
+    async def activity(self, chat_id: str, limit: int = 100):
+        """Выдуманная лента — чтобы вкладку «Действия» было видно до интеграции.
+        Как и профиль, детерминирована по клиенту: цифры не прыгают."""
+        rnd = random.Random(f"activity:{self.service.get('slug', '')}:{chat_id}")
+        out = []
+        for i in range(6):
+            amount = rnd.choice([299, 499, 899, 1290])
+            out.append(ActivityEvent(
+                at=_iso(-30 * i) + "T12:00:00", kind="payment",
+                title="Оплата подписки", detail="МОК · 1 мес.", actor="клиент",
+                amount=float(amount), source="mock"))
+        for i, (kind, title) in enumerate((
+                ("key", "Изменён срок ключа"), ("device", "Отвязано устройство"),
+                ("user", "Изменён баланс"), ("key", "Ключ пересоздан"))):
+            out.append(ActivityEvent(
+                at=_iso(-3 * i - 1) + "T09:30:00", kind=kind, title=title,
+                detail="МОК", actor=rnd.choice(["Оператор", "admin"]), source="mock"))
+        return out, [{"name": "mock", "ok": True, "error": ""}]
 
     # Мок умеет всё — чтобы интерфейс можно было пройти целиком до интеграции.
     def _ok(self, action: str, detail: str = "") -> ActionResult:

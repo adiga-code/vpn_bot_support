@@ -771,6 +771,37 @@ def build_app(
                                 "message": _fmt_message(msg_row)}, dialog["service_id"])
         return {"ok": True, "message": result.message, "data": result.data or {}}
 
+    @app.get("/api/dialogs/{dialog_id}/activity")
+    async def get_customer_activity(dialog_id: str, limit: int = 100,
+                                    operator: dict = Depends(require_auth)):
+        """Лента «Действия»: всё, что происходило с аккаунтом клиента — оплаты и
+        пополнения, продления и сбросы ключей, баны, изменения баланса, — и то,
+        что делали операторы из самой панели.
+
+        Внешний источник и наша БД собираются в один список по времени. Отчёт об
+        источниках уходит рядом: если журнал бота закрыт скоупом токена, оператор
+        должен видеть, чего он НЕ видит, а не решить, что ничего не было."""
+        dialog = await require_dialog(dialog_id, operator)
+        service = await db.get_service(dialog["service_id"])
+        events, sources = await customers.activity(service, dialog, limit)
+        items = [e.to_dict() for e in events]
+
+        for row in await db.get_customer_activity(dialog["service_id"], dialog["chat_id"], limit):
+            text = row.get("text") or ""
+            # Строка записана как «Оператор: что сделал» — имя слева от первого
+            # двоеточия, по этому же признаку она и отобрана в запросе.
+            actor, _, rest = text.partition(": ")
+            items.append({
+                "at": row["created_at"].isoformat() if row.get("created_at") else "",
+                "kind": "panel", "title": rest or text, "detail": "",
+                "actor": actor if rest else "", "amount": None, "currency": "₽",
+                "source": "панель",
+            })
+        sources.append({"name": "панель", "ok": True, "error": ""})
+
+        items.sort(key=lambda e: e.get("at") or "", reverse=True)
+        return {"items": items[:limit], "sources": sources}
+
     @app.get("/api/settings/customer")
     async def get_customer_settings(service_id: Optional[int] = None,
                                     operator: dict = Depends(require_auth)):
