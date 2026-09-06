@@ -175,37 +175,10 @@ class DatabaseManager:
             )
         """)
 
-        # ── n8n shared tables ────────────────────────────────────────────────
-        # n8n connects to the same PostgreSQL and uses these tables.
-        # Names are prefixed with n8n_ to avoid collisions with helpdesk tables.
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS n8n_dialogs (
-                id         BIGSERIAL PRIMARY KEY,
-                user_id    BIGINT NOT NULL,
-                username   TEXT,
-                ai_status  BOOLEAN NOT NULL DEFAULT TRUE,
-                status     TEXT NOT NULL DEFAULT 'new',
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS n8n_dialogs_user_idx ON n8n_dialogs (user_id)"
-        )
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS n8n_messages (
-                id         BIGSERIAL PRIMARY KEY,
-                user_id    BIGINT NOT NULL,
-                dialog_id  BIGINT NOT NULL REFERENCES n8n_dialogs(id) ON DELETE CASCADE,
-                message    TEXT,
-                type       TEXT NOT NULL DEFAULT 'user',
-                file_id    TEXT,
-                file_type  TEXT,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS n8n_messages_dialog_idx ON n8n_messages (dialog_id)"
-        )
+        # Своих таблиц у n8n больше нет: диалог он получает от панели через
+        # POST /api/n8n/dialog/resolve, а сообщения панель пишет сама в
+        # messages. Пока состояние диалога дублировалось в n8n_dialogs, любое
+        # расхождение двух баз рождало второй тикет на того же клиента.
 
         # ── Forward migrations ────────────────────────────────────────────────
         # Add new columns without dropping anything; safe to re-run on every
@@ -378,19 +351,6 @@ class DatabaseManager:
 
         slug = validate_slug(self.settings.DEFAULT_SERVICE_SLUG)
 
-        # n8n делит с хелпдеском n8n_dialogs/n8n_messages и ищет по user_id.
-        # Без сервиса один и тот же Telegram-юзер, написавший в два бота,
-        # схлопывается в одну запись — добавляем разделитель.
-        for table in ("n8n_dialogs", "n8n_messages"):
-            await conn.execute(
-                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS service TEXT "
-                f"NOT NULL DEFAULT '{slug}'"
-            )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS n8n_dialogs_user_service_idx "
-            "ON n8n_dialogs (user_id, service)"
-        )
-
         # ── Одноразовый бэкфилл ───────────────────────────────────────────────
         flag = await conn.fetchval(
             "SELECT value FROM settings WHERE key='multi_tenant_v1' AND service_id=$1",
@@ -440,6 +400,13 @@ class DatabaseManager:
         )
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS dialogs_service_chat_idx ON dialogs (service_id, chat_id)"
+        )
+        # Главный инвариант: у клиента в сервисе не бывает двух незакрытых
+        # тикетов. Держим его индексом, а не проверками в коде — тогда его не
+        # обойдёт ни гонка двух сообщений, ни чужой dialog_id со стороны.
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS dialogs_one_open_idx "
+            "ON dialogs (service_id, chat_id) WHERE status <> 'closed'"
         )
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS kb_articles_service_idx ON kb_articles (service_id)"
@@ -742,66 +709,96 @@ class DatabaseManager:
 
     # ── Dialogs ───────────────────────────────────────────────────────────────
 
-    async def upsert_dialog(
-        self, dialog_id: str, chat_id: str, service_id: int,
+    async def resolve_open_dialog(
+        self, service: dict, chat_id: str,
         ai_enabled: bool = True, user_info: dict = None,
+        bump_unread: bool = False,
     ) -> dict:
+        """Открытый тикет клиента; нет такого — заводится новый. Идемпотентно.
+
+        Личность диалога — пара (сервис, chat_id), а не номер, пришедший
+        снаружи: только так повторный вызов не может породить второй тикет.
+        Ключ `dialog_id` остаётся человекочитаемым — «<префикс><chat_id>-<N>»,
+        где N — порядковый номер обращения клиента; закрытые тикеты остаются в
+        истории под своими номерами.
+
+        `bump_unread` поднимает счётчик непрочитанных: его ставит только тот,
+        кто действительно кладёт сообщение в тикет (потребитель очереди).
+        n8n дёргает резолв на то же самое сообщение чуть раньше, и без флага
+        счётчик рос бы вдвое.
+
+        Возвращает строку диалога с флагом `is_new_dialog`.
+        """
         ui = user_info or {}
-        existing = await self.pool.fetchrow(
-            "SELECT status FROM dialogs WHERE dialog_id = $1", dialog_id
+        service_id = service["id"]
+        prefix = service.get("dialog_id_prefix") or ""
+
+        for _ in range(3):
+            row = await self.pool.fetchrow(
+                """
+                UPDATE dialogs SET
+                    user_name           = COALESCE($3,  user_name),
+                    user_username       = COALESCE($4,  user_username),
+                    user_plan           = COALESCE($5,  user_plan),
+                    user_sub_status     = COALESCE($6,  user_sub_status),
+                    user_next_payment   = COALESCE($7,  user_next_payment),
+                    user_traffic_used   = COALESCE($8,  user_traffic_used),
+                    user_traffic_total  = COALESCE($9,  user_traffic_total),
+                    last_payment_amount = COALESCE($10, last_payment_amount),
+                    last_payment_date   = COALESCE($11, last_payment_date),
+                    user_photo_url      = COALESCE($12, user_photo_url),
+                    unread_count        = unread_count + $13::int,
+                    updated_at          = NOW()
+                WHERE service_id = $1 AND chat_id = $2 AND status <> 'closed'
+                RETURNING *
+                """,
+                service_id, chat_id,
+                ui.get("user_name"), ui.get("user_username"),
+                ui.get("user_plan"), ui.get("user_sub_status"),
+                ui.get("user_next_payment"),
+                ui.get("user_traffic_used"), ui.get("user_traffic_total"),
+                ui.get("user_last_payment_amount"), ui.get("user_last_payment_date"),
+                ui.get("user_photo_url"), 1 if bump_unread else 0,
+            )
+            if row:
+                return {**dict(row), "is_new_dialog": False}
+
+            seq = 1 + await self.pool.fetchval(
+                "SELECT COUNT(*) FROM dialogs WHERE service_id=$1 AND chat_id=$2",
+                service_id, chat_id,
+            )
+            dialog_id = f"{prefix}{chat_id}-{seq}"
+            row = await self.pool.fetchrow(
+                """
+                INSERT INTO dialogs (
+                    dialog_id, chat_id, service_id, ai_enabled,
+                    user_name, user_username, user_plan, user_sub_status,
+                    user_next_payment, user_traffic_used, user_traffic_total,
+                    last_payment_amount, last_payment_date, user_photo_url,
+                    unread_count, status, queued_at
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, $15,
+                          CASE WHEN $4 THEN 'ai' ELSE 'queue' END,
+                          CASE WHEN $4 THEN NULL ELSE NOW() END)
+                ON CONFLICT DO NOTHING
+                RETURNING *
+                """,
+                dialog_id, chat_id, service_id, ai_enabled,
+                ui.get("user_name"), ui.get("user_username"),
+                ui.get("user_plan", "Basic"), ui.get("user_sub_status", "active"),
+                ui.get("user_next_payment"),
+                float(ui.get("user_traffic_used") or 0),
+                float(ui.get("user_traffic_total") or 100),
+                ui.get("user_last_payment_amount"), ui.get("user_last_payment_date"),
+                ui.get("user_photo_url"), 1 if bump_unread else 0,
+            )
+            if row:
+                return {**dict(row), "is_new_dialog": True}
+            # ON CONFLICT сработал: параллельный запрос успел создать тикет
+            # (dialogs_one_open_idx) — читаем его на следующем круге.
+
+        raise RuntimeError(
+            f"не удалось получить диалог для chat_id={chat_id} в сервисе {service_id}"
         )
-        is_new = existing is None
-        was_closed = existing is not None and existing["status"] == "closed"
-        row = await self.pool.fetchrow(
-            """
-            INSERT INTO dialogs (
-                dialog_id, chat_id, ai_enabled,
-                user_name, user_username, user_plan, user_sub_status,
-                user_next_payment, user_traffic_used, user_traffic_total,
-                last_payment_amount, last_payment_date, user_photo_url, unread_count,
-                status, queued_at, service_id
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, 1,
-                      CASE WHEN $3 THEN 'ai' ELSE 'queue' END,
-                      CASE WHEN $3 THEN NULL ELSE NOW() END, $14)
-            ON CONFLICT (dialog_id) DO UPDATE SET
-                ai_enabled          = CASE WHEN dialogs.status='closed' THEN $3 ELSE dialogs.ai_enabled END,
-                status              = CASE WHEN dialogs.status='closed'
-                                           THEN (CASE WHEN $3 THEN 'ai' ELSE 'queue' END)
-                                           ELSE dialogs.status END,
-                queued_at           = CASE WHEN dialogs.status='closed'
-                                           THEN (CASE WHEN $3 THEN NULL ELSE NOW() END)
-                                           ELSE dialogs.queued_at END,
-                waiting_reason      = CASE WHEN dialogs.status='closed' THEN NULL ELSE dialogs.waiting_reason END,
-                return_requested_at = CASE WHEN dialogs.status='closed' THEN NULL ELSE dialogs.return_requested_at END,
-                sla_seconds_total   = CASE WHEN dialogs.status='closed' THEN 0 ELSE dialogs.sla_seconds_total END,
-                sla_started_at      = CASE WHEN dialogs.status='closed' THEN NULL ELSE dialogs.sla_started_at END,
-                closed_at           = CASE WHEN dialogs.status='closed' THEN NULL ELSE dialogs.closed_at END,
-                assigned_operator   = CASE WHEN dialogs.status='closed' THEN NULL ELSE dialogs.assigned_operator END,
-                operator_called     = CASE WHEN dialogs.status='closed' THEN FALSE ELSE dialogs.operator_called END,
-                user_name           = COALESCE(EXCLUDED.user_name,          dialogs.user_name),
-                user_username       = COALESCE(EXCLUDED.user_username,      dialogs.user_username),
-                user_plan           = COALESCE(EXCLUDED.user_plan,          dialogs.user_plan),
-                user_sub_status     = COALESCE(EXCLUDED.user_sub_status,    dialogs.user_sub_status),
-                user_next_payment   = COALESCE(EXCLUDED.user_next_payment,  dialogs.user_next_payment),
-                user_traffic_used   = COALESCE(EXCLUDED.user_traffic_used,  dialogs.user_traffic_used),
-                user_traffic_total  = COALESCE(EXCLUDED.user_traffic_total, dialogs.user_traffic_total),
-                last_payment_amount = COALESCE(EXCLUDED.last_payment_amount,dialogs.last_payment_amount),
-                last_payment_date   = COALESCE(EXCLUDED.last_payment_date,  dialogs.last_payment_date),
-                user_photo_url      = COALESCE(EXCLUDED.user_photo_url,     dialogs.user_photo_url),
-                unread_count        = dialogs.unread_count + 1,
-                updated_at          = NOW()
-            RETURNING *
-            """,
-            dialog_id, chat_id, ai_enabled,
-            ui.get("user_name"), ui.get("user_username"),
-            ui.get("user_plan", "Basic"), ui.get("user_sub_status", "active"),
-            ui.get("user_next_payment"),
-            float(ui.get("user_traffic_used") or 0),
-            float(ui.get("user_traffic_total") or 100),
-            ui.get("user_last_payment_amount"), ui.get("user_last_payment_date"),
-            ui.get("user_photo_url"), service_id,
-        )
-        return {**dict(row), "is_new_dialog": is_new or was_closed}
 
     # Диалог всегда читается вместе с данными своего сервиса: слаг нужен для
     # синхронизации с n8n и ключей Redis, имя и цвет — фронту, чтобы в режиме
@@ -886,38 +883,6 @@ class DatabaseManager:
             "UPDATE dialogs SET ai_enabled=$1, updated_at=NOW() WHERE dialog_id=$2",
             ai_enabled, dialog_id,
         )
-
-    # n8n_dialogs общая с воркфлоу n8n; строки разделены колонкой service —
-    # без неё переключение ИИ в одном ВПН-е гасило бы бота в другом у того же
-    # Telegram-пользователя.
-
-    @staticmethod
-    def _n8n_keys(dialog: dict) -> list[str]:
-        """Чем n8n метит свои строки в колонке `service`. Один воркфлоу на все
-        сервисы метит их business_connection_id, отдельный воркфлоу на сервис —
-        слагом. Сверяем по обоим, чтобы синхронизация работала при любом из
-        вариантов и не ломалась на переходе между ними."""
-        return [v for v in (dialog.get("service_slug"),
-                            dialog.get("business_connection_id")) if v]
-
-    async def sync_n8n_dialog_status(self, chat_id: str, status: str, dialog: dict):
-        try:
-            await self.pool.execute(
-                "UPDATE n8n_dialogs SET status=$1 WHERE id=("
-                "  SELECT MAX(id) FROM n8n_dialogs WHERE user_id=$2 AND service = ANY($3::text[]))",
-                status, int(chat_id), self._n8n_keys(dialog),
-            )
-        except Exception as e:
-            print(f"[sync_n8n] status update error: {e}")
-
-    async def sync_n8n_dialog_ai_status(self, chat_id: str, ai_enabled: bool, dialog: dict):
-        try:
-            await self.pool.execute(
-                "UPDATE n8n_dialogs SET ai_status=$1 WHERE user_id=$2 AND service = ANY($3::text[])",
-                ai_enabled, int(chat_id), self._n8n_keys(dialog),
-            )
-        except Exception as e:
-            print(f"[sync_n8n] ai_status update error: {e}")
 
     async def set_assigned_operator(self, dialog_id: str, operator_name):
         """Смена владельца снимает чужой запрос на передачу: он уже исполнен

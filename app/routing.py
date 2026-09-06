@@ -9,8 +9,8 @@ Status model (v2):
                   does NOT occupy a slot
     closed      — finished
 
-All status writes, SLA accounting, routing system messages, n8n syncs and the
-resulting WebSocket broadcasts go through RoutingEngine so the rules live in
+All status writes, SLA accounting, routing system messages and the resulting
+WebSocket broadcasts go through RoutingEngine so the rules live in
 one place. Assignment capacity is enforced by the advisory-locked primitives
 in DatabaseManager (assign_dialog / claim_next_queued / claim_pending_return).
 """
@@ -132,7 +132,6 @@ class RoutingEngine:
             return
         dialog_id, chat_id = dialog["dialog_id"], dialog["chat_id"]
         await self.db.update_ai_enabled(dialog_id, False)
-        await self.db.sync_n8n_dialog_ai_status(chat_id, False, dialog)
         await self.n8n.notify_ai_toggled(dialog_id, chat_id, False, dialog)
 
     async def _notify_operator_called(self, dialog: dict):
@@ -252,8 +251,8 @@ class RoutingEngine:
 
     async def on_client_message(self, dialog: dict):
         """Scenario 3/5: a client message on a waiting ticket asks to return to
-        work; other statuses are unaffected (closed dialogs are reopened by
-        upsert_dialog before this point)."""
+        work; other statuses are unaffected (закрытый тикет сюда не попадает —
+        новое сообщение клиента заводит следующий по счёту)."""
         if dialog["status"] != "waiting":
             return
         dialog_id = dialog["dialog_id"]
@@ -309,7 +308,6 @@ class RoutingEngine:
     async def close(self, dialog_id: str, chat_id: str, closed_by: str) -> dict:
         await self.db.move_to_closed(dialog_id)
         updated = await self._emit(dialog_id, "Диалог закрыт оператором")
-        await self.db.sync_n8n_dialog_status(chat_id, "closed", updated)
         await self.n8n.notify_dialog_closed(dialog_id, chat_id, closed_by, updated)
         await self.drain()  # the freed slot may serve the queue
         return updated
@@ -318,7 +316,6 @@ class RoutingEngine:
         """«Открыть снова»: back to the queue, unassigned; AI stays off."""
         await self.db.move_to_queue(dialog_id)
         updated = await self._emit(dialog_id, "Диалог переоткрыт оператором")
-        await self.db.sync_n8n_dialog_status(chat_id, "active", updated)
         await self.drain()
         return updated
 

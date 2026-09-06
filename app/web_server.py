@@ -13,6 +13,7 @@ from app.ai_client import make_chat_client, make_kb_chat_client
 from app.auth import create_token, decode_token, hash_password, verify_password
 from app.config import Settings
 from app.database import DatabaseManager, validate_slug as _validate_slug
+from app.dialogs import parse_ai_enabled, resolve_service, user_info_from
 from app.kb import delete_from_qdrant, process_document
 from app.routing import AUTOMATION_DEFAULTS as _AUTOMATION_DEFAULTS, RoutingEngine
 from app.serializers import (
@@ -164,6 +165,17 @@ class NotesBody(BaseModel):
 
 class PhotoBody(BaseModel):
     url: str
+
+class DialogResolveBody(BaseModel):
+    """Запрос n8n: «в какой тикет писать это сообщение». Сервис определяется по
+    business_id (или по слагу в service), клиент — по chat_id; номер тикета n8n
+    не придумывает и не хранит."""
+    chat_id: str
+    business_id: Optional[str] = None
+    service: Optional[str] = None
+    user_name: Optional[str] = None
+    user_username: Optional[str] = None
+    ai_enabled: Optional[bool] = None
 
 class ServiceBody(BaseModel):
     # slug задаётся только при создании: он зашивается в воркфлоу n8n, ключи
@@ -346,6 +358,13 @@ def build_app(
         if not service:
             raise HTTPException(404, "Сервис не найден")
         return service
+
+    async def require_api_key(request: Request) -> None:
+        """Доступ для n8n: заголовок X-API-Key. Пустой N8N_API_KEY в настройках
+        закрывает такие ручки совсем, а не открывает их всем."""
+        key = request.headers.get("X-API-Key", "")
+        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
+            raise HTTPException(401, "Invalid API key")
 
     async def require_dialog(dialog_id: str, operator: dict) -> dict:
         dialog = await db.get_dialog(dialog_id)
@@ -575,20 +594,15 @@ def build_app(
         return {"ok": True}
 
     @app.get("/api/dialogs/{dialog_id}/has_photo")
-    async def has_photo(dialog_id: str, request: Request):
-        key = request.headers.get("X-API-Key", "")
-        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
-            raise HTTPException(401, "Invalid API key")
+    async def has_photo(dialog_id: str, _: None = Depends(require_api_key)):
         row = await db.pool.fetchrow(
             "SELECT user_photo_url FROM dialogs WHERE dialog_id=$1", dialog_id
         )
         return {"has_photo": bool(row and row["user_photo_url"])}
 
     @app.post("/api/dialogs/{dialog_id}/set_photo")
-    async def set_photo(dialog_id: str, request: Request, body: PhotoBody):
-        key = request.headers.get("X-API-Key", "")
-        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
-            raise HTTPException(401, "Invalid API key")
+    async def set_photo(dialog_id: str, body: PhotoBody,
+                        _: None = Depends(require_api_key)):
         await db.pool.execute(
             "UPDATE dialogs SET user_photo_url=$1 WHERE dialog_id=$2", body.url, dialog_id
         )
@@ -603,7 +617,6 @@ def build_app(
         dialog = await require_dialog_write(dialog_id, operator)
         new_value = not dialog["ai_enabled"]
         await db.update_ai_enabled(dialog_id, new_value)
-        await db.sync_n8n_dialog_ai_status(dialog["chat_id"], new_value, dialog)
         await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], new_value, dialog)
         # Keep the status model coherent: AI back on while queued → «ИИ» section;
         # AI off while unattended in «ИИ» → escalate to humans.
@@ -894,17 +907,45 @@ def build_app(
 
     @app.post("/api/n8n/upload")
     async def n8n_upload(
-        request: Request,
         file: UploadFile = File(...),
+        _: None = Depends(require_api_key),
     ):
-        key = request.headers.get("X-API-Key", "")
-        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
-            raise HTTPException(401, "Invalid API key")
         ext = Path(file.filename).suffix if file.filename else ""
         filename = f"{uuid.uuid4().hex}{ext}"
         content = await file.read()
         url = await storage.save(content, filename)
         return {"url": url, "filename": filename}
+
+    @app.post("/api/n8n/dialog/resolve")
+    async def n8n_resolve_dialog(body: DialogResolveBody,
+                                 _: None = Depends(require_api_key)):
+        """Тикет клиента для воркфлоу n8n: находит открытый, а нет такого —
+        заводит. Идемпотентно: сколько угодно повторов дают тот же dialog_id.
+
+        Панель — единственный владелец диалога. n8n получает отсюда и номер
+        тикета, и флаг ИИ, и слаг сервиса с коллекцией Qdrant, поэтому своей
+        копии состояния (и шанса с ней разойтись) у него больше нет.
+        """
+        data = body.model_dump()
+        service = await resolve_service(db, data)
+        if not service:
+            raise HTTPException(404, "Сервис не опознан: проверьте "
+                                     "business_connection_id в карточке сервиса")
+        dialog = await db.resolve_open_dialog(
+            service, str(body.chat_id),
+            parse_ai_enabled(body.ai_enabled), user_info_from(data),
+        )
+        if dialog["is_new_dialog"]:
+            print(f"[resolve] новый тикет {dialog['dialog_id']} "
+                  f"({service['slug']}, chat_id={body.chat_id})")
+        return {
+            "dialog_id":         dialog["dialog_id"],
+            "ai_enabled":        dialog["ai_enabled"],
+            "status":            dialog["status"],
+            "is_new":            dialog["is_new_dialog"],
+            "service_slug":      service["slug"],
+            "qdrant_collection": service["qdrant_collection"],
+        }
 
     # ── Состояние серверов и ботов ────────────────────────────────────────────
 

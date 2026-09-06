@@ -308,118 +308,6 @@
           "name": "Telegram account"
         }
       }
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict",
-            "version": 1
-          },
-          "conditions": [
-            {
-              "id": "cond-dialog-closed",
-              "leftValue": "={{ $json.event }}",
-              "rightValue": "dialog_closed",
-              "operator": {
-                "type": "string",
-                "operation": "equals"
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "id": "c84d2f8d-61ac-46df-86fb-3a5f0fa2372a",
-      "name": "Закрытие диалога?1",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [
-        1296,
-        4656
-      ]
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "UPDATE n8n_dialogs SET status='closed' WHERE user_id=$1 AND service=$2",
-        "options": {
-          "queryReplacement": "={{ $json.chat_id }},={{ $json.service }}"
-        }
-      },
-      "id": "7a7dfafc-5ffd-4fbf-a9ea-4a3fba5a8a6b",
-      "name": "Закрыть диалог в n8n_dialogs1",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.5,
-      "position": [
-        1520,
-        4656
-      ],
-      "credentials": {
-        "postgres": {
-          "id": "5tWDSrTUFp4DiJlP",
-          "name": "Postgres account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict",
-            "version": 1
-          },
-          "conditions": [
-            {
-              "id": "cond-ai-toggled",
-              "leftValue": "={{ $json.event }}",
-              "rightValue": "ai_toggled",
-              "operator": {
-                "type": "string",
-                "operation": "equals"
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "id": "10d46c19-87d9-4164-9bc5-f1766bf5cffb",
-      "name": "ИИ переключён?1",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [
-        1344,
-        4832
-      ]
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "UPDATE n8n_dialogs SET ai_status=$1 WHERE user_id=$2 AND service=$3 AND status='active'",
-        "options": {
-          "queryReplacement": "={{ $json.ai_enabled }},={{ $json.chat_id }},={{ $json.service }}"
-        }
-      },
-      "id": "b9eef3ab-6495-483a-aa4d-b1758ce30288",
-      "name": "Обновить ai_status1",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.5,
-      "position": [
-        1568,
-        4864
-      ],
-      "credentials": {
-        "postgres": {
-          "id": "5tWDSrTUFp4DiJlP",
-          "name": "Postgres account"
-        }
-      }
     }
   ],
   "connections": {
@@ -475,16 +363,6 @@
         [
           {
             "node": "Форматировать уведомление",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Закрытие диалога?1",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "ИИ переключён?1",
             "type": "main",
             "index": 0
           }
@@ -547,28 +425,6 @@
         [
           {
             "node": "Отправить оператору",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Закрытие диалога?1": {
-      "main": [
-        [
-          {
-            "node": "Закрыть диалог в n8n_dialogs1",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "ИИ переключён?1": {
-      "main": [
-        [
-          {
-            "node": "Обновить ai_status1",
             "type": "main",
             "index": 0
           }

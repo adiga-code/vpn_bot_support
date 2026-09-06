@@ -7,6 +7,7 @@ import aio_pika.abc
 from app.ai_client import ChatClient
 from app.classifier import classify_message
 from app.database import DatabaseManager
+from app.dialogs import parse_ai_enabled, resolve_service, user_info_from
 from app.n8n_client import N8NClient
 from app.routing import RoutingEngine
 from app.serializers import fmt_dialog as _fmt_dialog, fmt_message as _fmt_message
@@ -77,69 +78,35 @@ class RabbitMQConsumer:
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 
-    async def _resolve_service(self, data: dict) -> dict | None:
-        """Сервис (ВПН) входящего события.
+    async def _dialog_for(self, data: dict, service: dict | None,
+                          prefer_open: bool = True) -> dict | None:
+        """Тикет, которому принадлежит событие.
 
-        Основной способ — `business_id`: Telegram присылает его с каждым
-        сообщением из аккаунта поддержки, к которому подключён бот, и в панели
-        он записан в карточке сервиса. Поэтому воркфлоу n8n один на всех и
-        ничего про сервисы не знает.
+        Личность диалога — пара (сервис, chat_id); `dialog_id` в событии лишь
+        подсказка. Если по нему тикет не нашёлся (n8n прислал устаревший номер,
+        событие пришло из старого воркфлоу), берём открытый тикет клиента, а не
+        заводим второй.
 
-        Дальше — `service` со слагом, как в старых воркфлоу; если нет и его,
-        событие относится к первому (мигрированному) сервису. Неизвестный
-        business_id или слаг — сообщение отбрасывается: свалить чужой тикет в
-        первый попавшийся ВПН хуже, чем не принять его вовсе.
+        `prefer_open=False` — для событий, которые относятся именно к тому
+        тикету, номер которого назван: оценка приходит на уже закрытый тикет,
+        и переносить её на следующее обращение клиента нельзя.
         """
-        business_id = str(data.get("business_id")
-                          or data.get("business_connection_id") or "").strip()
-        if business_id:
-            service = await self.db.get_service_by_business_id(business_id)
-            if not service:
-                print(f"[consumer] неизвестный business_id '{business_id}' — "
-                      f"событие отброшено; впишите его в карточку сервиса")
-            return service
-
-        slug = (data.get("service") or "").strip().lower()
-        if not slug:
-            services = await self.db.get_services()
-            return services[0] if services else None
-        service = await self.db.get_service_by_slug(slug)
-        if not service:
-            print(f"[consumer] неизвестный сервис '{slug}' — событие отброшено")
-        return service
-
-    @staticmethod
-    def _qualify(service: dict, dialog_id, chat_id=None) -> str:
-        """dialog_id из n8n → глобально уникальный ключ. Префикс разводит
-        идентификаторы независимых инстансов n8n, которые могут выдать
-        одинаковые номера; у мигрированного сервиса он пустой.
-
-        Если n8n прислал пустой или нулевой идентификатор — а так бывает, когда
-        колонка `n8n_dialogs.id` не автоинкрементная и каждая вставка получает
-        один и тот же ноль, — ключ строится от chat_id. Иначе все клиенты
-        сервиса слились бы в один тикет: `dialogs.dialog_id` первичный ключ, и
-        upsert перезаписал бы чужую строку вместе с chat_id.
-        """
-        prefix = service["dialog_id_prefix"]
-        raw = str(dialog_id if dialog_id is not None else "").strip()
-        try:
-            usable = bool(raw) and int(float(raw)) > 0
-        except ValueError:
-            usable = bool(raw)          # нечисловой, но непустой — доверяем n8n
-        if not usable:
-            if chat_id is None:
-                raise ValueError("dialog_id пустой, и chat_id не из чего взять")
-            print(f"[consumer] n8n прислал dialog_id={raw!r} — ключ построен от "
-                  f"chat_id; проверьте, что n8n_dialogs.id автоинкрементный")
-            raw = f"chat_{chat_id}"
-        return raw if not prefix or raw.startswith(prefix) else prefix + raw
+        dialog_id = str(data.get("dialog_id") or "").strip()
+        known = await self.db.get_dialog(dialog_id) if dialog_id else None
+        if known and (not prefer_open or known["status"] != "closed"):
+            return known
+        # Номера закрытого тикета мало: пока событие шло, клиент мог начать
+        # новое обращение — оно и есть текущее.
+        chat_id = str(data.get("chat_id") or "").strip()
+        open_dialog = await self.db.get_active_dialog_by_chat_id(
+            service["id"], chat_id) if service and chat_id else None
+        return open_dialog or known
 
     async def _handle_user_message(self, data: dict):
-        service = await self._resolve_service(data)
+        service = await resolve_service(self.db, data)
         if not service:
             return
         chat_id = str(data["chat_id"])
-        dialog_id = self._qualify(service, data.get("dialog_id"), chat_id)
         text = data.get("message", "")
         file_id = data.get("file_id")
         file_type = data.get("file_type", "text")
@@ -147,26 +114,15 @@ class RabbitMQConsumer:
         # n8n sometimes puts the uploaded URL into file_id instead of file_url
         if not file_url and file_id and str(file_id).startswith("http"):
             file_url, file_id = file_id, None
-        raw_ai = data.get("ai_enabled", True)
-        if isinstance(raw_ai, bool):
-            ai_enabled = raw_ai
-        elif isinstance(raw_ai, str):
-            ai_enabled = raw_ai.lower() not in ("false", "0", "inactive", "disabled", "no", "off")
-        else:
-            ai_enabled = bool(raw_ai)
+        ai_enabled = parse_ai_enabled(data.get("ai_enabled"))
         operator_called = bool(data.get("operator_called", False))
 
-        user_info = {k: data.get(k) for k in (
-            "user_name", "user_username", "user_plan", "user_sub_status",
-            "user_next_payment", "user_traffic_used", "user_traffic_total",
-            "user_last_payment_amount", "user_last_payment_date",
-            "user_photo_url",
-        )}
-
-        dialog_row = await self.db.upsert_dialog(
-            dialog_id, chat_id, service["id"], ai_enabled, user_info
+        # dialog_id из события не участвует: тикет ищется по (сервис, chat_id),
+        # поэтому чужой или устаревший номер не может завести второй тикет.
+        dialog_row = await self.db.resolve_open_dialog(
+            service, chat_id, ai_enabled, user_info_from(data), bump_unread=True
         )
-        is_new = dialog_row["is_new_dialog"]
+        dialog_id = dialog_row["dialog_id"]
 
         msg_row = await self.db.save_message(
             dialog_id,
@@ -177,18 +133,16 @@ class RabbitMQConsumer:
             file_url=file_url,
         )
         await self.db.update_last_message(dialog_id, text or f"[{file_type}]")
+        # «Новый тикет» для панели — это первое сообщение клиента в нём.
+        # Саму строку могла завести и ручка resolve, которую n8n дёргает
+        # раньше; уведомлять операторов надо всё равно один раз и с текстом.
+        is_new = await self.db.get_user_message_count(dialog_id) == 1
 
         if text and file_type == "text":
             asyncio.create_task(self._classify_later(msg_row["id"], text, service["id"]))
 
         if operator_called:
             await self.db.update_operator_called(dialog_id, True)
-
-        if is_new:
-            await self.db.sync_n8n_dialog_status(chat_id, "active", {
-                "service_slug": service["slug"],
-                "business_connection_id": service.get("business_connection_id") or "",
-            })
 
         updated = await self.db.get_dialog(dialog_id)
         username = updated.get("user_username") or dialog_id
@@ -250,18 +204,17 @@ class RabbitMQConsumer:
             print(f"[classifier] background error: {e}")
 
     async def _handle_ai_response(self, data: dict):
-        service = await self._resolve_service(data)
+        service = await resolve_service(self.db, data)
         if not service:
             return
-        # chat_id тот же, что и во входящем: ИИ-агент кладёт его в ai_response,
-        # поэтому при нулевом dialog_id ответ попадёт в тот же тикет.
-        dialog_id = self._qualify(service, data.get("dialog_id"), data.get("chat_id"))
         text = data.get("message", "")
 
-        dialog = await self.db.get_dialog(dialog_id)
+        dialog = await self._dialog_for(data, service)
         if not dialog:
-            print(f"AI response for unknown dialog: {dialog_id}")
+            print(f"[consumer] ответ ИИ не к чему привязать: "
+                  f"dialog_id={data.get('dialog_id')!r} chat_id={data.get('chat_id')!r}")
             return
+        dialog_id = dialog["dialog_id"]
 
         # The AI signals escalation with a [HANDOFF] marker at the start of its
         # reply; the marker is stripped before saving — clients never see it.
@@ -287,12 +240,19 @@ class RabbitMQConsumer:
 
     async def _handle_callback(self, data: dict):
         callback_data = data.get("callback_data", "")
+        service = await resolve_service(self.db, data)
+        if not service:
+            return
 
         if callback_data.startswith("call_op:"):
-            dialog_id = callback_data.split(":")[1]
-            dialog = await self.db.get_dialog(dialog_id)
+            # Кнопка помнит номер тикета на момент отправки; открытый тикет
+            # клиента — источник правды, если тот номер уже закрыт.
+            dialog = await self._dialog_for(
+                {**data, "dialog_id": callback_data.split(":", 1)[1]}, service
+            )
             if not dialog or dialog.get("operator_called"):
                 return
+            dialog_id = dialog["dialog_id"]
             # ai → full handoff; already-escalated → flag + re-notify operators
             op_name = await self.routing.on_operator_requested(dialog)
             if op_name:
@@ -303,7 +263,13 @@ class RabbitMQConsumer:
         elif callback_data.startswith("rate:"):
             parts = callback_data.split(":")
             if len(parts) == 3:
-                dialog_id, score = parts[1], parts[2]
+                score = parts[2]
+                # оценка принадлежит именно оценённому (уже закрытому) тикету
+                dialog = await self._dialog_for(
+                    {**data, "dialog_id": parts[1]}, service, prefer_open=False)
+                if not dialog:
+                    return
+                dialog_id = dialog["dialog_id"]
                 try:
                     await self.db.set_dialog_rating(dialog_id, int(score))
                     print(f"[callback] rating={score} for dialog={dialog_id}")
@@ -323,13 +289,14 @@ class RabbitMQConsumer:
 
     async def _handle_delivery_confirmation(self, data: dict):
         message_id = data.get("message_id")
-        dialog_id  = data.get("dialog_id")
         status     = data.get("status")
         error      = data.get("error")
         if not message_id or not status:
             return
         message_id = int(message_id)
-        dialog = await self.db.get_dialog(dialog_id) if dialog_id else None
+        # Подтверждение относится к конкретному отправленному сообщению —
+        # берём тикет по его номеру, даже если он уже закрыт.
+        dialog = await self._dialog_for(data, None, prefer_open=False)
 
         if status == "failed" and dialog:
             status, error = await self.try_fallback(dialog, message_id, error)
@@ -337,7 +304,7 @@ class RabbitMQConsumer:
         await self.db.update_message_delivery(message_id, status, error)
         await self.ws.broadcast({
             "type":       "message_status",
-            "dialog_id":  dialog_id,
+            "dialog_id":  dialog["dialog_id"] if dialog else data.get("dialog_id"),
             "message_id": message_id,
             "status":     status,
             "error":      error,

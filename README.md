@@ -871,15 +871,15 @@ WhiteList полностью и дословно.
 ```
 1. Пользователь пишет в Telegram
 2. n8n: Telegram Trigger получает webhook
-3. n8n: создаёт/находит диалог в n8n_dialogs (PostgreSQL)
+3. n8n: спрашивает панель, в какой тикет писать — POST /api/n8n/dialog/resolve
 4. n8n: если есть медиа — скачивает файл и загружает на наш сервер POST /api/n8n/upload
 5. n8n: LPUSH в Redis-очередь vpn_bot:incoming (JSON с типом user_message)
 6. Python: RabbitMQConsumer читает сообщение из очереди
-7. Python: upsert диалога и сохранение сообщения в БД
+7. Python: тикет по паре (сервис, chat_id) и сохранение сообщения в БД
 8. Python: WebSocket broadcast — все операторы видят новое сообщение
 9. Python: фоновая задача — классификация сообщения по категории
 10. Python: если новый диалог — PUBLISH в vpn_bot:notifications (уведомление операторов)
-11. Если ai_status=true для диалога → n8n вызывает AI Agent воркфлоу
+11. Если resolve вернул ai_enabled=true → n8n вызывает AI Agent воркфлоу
 ```
 
 ### Ответ оператора пользователю
@@ -937,13 +937,11 @@ cp .env.example .env
 Telegram Trigger
     │
     ▼
-Поиск диалогов пользователя
-  (SELECT FROM n8n_dialogs WHERE user_id AND status='active')
-    │
-    ├── [диалог найден] → If: проверяем $json.id exists
-    │       │ TRUE  → Получить диалог (SELECT BY id)
-    │       │ FALSE → Добавить диалог (INSERT в n8n_dialogs)
-    │                      └──► Получить диалог (SELECT BY id)
+Диалог: resolve
+  (POST {PANEL_URL}api/n8n/dialog/resolve, X-API-Key)
+  → dialog_id, ai_enabled, service_slug, qdrant_collection
+  Панель отдаёт открытый тикет клиента, а нет такого — заводит.
+  Идемпотентно: повтор запроса не создаёт второй тикет.
     │
     ▼
 Switch: тип медиа (sticker | photo | voice | video | text)
@@ -977,16 +975,13 @@ Switch: тип медиа (sticker | photo | voice | video | text)
 
     │ (все ветки сходятся)
     ▼
-Добавить сообщение в базу (INSERT INTO n8n_messages)
+Если ИИ включена для чата (ai_enabled из ответа resolve)
     │
-    ▼
-Если ИИ включена для чата (проверка ai_status из n8n_dialogs)
-    │
-    ├── [ai_status = true]
+    ├── [ai_enabled = true]
     │       Redis LPUSH vpn_bot:incoming (type=user_message, ai_enabled=true)
     │       Call 'AI Agent' воркфлоу
     │
-    └── [ai_status = false]
+    └── [ai_enabled = false]
             Redis LPUSH vpn_bot:incoming (type=user_message, ai_enabled=false)
 ```
 
@@ -1017,10 +1012,7 @@ Switch: тип медиа (sticker | photo | voice | video | text)
 Redis Trigger: SUBSCRIBE vpn_bot:ai_toggled
     │
     ▼
-To JSON1 → Получить диалог по ID1
-    │
-    ▼
-UPDATE n8n_dialogs SET ai_status = !ai_status WHERE id = dialog_id
+To JSON1
     │
     ▼
 Redis LPUSH vpn_bot:toggle:{dialog_id}: {"ai_enabled": true/false}
@@ -1041,7 +1033,7 @@ Redis LPUSH vpn_bot:toggle:{dialog_id}: {"ai_enabled": true/false}
 **`dialogs`** — одно обращение пользователя:
 
 ```
-dialog_id             TEXT PK   — уникальный ID из n8n
+dialog_id             TEXT PK   — «<префикс сервиса><chat_id>-<номер обращения>»
 chat_id               TEXT      — Telegram user ID
 status                TEXT      — new | in_progress | closed
 assigned_operator     TEXT      — имя назначенного оператора (NULL = в очереди)
@@ -1297,9 +1289,9 @@ self-hosted community его нет, и `$vars` молча даёт `undefined`.
 перезапускать n8n. Плата за простоту — значения лежат внутри воркфлоу и уедут
 с его экспортом.
 
-Слаг и коллекцию Qdrant воркфлоу достаёт нодой «Определить сервис» — один
-`SELECT … FROM services WHERE business_connection_id = …` в ту же базу, куда он
-уже ходит за `n8n_dialogs`.
+Слаг, коллекцию Qdrant, номер тикета и флаг ИИ воркфлоу получает одним ответом
+`/api/n8n/dialog/resolve`. Своей копии состояния диалога у n8n нет — значит, ей
+не с чем разойтись.
 
 ### Подключить новый ВПН
 
@@ -1322,28 +1314,31 @@ self-hosted community его нет, и `$vars` молча даёт `undefined`.
 - Значения `type` исходящих: `manager_message`, `send_to_user`,
   `operator_notify`.
 
-**Поле `service` обязательно.** Без него панель не знает, какому ВПН-у
-принадлежит событие, и сваливает всё в первый сервис — см.
-`_resolve_service` в `app/rabbitmq_consumer.py`.
+**Личность диалога — пара (сервис, `chat_id`), и владеет ею панель.**
+`dialog_id` в событиях — это то, что вернул `/api/n8n/dialog/resolve`; чужой или
+устаревший номер второй тикет не заведёт (`resolve_open_dialog` в
+`app/database.py` плюс уникальный индекс `dialogs_one_open_idx`). Сервис
+определяется по `business_id`, поле `service` со слагом — запасной путь для
+старых воркфлоу; см. `resolve_service` в `app/dialogs.py`.
 
 ### Грабли, на которые легко наступить
 
 - **Смешение токенов.** `getFile` возвращает `file_path`, действительный
   только для того же токена. Скачивать и отправлять надо одним ботом, иначе
   файлы приходят битыми или не приходят вовсе.
-- **`ai_enabled` из неверного поля.** В `n8n_dialogs` есть и `status`
-  (`active`/`closed`), и `ai_status` (boolean). Если отправить `status`,
-  панель получит строку `"active"`, посчитает её истиной, и выключенный
-  оператором ИИ включится обратно на следующем сообщении клиента.
+- **Флаг ИИ — только из resolve.** `ai_enabled` в ответе панели и есть
+  единственная правда. Хранить его копию на стороне n8n нельзя: именно
+  расхождение двух копий состояния и плодило дубли тикетов.
 - **Ключ настроек ИИ.** Панель пишет `vpn_bot:<slug>:ai_settings`. Старый
   глобальный `vpn_bot:ai_settings` больше не заполняется: воркфлоу молча
   уедет на дефолты с **пустым системным промптом**.
-- **Коллекция Qdrant.** У каждого ВПН-а своя; зашитая `kb` означает, что
-  второй сервис ищет по чужой базе знаний.
-- **`n8n_dialogs.service`.** Панель обновляет статус диалога и `ai_status`
-  с фильтром по `service` (`app/database.py`, `sync_n8n_dialog_status`).
-  Если колонка не заполнена при вставке, закрытие тикета и переключение ИИ
-  из панели до n8n не доходят.
+- **Коллекция Qdrant.** У каждого ВПН-а своя, и приходит она в
+  `qdrant_collection` из resolve. Зашитая в ноду строка означает, что второй
+  сервис ищет по чужой базе знаний.
+- **`from.id` вместо `chat.id`.** В business-чате это разные люди: `from.id`
+  автора сообщения (в том числе владельца аккаунта поддержки) и `chat.id`
+  клиента. Панель везде работает по `chat.id` — им же надо звать resolve и
+  отвечать пользователю.
 
 ### Подключение Postgres из n8n
 

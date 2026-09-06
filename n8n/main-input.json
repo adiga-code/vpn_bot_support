@@ -28,22 +28,25 @@
     },
     {
       "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT slug, qdrant_collection FROM services WHERE ($1 <> '' AND business_connection_id = $1) OR ($1 = '' AND is_active) ORDER BY sort_order, id LIMIT 1;",
-        "options": {
-          "queryReplacement": "={{ ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id || '' }}"
-        }
+        "method": "POST",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}api/n8n/dialog/resolve",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify((() => { const m = $('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message; return { chat_id: String(m.chat.id), business_id: m.business_connection_id || '', user_name: m.chat.first_name, user_username: m.chat.username }; })()) }}",
+        "options": {}
       },
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
-      "position": [-2384, 2160],
-      "id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
-      "name": "Определить сервис",
-      "alwaysOutputData": true,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-2048, 2064],
+      "id": "b1d0f0aa-0000-4000-9000-000000000001",
+      "name": "Диалог: resolve",
       "notesInFlow": true,
-      "notes": "Слаг и коллекция Qdrant по business_connection_id аккаунта поддержки. Благодаря этому новый ВПН заводится формой в панели, а воркфлоу и переменные окружения не трогают. Пустой business_connection_id (обычный чат с ботом) — берётся первый активный сервис, тем же порядком, что и в панели.",
-      "credentials": { "postgres": { "id": "5tWDSrTUFp4DiJlP", "name": "Postgres account" } },
-      "onError": "continueRegularOutput"
+      "notes": "Панель отвечает, в какой тикет писать: dialog_id, ai_enabled, слаг сервиса и коллекция Qdrant. Одного источника правды достаточно — расходиться нечему.",
+      "retryOnFail": true
     },
     {
       "parameters": {
@@ -95,7 +98,7 @@
       "parameters": {
         "queue": "vpn_bot.incoming",
         "sendInputData": false,
-        "message": "={{ JSON.stringify({ type: \"callback\", business_id: ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id, service: ($('Определить сервис').first().json.slug || ''), chat_id: String($('Telegram Trigger1').item.json.callback_query.from.id), callback_data: $('Telegram Trigger1').item.json.callback_query.data }) }}",
+        "message": "={{ JSON.stringify({ type: \"callback\", business_id: (($('Telegram Trigger1').item.json.callback_query || {}).message || {}).business_connection_id || '', chat_id: String($('Telegram Trigger1').item.json.callback_query.from.id), callback_data: $('Telegram Trigger1').item.json.callback_query.data }) }}",
         "options": {}
       },
       "type": "n8n-nodes-base.rabbitmq",
@@ -118,97 +121,6 @@
       "name": "Answer Query a callback1",
       "webhookId": "d9100fec-9b88-4cec-bddf-f44773acc245",
       "credentials": { "telegramApi": { "id": "drGmrRpP856vKvMY", "name": "Telegram account" } }
-    },
-    {
-      "parameters": {
-        "operation": "select",
-        "schema": { "__rl": true, "mode": "list", "value": "public" },
-        "table": { "__rl": true, "value": "n8n_dialogs", "mode": "list", "cachedResultName": "n8n_dialogs" },
-        "returnAll": true,
-        "where": {
-          "values": [
-            { "column": "user_id", "value": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).from.id }}" },
-            { "column": "status", "value": "active" },
-            { "column": "service", "value": "={{ ($('Определить сервис').first().json.slug || 'default') }}" }
-          ]
-        },
-        "sort": { "values": [{ "column": "id", "direction": "DESC" }] },
-        "options": { "outputColumns": ["*"] }
-      },
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
-      "position": [-2048, 2064],
-      "id": "d1518e48-2555-4b3c-be0b-0ef121d3f23f",
-      "name": "Поиск диалогов пользователя1",
-      "alwaysOutputData": true,
-      "credentials": { "postgres": { "id": "5tWDSrTUFp4DiJlP", "name": "Postgres account" } },
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
-          "conditions": [
-            {
-              "id": "04428706-abb9-442f-96bf-7f66c0d8d4d8",
-              "leftValue": "={{ $json.id }}",
-              "rightValue": "",
-              "operator": { "type": "string", "operation": "exists", "singleValue": true }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.3,
-      "position": [-1824, 2064],
-      "id": "2ac4a292-6235-4f68-a52d-ff6eacba8a72",
-      "name": "If3"
-    },
-    {
-      "parameters": {
-        "schema": { "__rl": true, "mode": "list", "value": "public" },
-        "table": { "__rl": true, "value": "n8n_dialogs", "mode": "list", "cachedResultName": "n8n_dialogs" },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "ai_status": true,
-            "username": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).from.username }}",
-            "user_id": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).from.id }}",
-            "created_at": "={{ $now }}",
-            "status": "active",
-            "service": "={{ ($('Определить сервис').first().json.slug || 'default') }}"
-          },
-          "matchingColumns": ["id"],
-          "schema": [],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": false
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
-      "position": [-1600, 2000],
-      "id": "22b66e88-4b3b-456f-b767-2750b62aad33",
-      "name": "Добавить диалог1",
-      "credentials": { "postgres": { "id": "5tWDSrTUFp4DiJlP", "name": "Postgres account" } }
-    },
-    {
-      "parameters": {
-        "operation": "select",
-        "schema": { "__rl": true, "mode": "list", "value": "public" },
-        "table": { "__rl": true, "value": "n8n_dialogs", "mode": "list", "cachedResultName": "n8n_dialogs" },
-        "returnAll": true,
-        "where": { "values": [{ "column": "id", "value": "={{ $json.id }}" }] },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
-      "position": [-1376, 2064],
-      "id": "0f1f1599-7246-49a1-9096-40715f0c374e",
-      "name": "Получить диалог1",
-      "credentials": { "postgres": { "id": "5tWDSrTUFp4DiJlP", "name": "Postgres account" } }
     },
     {
       "parameters": {
@@ -384,7 +296,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $('Константы').first().json.PANEL_URL }}/api/n8n/upload",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}api/n8n/upload",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
@@ -407,7 +319,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $('Константы').first().json.PANEL_URL }}/api/n8n/upload",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}api/n8n/upload",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
@@ -433,7 +345,7 @@
           "assignments": [
             { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "", "type": "string" },
             { "id": "79de50d1-902e-4f61-880d-cb735dd83cdf", "name": "file_id", "value": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).sticker.file_id }}", "type": "string" },
-            { "id": "0eeb5121-c3a3-4120-bed0-a882ae9ef32d", "name": "dialog_id", "value": "={{ $('Switch2').item.json.id }}", "type": "string" },
+            { "id": "0eeb5121-c3a3-4120-bed0-a882ae9ef32d", "name": "dialog_id", "value": "={{ $('Диалог: resolve').first().json.dialog_id }}", "type": "string" },
             { "id": "e2ed7b8b-21e7-4081-af0b-feec20eb3b8b", "name": "file_type", "value": "sticker", "type": "string" }
           ]
         },
@@ -451,7 +363,7 @@
           "assignments": [
             { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).caption }}", "type": "string" },
             { "id": "20eaa7bd-6977-4bed-a2ed-606f3b2edafd", "name": "file_id", "value": "={{ $json.url }}", "type": "string" },
-            { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $('Switch2').item.json.id }}", "type": "string" },
+            { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $('Диалог: resolve').first().json.dialog_id }}", "type": "string" },
             { "id": "e86e8b7b-110f-4431-801e-e3cb30efe38c", "name": "file_type", "value": "photo", "type": "string" }
           ]
         },
@@ -469,7 +381,7 @@
           "assignments": [
             { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "=", "type": "string" },
             { "id": "20eaa7bd-6977-4bed-a2ed-606f3b2edafd", "name": "file_id", "value": "={{ $json.url }}", "type": "string" },
-            { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $('Switch2').item.json.id }}", "type": "string" },
+            { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $('Диалог: resolve').first().json.dialog_id }}", "type": "string" },
             { "id": "1c621010-38bf-4b9e-a49d-9498242dccee", "name": "file_type", "value": "voice", "type": "string" }
           ]
         },
@@ -487,7 +399,7 @@
           "assignments": [
             { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "=", "type": "string" },
             { "id": "20eaa7bd-6977-4bed-a2ed-606f3b2edafd", "name": "file_id", "value": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}", "type": "string" },
-            { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $('Switch2').item.json.id }}", "type": "string" },
+            { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $('Диалог: resolve').first().json.dialog_id }}", "type": "string" },
             { "id": "1c621010-38bf-4b9e-a49d-9498242dccee", "name": "file_type", "value": "video", "type": "string" }
           ]
         },
@@ -519,42 +431,12 @@
     },
     {
       "parameters": {
-        "schema": { "__rl": true, "mode": "list", "value": "public" },
-        "table": { "__rl": true, "value": "n8n_messages", "mode": "list", "cachedResultName": "n8n_messages" },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "user_id": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).from.id }}",
-            "dialog_id": "={{ $json.dialog_id }}",
-            "message": "={{ $json.message }}",
-            "type": "user_message",
-            "created_at": "={{ $now }}",
-            "file_id": "={{ $json.file_id }}",
-            "file_type": "={{ $json.file_type }}",
-            "service": "={{ ($('Определить сервис').first().json.slug || 'default') }}"
-          },
-          "matchingColumns": ["id"],
-          "schema": [],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": false
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
-      "position": [-32, 2064],
-      "id": "bf7f308a-68dc-4ee1-8b8c-26265bb5cf01",
-      "name": "Добавить сообщение в базу1",
-      "credentials": { "postgres": { "id": "5tWDSrTUFp4DiJlP", "name": "Postgres account" } }
-    },
-    {
-      "parameters": {
         "conditions": {
           "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
           "conditions": [
             {
               "id": "89266625-2240-4114-945b-df7495e86706",
-              "leftValue": "={{ $('Получить диалог1').item.json.ai_status }}",
+              "leftValue": "={{ $('Диалог: resolve').first().json.ai_enabled }}",
               "rightValue": true,
               "operator": { "type": "boolean", "operation": "equals" }
             }
@@ -573,7 +455,7 @@
       "parameters": {
         "queue": "vpn_bot.incoming",
         "sendInputData": false,
-        "message": "={{ JSON.stringify({\n  \"type\": \"user_message\",\n  \"service\": ($('Определить сервис').first().json.slug || ''),\n  \"business_id\": ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id,\n  \"dialog_id\": $json.dialog_id.toString(),\n  \"chat_id\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id.toString(),\n  \"user_username\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.username,\n  \"user_name\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.first_name,\n  \"message\": $json.message,\n  \"ai_enabled\": $('Получить диалог1').item.json.ai_status,\n  \"file_id\": $json.file_id,\n  \"file_type\": $json.file_type\n}) }}",
+        "message": "={{ JSON.stringify({\n  \"type\": \"user_message\",\n  \"service\": $('Диалог: resolve').first().json.service_slug,\n  \"business_id\": ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id,\n  \"dialog_id\": $json.dialog_id.toString(),\n  \"chat_id\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id.toString(),\n  \"user_username\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.username,\n  \"user_name\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.first_name,\n  \"message\": $json.message,\n  \"ai_enabled\": $('Диалог: resolve').first().json.ai_enabled,\n  \"file_id\": $json.file_id,\n  \"file_type\": $json.file_type\n}) }}",
         "options": {}
       },
       "type": "n8n-nodes-base.rabbitmq",
@@ -585,7 +467,7 @@
     },
     {
       "parameters": {
-        "url": "={{ $('Константы').first().json.PANEL_URL }}/api/dialogs/{{ $('Если ИИ включена для чата1').item.json.dialog_id }}/has_photo",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}/api/dialogs/{{ $('Диалог: resolve').first().json.dialog_id }}/has_photo",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
@@ -623,7 +505,7 @@
     {
       "parameters": {
         "resource": "chat",
-        "chatId": "={{ $('Добавить сообщение в базу1').item.json.user_id }}"
+        "chatId": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}"
       },
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
@@ -692,7 +574,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $('Константы').first().json.PANEL_URL }}/api/dialogs/{{ $('Если ИИ включена для чата1').item.json.dialog_id }}/set_photo",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}/api/dialogs/{{ $('Диалог: resolve').first().json.dialog_id }}/set_photo",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
@@ -883,7 +765,7 @@
     {
       "parameters": {
         "operation": "push",
-        "list": "=mes:{{ ($('Определить сервис').first().json.slug || 'default') }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
+        "list": "=mes:{{ $('Диалог: resolve').first().json.service_slug }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
         "messageData": "={{ JSON.stringify({ id: ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).message_id, text: $json.prompt }) }}",
         "tail": true
       },
@@ -897,7 +779,7 @@
     {
       "parameters": {
         "operation": "incr",
-        "key": "=key:{{ ($('Определить сервис').first().json.slug || 'default') }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
+        "key": "=key:{{ $('Диалог: resolve').first().json.service_slug }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
         "expire": true
       },
       "type": "n8n-nodes-base.redis",
@@ -930,7 +812,7 @@
       "parameters": {
         "operation": "get",
         "propertyName": "keyafter",
-        "key": "=key:{{ ($('Определить сервис').first().json.slug || 'default') }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
+        "key": "=key:{{ $('Диалог: resolve').first().json.service_slug }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
         "options": {}
       },
       "type": "n8n-nodes-base.redis",
@@ -967,7 +849,7 @@
       "parameters": {
         "operation": "get",
         "propertyName": "messages",
-        "key": "=mes:{{ ($('Определить сервис').first().json.slug || 'default') }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
+        "key": "=mes:{{ $('Диалог: resolve').first().json.service_slug }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
         "options": {}
       },
       "type": "n8n-nodes-base.redis",
@@ -980,7 +862,7 @@
     {
       "parameters": {
         "operation": "delete",
-        "key": "=mes:{{ ($('Определить сервис').first().json.slug || 'default') }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}"
+        "key": "=mes:{{ $('Диалог: resolve').first().json.service_slug }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}"
       },
       "type": "n8n-nodes-base.redis",
       "typeVersion": 1,
@@ -1011,10 +893,10 @@
           "mappingMode": "defineBelow",
           "value": {
             "ai_enabled": true,
-            "service": "={{ ($('Определить сервис').first().json.slug || '') }}",
-            "qdrant_collection": "={{ $('Определить сервис').first().json.qdrant_collection || 'kb' }}",
-            "chat_id": "={{ $('Если ИИ включена для чата1').item.json.user_id }}",
-            "dialog_id": "={{ $('Если ИИ включена для чата1').item.json.dialog_id }}",
+            "service": "={{ $('Диалог: resolve').first().json.service_slug }}",
+            "qdrant_collection": "={{ $('Диалог: resolve').first().json.qdrant_collection }}",
+            "chat_id": "={{ String(($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id) }}",
+            "dialog_id": "={{ $('Диалог: resolve').first().json.dialog_id }}",
             "message": "={{ $json.message }}"
           },
           "matchingColumns": [],
@@ -1033,24 +915,15 @@
   ],
   "connections": {
     "Telegram Trigger1": { "main": [[{ "node": "Константы", "type": "main", "index": 0 }]] },
-    "Константы": { "main": [[{ "node": "Определить сервис", "type": "main", "index": 0 }]] },
-    "Определить сервис": { "main": [[{ "node": "Switch4", "type": "main", "index": 0 }]] },
+    "Константы": { "main": [[{ "node": "Switch4", "type": "main", "index": 0 }]] },
     "Switch4": {
       "main": [
         [{ "node": "Callback → панель", "type": "main", "index": 0 }],
-        [{ "node": "Поиск диалогов пользователя1", "type": "main", "index": 0 }]
+        [{ "node": "Диалог: resolve", "type": "main", "index": 0 }]
       ]
     },
     "Callback → панель": { "main": [[{ "node": "Answer Query a callback1", "type": "main", "index": 0 }]] },
-    "Поиск диалогов пользователя1": { "main": [[{ "node": "If3", "type": "main", "index": 0 }]] },
-    "If3": {
-      "main": [
-        [{ "node": "Получить диалог1", "type": "main", "index": 0 }],
-        [{ "node": "Добавить диалог1", "type": "main", "index": 0 }]
-      ]
-    },
-    "Добавить диалог1": { "main": [[{ "node": "Получить диалог1", "type": "main", "index": 0 }]] },
-    "Получить диалог1": { "main": [[{ "node": "Switch2", "type": "main", "index": 0 }]] },
+    "Диалог: resolve": { "main": [[{ "node": "Switch2", "type": "main", "index": 0 }]] },
     "Switch2": {
       "main": [
         [{ "node": "Стикер: getFile", "type": "main", "index": 0 }],
@@ -1069,14 +942,11 @@
     "Голос: скачать": { "main": [[{ "node": "Голос → панель", "type": "main", "index": 0 }]] },
     "Голос → панель": { "main": [[{ "node": "Edit Fields7", "type": "main", "index": 0 }]] },
     "Видео: getFile": { "main": [[{ "node": "Edit Fields9", "type": "main", "index": 0 }]] },
-    "Edit Fields5": { "main": [[{ "node": "Добавить сообщение в базу1", "type": "main", "index": 0 }]] },
-    "Edit Fields6": { "main": [[{ "node": "Добавить сообщение в базу1", "type": "main", "index": 0 }]] },
-    "Edit Fields7": { "main": [[{ "node": "Добавить сообщение в базу1", "type": "main", "index": 0 }]] },
-    "Edit Fields8": { "main": [[{ "node": "Добавить сообщение в базу1", "type": "main", "index": 0 }]] },
-    "Edit Fields9": { "main": [[{ "node": "Добавить сообщение в базу1", "type": "main", "index": 0 }]] },
-    "Добавить сообщение в базу1": {
-      "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]]
-    },
+    "Edit Fields5": { "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]] },
+    "Edit Fields6": { "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]] },
+    "Edit Fields7": { "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]] },
+    "Edit Fields8": { "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]] },
+    "Edit Fields9": { "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]] },
     "Если ИИ включена для чата1": {
       "main": [
         [
