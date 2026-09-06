@@ -13,6 +13,10 @@
       "base_url": "https://panel.example.com",
       "token":    "токен из /api/tokens",
       "timeout":  10,
+      // Нужен, только если панель стоит за прокси/WAF, требующим статическую
+      // куку помимо Bearer-токена — значение то же, что после "Cookie:" в
+      // рабочем curl-запросе (например "KYwqbysf=YpotzeuH"). Обычно не задан.
+      "cookie": "",
 
       // Чем фильтровать список пользователей по Telegram ID. Если ваша сборка
       // ждёт другое имя колонки — поменяйте здесь, поиск сразу заработает.
@@ -32,6 +36,7 @@
       "base_url": "https://panel.example.com",
       "token":    "токен из /api/tokens",
       "timeout":  10,
+      "cookie":   "",
       // Выше скольки % использованного трафика ноды считать «high».
       "load_warn_pct": 80
     }
@@ -89,11 +94,15 @@ def _id(value):
 # ── Транспорт (общий для CustomerProvider и HealthProvider) ─────────────────
 
 async def _rw_call(base_url: str, token: str, timeout: float, method: str, path: str,
-                   *, params=None, json=None):
+                   *, cookie: str = None, params=None, json=None):
     base = (base_url or "").rstrip("/")
     if not base:
         raise RuntimeError("Не указан base_url в настройке сервиса")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
+    # Некоторые панели стоят за прокси/WAF, который пропускает запрос только
+    # со статической кукой — без неё верный Bearer-токен всё равно даёт 403.
+    if cookie:
+        headers["Cookie"] = cookie
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as s:
         async with s.request(method, base + path, params=params, json=json,
                              headers=headers) as r:
@@ -121,11 +130,12 @@ async def _rw_call(base_url: str, token: str, timeout: float, method: str, path:
             return body
 
 
-async def check_connection(base_url: str, token: str, timeout: float = 10) -> dict:
+async def check_connection(base_url: str, token: str, cookie: str = None,
+                           timeout: float = 10) -> dict:
     """Быстрая проверка для формы подключения сервиса: версия панели и число
     нод. Ошибки не ловит — их разбирает вызывающая сторона (web_server)."""
-    meta = await _rw_call(base_url, token, timeout, "GET", "/api/system/metadata")
-    nodes = await _rw_call(base_url, token, timeout, "GET", "/api/nodes")
+    meta = await _rw_call(base_url, token, timeout, "GET", "/api/system/metadata", cookie=cookie)
+    nodes = await _rw_call(base_url, token, timeout, "GET", "/api/nodes", cookie=cookie)
     total = len(nodes) if isinstance(nodes, list) else 0
     return {"version": (meta or {}).get("version") or "", "nodesTotal": total}
 
@@ -138,7 +148,8 @@ class RemnawaveProvider(CustomerProvider):
     async def _request(self, method: str, path: str, *, params=None, json=None):
         timeout = float(self.config.get("timeout", 10))
         return await _rw_call(self.config.get("base_url") or "", self.config.get("token") or "",
-                              timeout, method, path, params=params, json=json)
+                              timeout, method, path, cookie=self.config.get("cookie") or None,
+                              params=params, json=json)
 
     # ── Пользователи ──────────────────────────────────────────────────────────
 
@@ -376,7 +387,8 @@ class RemnawaveServerProvider(HealthProvider):
     async def _nodes(self) -> list[dict]:
         timeout = float(self.config.get("timeout", 10))
         data = await _rw_call(self.config.get("base_url") or "", self.config.get("token") or "",
-                              timeout, "GET", "/api/nodes")
+                              timeout, "GET", "/api/nodes",
+                              cookie=self.config.get("cookie") or None)
         return [n for n in data if isinstance(n, dict)] if isinstance(data, list) else []
 
     async def check(self) -> list[ComponentStatus]:

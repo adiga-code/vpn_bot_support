@@ -997,6 +997,7 @@ function ServiceModal({ editing, onSave, onClose, showToast }) {
   const [check, setCheck] = useStateT(null);      // null | "…" | {ok, ...}
   const [rwUrl, setRwUrl] = useStateT(editing?.remnawaveBaseUrl || "");
   const [rwToken, setRwToken] = useStateT("");
+  const [rwCookie, setRwCookie] = useStateT("");
   const [rwCheck, setRwCheck] = useStateT(null);   // null | "…" | {ok, ...}
 
   // Слаг сам предлагается из названия, но остаётся редактируемым.
@@ -1024,13 +1025,14 @@ function ServiceModal({ editing, onSave, onClose, showToast }) {
     }
   }
 
-  // Токен Remnawave тоже лежит в customer.config — тот же приём, что и у
-  // Support API: пустое поле при правке значит «сервер, проверь сохранённый».
+  // Токен и кука Remnawave лежат в monitoring.servers.config — пустое поле
+  // при правке значит «сервер, проверь сохранённое».
   async function testRwConnection() {
     setRwCheck("…");
     try {
       const r = await window.apiFetch("POST", "/api/services/test-connection",
                                       { base_url: rwUrl.trim(), token: rwToken.trim(),
+                                        cookie: rwCookie.trim(),
                                         provider: "remnawave", service_id: editing?.id ?? null });
       setRwCheck(r);
     } catch (e) {
@@ -1048,6 +1050,7 @@ function ServiceModal({ editing, onSave, onClose, showToast }) {
       business_id: business.trim(),
       api_base_url: apiUrl.trim(), api_token: token.trim(),
       remnawave_base_url: rwUrl.trim(), remnawave_token: rwToken.trim(),
+      remnawave_cookie: rwCookie.trim(),
     });
   }
 
@@ -1129,6 +1132,20 @@ function ServiceModal({ editing, onSave, onClose, showToast }) {
               <input type="password" value={rwToken} onChange={(e) => { setRwToken(e.target.value); setRwCheck(null); }}
                 placeholder={editing && editing.hasRemnawaveToken ? "••••••••" : "токен из /api/tokens панели"}
                 className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">
+                Cookie <span className="text-[#3a3a4a]">— только если панель за прокси/WAF</span>
+                {editing && editing.hasRemnawaveCookie && !rwCookie &&
+                  <span className="text-[#22c55e]"> — сохранена, оставьте пустым, чтобы не менять</span>}
+              </label>
+              <input type="password" value={rwCookie} onChange={(e) => { setRwCookie(e.target.value); setRwCheck(null); }}
+                placeholder={editing && editing.hasRemnawaveCookie ? "••••••••" : "ИмяКуки=значение"}
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+              <div className="text-[10px] text-[#6b7280] mt-1">
+                Нужна, если сервер отдаёт 403 даже с верным токеном — значение то же,
+                что после «Cookie:» в рабочем curl-запросе.
+              </div>
             </div>
             <div>
               <button type="button" onClick={testRwConnection} disabled={!rwUrl.trim() || rwCheck === "…"}

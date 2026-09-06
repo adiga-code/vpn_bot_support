@@ -183,16 +183,20 @@ class ServiceBody(BaseModel):
     # Пустой api_token при правке означает «оставить прежний».
     api_base_url: str = ""
     api_token: str = ""
-    # Remnawave: та же панель отдаёт и профиль клиента, и состояние нод —
-    # одна пара полей сохраняется сразу в `customer` и в `monitoring.servers`.
-    # Пустой remnawave_token при правке означает «оставить прежний».
+    # Remnawave: только статистика серверов (monitoring.servers), с
+    # источником данных о клиенте не связано — см. _save_service_remnawave.
+    # Пустые remnawave_token/remnawave_cookie при правке — «оставить прежние».
     remnawave_base_url: str = ""
     remnawave_token: str = ""
+    # Нужен, только если панель за прокси/WAF, требующим статическую куку.
+    remnawave_cookie: str = ""
 
 
 class ApiCheckBody(BaseModel):
     base_url: str = ""
     token: str = ""
+    # Нужен только для remnawave за прокси/WAF, требующим статическую куку.
+    cookie: str = ""
     # bot_api — Support API этого ВПН-а, remnawave — панель Remnawave.
     provider: str = "bot_api"
     # Правка сохранённого сервиса: форма шлёт пустой токен, когда менять его не
@@ -1019,6 +1023,7 @@ def build_app(
             # когда в monitoring.servers выбран именно remnawave.
             "remnawaveBaseUrl": rw_cfg.get("base_url") or "" if rw_active else "",
             "hasRemnawaveToken": bool(rw_cfg.get("token")) if rw_active else False,
+            "hasRemnawaveCookie": bool(rw_cfg.get("cookie")) if rw_active else False,
             # Резервная отправка. app_hash и строка сессии — секреты и наружу не
             # уходят никогда, ровно как токен Support API.
             "fallbackEnabled": bool((fb or {}).get("enabled")),
@@ -1051,16 +1056,20 @@ def build_app(
         }, service_id)
         customers.invalidate(service_id)
 
-    async def _save_service_remnawave(service: dict, base_url: str, token: str) -> None:
+    async def _save_service_remnawave(service: dict, base_url: str, token: str,
+                                      cookie: str = "") -> None:
         """Remnawave-поля формы сервиса — ИСКЛЮЧИТЕЛЬНО источник статистики
         серверов на экране «Состояние» (`monitoring.servers`). С профилем
         клиента (`customer`, вкладки Профиль/Ключи в карточке) это никак не
         связано и переключать `customer.provider` эта функция не имеет права
         — источник данных о клиенте настраивается отдельно, в «Настройки →
-        Источник данных». Пустой токен при правке — «не трогать сохранённый»,
-        как и у Support API."""
+        Источник данных». Пустые токен/cookie при правке — «не трогать
+        сохранённые», как и у Support API. Cookie нужна, только если панель
+        стоит за прокси/WAF, требующим статический заголовок Cookie."""
         base_url = (base_url or "").strip().rstrip("/")
-        if not base_url and not token:
+        token = (token or "").strip()
+        cookie = (cookie or "").strip()
+        if not base_url and not token and not cookie:
             return
         service_id = service["id"]
 
@@ -1070,7 +1079,9 @@ def build_app(
         cfg_s = dict(servers_block.get("config") or {})
         cfg_s["base_url"] = base_url or cfg_s.get("base_url", "")
         if token:
-            cfg_s["token"] = token.strip()
+            cfg_s["token"] = token
+        if cookie:
+            cfg_s["cookie"] = cookie
         monitoring["servers"] = {"provider": "remnawave", "config": cfg_s}
         await db.set_setting_json("monitoring", monitoring, service_id)
 
@@ -1098,21 +1109,25 @@ def build_app(
         if not base_url:
             raise HTTPException(400, "Укажите адрес API")
         token = (body.token or "").strip()
-        if not token and body.service_id is not None:
-            # Токен наружу не отдаётся, поэтому форма правки шлёт его пустым:
-            # берём сохранённый оттуда же, куда его кладёт соответствующий
-            # _save_service_* — bot_api в customer.config, remnawave в
-            # monitoring.servers.config (это разные настройки, не путать).
+        cookie = (body.cookie or "").strip()
+        if body.service_id is not None and (not token or (body.provider == "remnawave" and not cookie)):
+            # Токен (и кука у remnawave) наружу не отдаются, поэтому форма
+            # правки шлёт их пустыми: берём сохранённые оттуда же, куда их
+            # кладёт соответствующий _save_service_* — bot_api в
+            # customer.config, remnawave в monitoring.servers.config (это
+            # разные настройки, не путать).
             if body.provider == "remnawave":
                 stored = await db.get_setting_json("monitoring", None, body.service_id) or {}
-                token = ((stored.get("servers") or {}).get("config") or {}).get("token") or ""
+                saved_cfg = (stored.get("servers") or {}).get("config") or {}
+                token = token or saved_cfg.get("token") or ""
+                cookie = cookie or saved_cfg.get("cookie") or ""
             else:
                 stored = await db.get_setting_json("customer", None, body.service_id) or {}
-                token = (stored.get("config") or {}).get("token") or ""
+                token = token or (stored.get("config") or {}).get("token") or ""
 
         if body.provider == "remnawave":
             try:
-                info = await _remnawave_check_connection(base_url, token)
+                info = await _remnawave_check_connection(base_url, token, cookie or None)
             except Exception as e:
                 return {"ok": False, "error": str(e)[:200]}
             return {"ok": True, "botName": f"Remnawave v{info['version']}" if info["version"] else "Remnawave",
@@ -1171,7 +1186,7 @@ def build_app(
             body.business_id,
         )
         await _save_service_api(service["id"], body.api_base_url, body.api_token)
-        await _save_service_remnawave(service, body.remnawave_base_url, body.remnawave_token)
+        await _save_service_remnawave(service, body.remnawave_base_url, body.remnawave_token, body.remnawave_cookie)
         # Пустая коллекция создаётся сразу — воркфлоу n8n сможет обращаться к
         # ней ещё до первой загрузки базы знаний.
         try:
@@ -1200,7 +1215,7 @@ def build_app(
         if not service:
             raise HTTPException(404)
         await _save_service_api(service_id, body.api_base_url, body.api_token)
-        await _save_service_remnawave(service, body.remnawave_base_url, body.remnawave_token)
+        await _save_service_remnawave(service, body.remnawave_base_url, body.remnawave_token, body.remnawave_cookie)
         await ws.broadcast({"type": "services_changed"})
         return _fmt_service(service, 0,
                             await db.get_setting_json("customer", None, service_id),
