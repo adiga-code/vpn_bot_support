@@ -40,6 +40,7 @@
 import aiohttp
 
 from app.health import BOTS, SERVERS, ComponentStatus, HealthProvider, register_provider
+from app.redact import redact
 
 # Как понимать статусы, которые пришли от вашей API. Слева — то, что может
 # прислать инфраструктура, справа — наши четыре состояния.
@@ -95,7 +96,7 @@ class _InfraProvider(HealthProvider):
                     payload = await r.json(content_type=None)
         except Exception as e:
             return [self.make(f"{self.kind}-unreachable", "infra-API недоступна", "unknown",
-                              message=str(e)[:200])]
+                              message=redact(e)[:200])]
 
         items = self._extract(payload)
         if not items:

@@ -583,12 +583,18 @@ class DatabaseManager:
         """slug, коллекция Qdrant и префикс dialog_id неизменяемы: они уже
         зашиты в воркфлоу n8n, в ключи Redis и в первичные ключи диалогов.
         business_connection_id, наоборот, меняется: аккаунт поддержки
-        переподключают к боту, и Telegram выдаёт новый id."""
+        переподключают к боту, и Telegram выдаёт новый id.
+
+        Пустые вебхук и business_id означают «оставить прежние», а не
+        «стереть»: наружу они отдаются только маской, поэтому форма правки
+        присылает их пустыми, когда менять не собираются — ровно как токен."""
         row = await self.pool.fetchrow(
-            """UPDATE services SET name=$1, color=$2, emoji=$3, n8n_webhook_url=$4, is_active=$5,
-                                   business_connection_id=$6
+            """UPDATE services SET name=$1, color=$2, emoji=$3,
+                   n8n_webhook_url        = COALESCE(NULLIF($4, ''), n8n_webhook_url),
+                   is_active              = $5,
+                   business_connection_id = COALESCE(NULLIF($6, ''), business_connection_id)
                WHERE id=$7 RETURNING *""",
-            name, color, emoji, n8n_webhook_url or "", is_active,
+            name, color, emoji, (n8n_webhook_url or "").strip(), is_active,
             (business_connection_id or "").strip(), service_id,
         )
         return dict(row) if row else None

@@ -14,6 +14,7 @@ from app.customer import (
     ACTIONS_BY_NAME, ActionResult, ActivityEvent, CustomerProfile, CustomerProvider,
     Device, KeyInfo, Payment, Referral, register_customer_provider,
 )
+from app.redact import redact
 
 
 def _iso(days: int) -> str:
@@ -285,7 +286,7 @@ class HttpCustomerProvider(CustomerProvider):
         try:
             body = await self._call(action, payload, **fmt)
         except Exception as e:
-            return ActionResult(ok=False, message=str(e)[:200])
+            return ActionResult(ok=False, message=redact(e)[:200])
         message = ""
         if isinstance(body, dict):
             message = body.get("message") or ""

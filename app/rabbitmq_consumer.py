@@ -8,6 +8,7 @@ from app.ai_client import ChatClient
 from app.classifier import classify_message
 from app.database import DatabaseManager
 from app.dialogs import parse_ai_enabled, resolve_service, user_info_from
+from app.media import internalize
 from app.n8n_client import N8NClient
 from app.routing import RoutingEngine
 from app.serializers import fmt_dialog as _fmt_dialog, fmt_message as _fmt_message
@@ -28,6 +29,8 @@ class RabbitMQConsumer:
         routing: RoutingEngine,
         chat_client: ChatClient | None = None,
         fallback=None,
+        storage=None,
+        settings=None,
     ):
         self._rmq = rmq
         self.db = db
@@ -38,6 +41,11 @@ class RabbitMQConsumer:
         # FallbackSenderService — резервный канал доставки; None означает, что
         # панель собрана без него.
         self.fallback = fallback
+        # Хранилище и настройки нужны, чтобы забрать вложение по чужой ссылке
+        # к себе: в ссылке от n8n может стоять токен бота, а её видит браузер
+        # оператора. Без них внешние ссылки просто отбрасываются.
+        self.storage = storage
+        self.settings = settings
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -78,6 +86,15 @@ class RabbitMQConsumer:
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 
+    async def _internal_url(self, url: str) -> str:
+        """Ссылка на своё хранилище вместо чужой. Панель собрана без хранилища
+        — внешняя ссылка отбрасывается, а не сохраняется как есть."""
+        if not url:
+            return url
+        if not self.storage or not self.settings:
+            return ""
+        return await internalize(url, self.storage, self.settings)
+
     async def _dialog_for(self, data: dict, service: dict | None,
                           prefer_open: bool = True) -> dict | None:
         """Тикет, которому принадлежит событие.
@@ -114,6 +131,9 @@ class RabbitMQConsumer:
         # n8n sometimes puts the uploaded URL into file_id instead of file_url
         if not file_url and file_id and str(file_id).startswith("http"):
             file_url, file_id = file_id, None
+        # Ссылка наружу до базы не доезжает: в ней может стоять токен бота, а
+        # её подставит в <img src> браузер оператора. Забираем файл к себе.
+        file_url = await self._internal_url(file_url)
         ai_enabled = parse_ai_enabled(data.get("ai_enabled"))
         operator_called = bool(data.get("operator_called", False))
 

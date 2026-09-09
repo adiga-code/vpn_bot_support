@@ -1,4 +1,6 @@
 import asyncio
+import io
+import sys
 
 import aio_pika
 import uvicorn
@@ -13,7 +15,9 @@ from app.fallback_sender import FallbackSenderService
 from app.health import ServiceHealthMonitor, load_plugins
 from app.n8n_client import N8NClient
 from app.rabbitmq_consumer import RabbitMQConsumer
+from app.redact import redact
 from app.routing import RoutingEngine
+from app.storage import make_storage
 from app.web_server import build_app
 from app.ws_manager import WebSocketManager
 
@@ -25,8 +29,44 @@ import app.infra  # noqa: F401
 import app.servers  # noqa: F401
 
 
+class _RedactingStream(io.TextIOBase):
+    """stdout/stderr, из которых вычищены адреса апстримов, токены и куки.
+
+    Точечно чистить каждый print бесполезно: адрес всё равно вылезет из
+    трейсбека aiohttp или из лога uvicorn. Обёртка ловит всё, что печатает
+    процесс, поэтому «а тут забыли» не остаётся.
+    """
+
+    def __init__(self, wrapped):
+        self._w = wrapped
+
+    def write(self, text: str) -> int:
+        self._w.write(redact(text))
+        return len(text)
+
+    def flush(self) -> None:
+        self._w.flush()
+
+    @property
+    def encoding(self) -> str:
+        return getattr(self._w, "encoding", "utf-8")
+
+    def isatty(self) -> bool:
+        return getattr(self._w, "isatty", lambda: False)()
+
+
+def _hide_upstreams_in_logs() -> None:
+    """Ставится до старта uvicorn: его обработчики логов захватывают потоки
+    один раз при создании, и обернуть их позже уже не выйдет."""
+    if not isinstance(sys.stdout, _RedactingStream):
+        sys.stdout = _RedactingStream(sys.stdout)
+    if not isinstance(sys.stderr, _RedactingStream):
+        sys.stderr = _RedactingStream(sys.stderr)
+
+
 async def main():
     # ── Bootstrap ─────────────────────────────────────────────────────────────
+    _hide_upstreams_in_logs()
     settings = Settings()
 
     db = DatabaseManager(settings)
@@ -97,7 +137,8 @@ async def main():
     chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
     routing = RoutingEngine(db, ws_manager, n8n_client)
     consumer = RabbitMQConsumer(rmq, db, ws_manager, n8n_client, routing, chat_client,
-                                fallback=fallback)
+                                fallback=fallback, storage=make_storage(settings),
+                                settings=settings)
     app = build_app(settings, db, ws_manager, n8n_client, routing, customers, health_monitor,
                     fallback=fallback)
 

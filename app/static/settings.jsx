@@ -663,10 +663,10 @@ function ServicesSection({ showToast, onChanged }) {
             <div className="mt-2 space-y-1 text-[11px]">
               <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">API</span>
                 <span className="font-mono text-[#d1d1d8] truncate">
-                  {s.apiBaseUrl || <span className="text-[#ef4444]">не задан</span>}</span></div>
+                  {s.hasApiBaseUrl ? s.apiBaseUrlMask : <span className="text-[#ef4444]">не задан</span>}</span></div>
               <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">business_id</span>
                 <span className="font-mono text-[#d1d1d8] truncate">
-                  {s.businessId || <span className="text-[#f59e0b]">не задан</span>}</span></div>
+                  {s.hasBusinessId ? s.businessIdMask : <span className="text-[#f59e0b]">не задан</span>}</span></div>
               <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">Слаг</span>
                 <span className="font-mono text-[#d1d1d8] truncate">{s.slug}</span></div>
               <div className="flex gap-2 items-center"><span className="text-[#6b7280] w-[86px] shrink-0">Статус</span>
@@ -706,10 +706,10 @@ function ServicesSection({ showToast, onChanged }) {
                   </div>
                 </td>
                 <td className="px-3 py-3 font-mono text-xs text-[#6b7280] max-w-[220px] truncate">
-                  {s.apiBaseUrl || <span className="text-[#ef4444]">не задан</span>}
+                  {s.hasApiBaseUrl ? s.apiBaseUrlMask : <span className="text-[#ef4444]">не задан</span>}
                 </td>
                 <td className="px-3 py-3 font-mono text-xs text-[#6b7280] max-w-[180px] truncate">
-                  {s.businessId || <span className="text-[#f59e0b]">не задан</span>}
+                  {s.hasBusinessId ? s.businessIdMask : <span className="text-[#f59e0b]">не задан</span>}
                 </td>
                 <td className="px-3 py-3 font-mono text-xs text-[#6b7280]">{s.slug}</td>
                 <td className="px-3 py-3">
@@ -779,7 +779,9 @@ function ServicesSection({ showToast, onChanged }) {
 function FallbackBlock({ service, showToast }) {
   const [appId, setAppId] = useStateT(service?.fallbackAppId ? String(service.fallbackAppId) : "");
   const [appHash, setAppHash] = useStateT("");
-  const [phone, setPhone] = useStateT(service?.fallbackPhone || "");
+  // fallbackPhone приходит маской («…0000»), а не номером: в поле её класть
+  // нельзя — уедет в send-code вместо телефона. Показываем подсказкой.
+  const [phone, setPhone] = useStateT("");
   const [code, setCode] = useStateT("");
   const [password, setPassword] = useStateT("");
   const [session, setSession] = useStateT("");
@@ -911,7 +913,8 @@ function FallbackBlock({ service, showToast }) {
             <div>
               <label className="block text-xs text-[#6b7280] mb-1.5">Телефон</label>
               <input value={phone} onChange={(e) => setPhone(e.target.value)}
-                placeholder="+79990000000" className={input + " font-mono text-xs"} />
+                placeholder={service?.fallbackPhone || "+79990000000"}
+                className={input + " font-mono text-xs"} />
             </div>
           </div>
           <div>
@@ -987,15 +990,18 @@ function ServiceModal({ editing, onSave, onClose, showToast }) {
   const [slug,  setSlug]  = useStateT(editing?.slug  || "");
   const [color, setColor] = useStateT(editing?.color || SERVICE_COLORS[0]);
   const [emoji, setEmoji] = useStateT(editing?.emoji || "");
-  const [hook,  setHook]  = useStateT(editing?.n8nWebhookUrl || "");
+  // Адреса, business_id и токены сервер наружу не отдаёт — только маску и
+  // флаг «задан». Поэтому поля правки открываются пустыми, а пустое поле при
+  // сохранении означает «оставить прежнее».
+  const [hook,  setHook]  = useStateT("");
   const [active, setActive] = useStateT(editing ? editing.isActive : true);
-  const [apiUrl, setApiUrl] = useStateT(editing?.apiBaseUrl || "");
+  const [apiUrl, setApiUrl] = useStateT("");
   const [token, setToken] = useStateT("");
-  const [business, setBusiness] = useStateT(editing?.businessId || "");
+  const [business, setBusiness] = useStateT("");
   const [more, setMore] = useStateT(false);
   const [fb, setFb] = useStateT(false);
   const [check, setCheck] = useStateT(null);      // null | "…" | {ok, ...}
-  const [rwUrl, setRwUrl] = useStateT(editing?.remnawaveBaseUrl || "");
+  const [rwUrl, setRwUrl] = useStateT("");
   const [rwToken, setRwToken] = useStateT("");
   const [rwCookie, setRwCookie] = useStateT("");
   const [rwCheck, setRwCheck] = useStateT(null);   // null | "…" | {ok, ...}
@@ -1069,9 +1075,11 @@ function ServiceModal({ editing, onSave, onClose, showToast }) {
           </div>
 
           <div>
-            <label className="block text-xs text-[#6b7280] mb-1.5">Адрес API бота</label>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Адрес API бота {editing && editing.hasApiBaseUrl && !apiUrl &&
+                <span className="text-[#22c55e]">— сохранён: {editing.apiBaseUrlMask}, оставьте пустым, чтобы не менять</span>}
+            </label>
             <input value={apiUrl} onChange={(e) => { setApiUrl(e.target.value); setCheck(null); }}
-              placeholder="https://host/nemoivpn/api/v1"
+              placeholder={editing && editing.hasApiBaseUrl ? editing.apiBaseUrlMask : "https://host/nemoivpn/api/v1"}
               className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
           </div>
 
@@ -1086,7 +1094,7 @@ function ServiceModal({ editing, onSave, onClose, showToast }) {
           </div>
 
           <div>
-            <button type="button" onClick={testConnection} disabled={!apiUrl.trim() || check === "…"}
+            <button type="button" onClick={testConnection} disabled={(!apiUrl.trim() && !editing?.hasApiBaseUrl) || check === "…"}
               className="px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40">
               {check === "…" ? "Проверяем…" : "Проверить подключение"}
             </button>
@@ -1104,9 +1112,11 @@ function ServiceModal({ editing, onSave, onClose, showToast }) {
           </div>
 
           <div>
-            <label className="block text-xs text-[#6b7280] mb-1.5">business_id</label>
+            <label className="block text-xs text-[#6b7280] mb-1.5">business_id {editing && editing.hasBusinessId && !business &&
+                <span className="text-[#22c55e]">— сохранён: {editing.businessIdMask}, оставьте пустым, чтобы не менять</span>}
+            </label>
             <input value={business} onChange={(e) => setBusiness(e.target.value)}
-              placeholder="business_connection_id аккаунта поддержки"
+              placeholder={editing && editing.hasBusinessId ? editing.businessIdMask : "business_connection_id аккаунта поддержки"}
               className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
             <div className="text-[10px] text-[#6b7280] mt-1">
               По нему панель узнаёт, чей это тикет. Приходит от Telegram, когда бот
@@ -1242,7 +1252,8 @@ function ServiceModal({ editing, onSave, onClose, showToast }) {
                 <label className="block text-xs text-[#6b7280] mb-1.5">
                   Вебхук n8n <span className="text-[#3a3a4a]">— пусто = общий</span>
                 </label>
-                <input value={hook} onChange={(e) => setHook(e.target.value)} placeholder="https://n8n.example.com/webhook/..."
+                <input value={hook} onChange={(e) => setHook(e.target.value)}
+                  placeholder={editing && editing.hasN8nWebhookUrl ? editing.n8nWebhookUrlMask : "https://n8n.example.com/webhook/..."}
                   className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
               </div>
             </div>

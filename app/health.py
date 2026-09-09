@@ -11,6 +11,7 @@
 """
 import asyncio
 import json
+from app.redact import redact
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -252,7 +253,7 @@ class ServiceHealthMonitor:
             print(f"[health] {service['slug']}/{kind} провайдер {name} упал: {e}")
             return [ComponentStatus(
                 id=f"{kind}-error", name="Ошибка опроса", kind=kind, status="unknown",
-                source=name, message=str(e)[:200], checked_at=_now_iso(),
+                source=name, message=redact(e)[:200], checked_at=_now_iso(),
             )]
 
     async def _notify_new_downs(self, service: dict, snapshot: dict):

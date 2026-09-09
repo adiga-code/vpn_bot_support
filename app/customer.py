@@ -16,6 +16,7 @@ import asyncio
 import contextvars
 import json
 import time
+from app.redact import redact
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -469,7 +470,7 @@ class CustomerProvider(ABC):
             # API («недостаточно средств», «ключ уже на этом сервере») — это
             # нормальный ответ оператору, а не сбой панели.
             print(f"[{self.source}] {action}: {e}")
-            return ActionResult(ok=False, message=str(e)[:200])
+            return ActionResult(ok=False, message=redact(e)[:200])
 
 
 def _coerce(spec: ActionSpec, params: dict) -> dict:
@@ -601,7 +602,7 @@ class CustomerService:
             profile = await provider.fetch(chat_id)
         except Exception as e:
             print(f"[customer] {service['slug']} провайдер {provider.source} упал: {e}")
-            return self._from_snapshot(dialog, f"{provider.source}: {str(e)[:200]}")
+            return self._from_snapshot(dialog, f"{provider.source}: {redact(e)[:200]}")
         profile.source = profile.source or provider.source
         profile.is_mock = profile.is_mock or provider.is_mock
         profile.fetched_at = profile.fetched_at or _now_iso()
@@ -654,7 +655,7 @@ class CustomerService:
                          "error": "источник не умеет отдавать историю действий"}]
         except Exception as e:
             print(f"[customer] activity {provider.source}: {e}")
-            return [], [{"name": provider.source, "ok": False, "error": str(e)[:200]}]
+            return [], [{"name": provider.source, "ok": False, "error": redact(e)[:200]}]
         # Провайдер может вернуть (события, отчёт) — тогда он сам знает, какие
         # его разделы не ответили.
         if isinstance(events, tuple):
@@ -677,10 +678,10 @@ class CustomerService:
         try:
             result = await provider.execute(action, chat_id, params, operator=operator)
         except ValueError as e:                      # не прошла валидация формы
-            return ActionResult(ok=False, message=str(e))
+            return ActionResult(ok=False, message=redact(e))
         except Exception as e:
             print(f"[customer] действие {action} упало: {e}")
-            return ActionResult(ok=False, message=str(e)[:200])
+            return ActionResult(ok=False, message=redact(e)[:200])
         if result.ok:
             # Данные изменились — следующий запрос должен идти в API.
             self._cache.pop((service["id"], chat_id), None)

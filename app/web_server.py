@@ -15,6 +15,8 @@ from app.config import Settings
 from app.database import DatabaseManager, validate_slug as _validate_slug
 from app.dialogs import parse_ai_enabled, resolve_service, user_info_from
 from app.kb import delete_from_qdrant, process_document
+from app.media import internalize
+from app.redact import mask_tail, mask_url, redact
 from app.routing import AUTOMATION_DEFAULTS as _AUTOMATION_DEFAULTS, RoutingEngine
 from app.serializers import (
     fmt_dialog as _fmt_dialog,
@@ -603,8 +605,12 @@ def build_app(
     @app.post("/api/dialogs/{dialog_id}/set_photo")
     async def set_photo(dialog_id: str, body: PhotoBody,
                         _: None = Depends(require_api_key)):
+        # Аватар приходит ссылкой на Bot API, а в такой ссылке стоит токен
+        # бота — и её открывает браузер оператора. Забираем картинку к себе и
+        # храним только свой адрес.
+        url = await internalize(body.url, storage, settings)
         await db.pool.execute(
-            "UPDATE dialogs SET user_photo_url=$1 WHERE dialog_id=$2", body.url, dialog_id
+            "UPDATE dialogs SET user_photo_url=$1 WHERE dialog_id=$2", url or None, dialog_id
         )
         updated = await db.get_dialog(dialog_id)
         if updated:
@@ -1040,6 +1046,15 @@ def build_app(
 
     def _fmt_service(s: dict, count: int = 0, api: dict = None, fb: dict = None,
                      mon: dict = None) -> dict:
+        """Карточка сервиса для фронта.
+
+        Адреса апстримов наружу не уходят — только флаг «задан» и маска вида
+        `https://…/api/v1`: по ней видно, что настройка на месте и куда в API
+        она смотрит, но не видно, на какой машине это API живёт. Правится
+        адрес так же, как токен: пустое поле формы означает «оставить
+        прежний». Без `api`/`fb`/`mon` (список для рядового оператора) в
+        ответе не остаётся и масок — там они не нужны.
+        """
         cfg = (api or {}).get("config") or {}
         fb_cfg = (fb or {}).get("config") or {}
         # Remnawave для мониторинга серверов — это monitoring.servers, отдельная
@@ -1047,32 +1062,43 @@ def build_app(
         rw_block = (mon or {}).get("servers") or {}
         rw_cfg = rw_block.get("config") or {}
         rw_active = rw_block.get("provider") == "remnawave"
-        return {
+        admin_view = api is not None or fb is not None or mon is not None
+        out = {
             "id": s["id"], "slug": s["slug"], "name": s["name"],
             "color": s["color"], "emoji": s.get("emoji"),
             "qdrantCollection": s["qdrant_collection"],
             "dialogIdPrefix": s["dialog_id_prefix"],
-            "n8nWebhookUrl": s.get("n8n_webhook_url") or "",
-            "businessId": s.get("business_connection_id") or "",
             "isActive": s["is_active"], "sortOrder": s["sort_order"],
             "activeCount": count,
-            # Токен наружу не отдаём никогда: форма показывает «сохранён» и
-            # отправляет пустое поле, если менять его не собираются.
-            "apiBaseUrl": cfg.get("base_url") or "",
+        }
+        if not admin_view:
+            return out
+        hook = s.get("n8n_webhook_url") or ""
+        business = s.get("business_connection_id") or ""
+        rw_url = (rw_cfg.get("base_url") or "") if rw_active else ""
+        out.update({
+            "hasN8nWebhookUrl": bool(hook),
+            "n8nWebhookUrlMask": mask_url(hook),
+            "hasBusinessId": bool(business),
+            "businessIdMask": mask_tail(business),
+            "hasApiBaseUrl": bool(cfg.get("base_url")),
+            "apiBaseUrlMask": mask_url(cfg.get("base_url") or ""),
             "hasApiToken": bool(cfg.get("token")),
             # Remnawave для статистики серверов (экран «Состояние») — только
             # когда в monitoring.servers выбран именно remnawave.
-            "remnawaveBaseUrl": rw_cfg.get("base_url") or "" if rw_active else "",
+            "hasRemnawaveBaseUrl": bool(rw_url),
+            "remnawaveBaseUrlMask": mask_url(rw_url),
             "hasRemnawaveToken": bool(rw_cfg.get("token")) if rw_active else False,
             "hasRemnawaveCookie": bool(rw_cfg.get("cookie")) if rw_active else False,
             # Резервная отправка. app_hash и строка сессии — секреты и наружу не
             # уходят никогда, ровно как токен Support API.
             "fallbackEnabled": bool((fb or {}).get("enabled")),
             "fallbackAppId": fb_cfg.get("app_id") or "",
-            "fallbackPhone": fb_cfg.get("phone") or "",
+            "fallbackPhone": mask_tail(str(fb_cfg.get("phone") or "")),
             "fallbackAccount": fb_cfg.get("account") or "",
             "hasFallbackSession": bool(fb_cfg.get("session")),
-        }
+        })
+        return out
 
     async def _save_service_api(service_id: int, base_url: str, token: str) -> None:
         """URL и токен Support API живут в настройке `customer` того же сервиса
@@ -1147,11 +1173,15 @@ def build_app(
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
         base_url = (body.base_url or "").strip().rstrip("/")
-        if not base_url:
-            raise HTTPException(400, "Укажите адрес API")
         token = (body.token or "").strip()
         cookie = (body.cookie or "").strip()
-        if body.service_id is not None and (not token or (body.provider == "remnawave" and not cookie)):
+        # Адрес наружу отдаётся маской, поэтому форма правки шлёт его пустым,
+        # когда менять не собираются — берём сохранённый оттуда же, откуда
+        # берём сохранённый токен, иначе «Проверить» падало бы на исправном
+        # сервисе.
+        if body.service_id is not None and (
+            not base_url or not token or (body.provider == "remnawave" and not cookie)
+        ):
             # Токен (и кука у remnawave) наружу не отдаются, поэтому форма
             # правки шлёт их пустыми: берём сохранённые оттуда же, куда их
             # кладёт соответствующий _save_service_* — bot_api в
@@ -1164,13 +1194,18 @@ def build_app(
                 cookie = cookie or saved_cfg.get("cookie") or ""
             else:
                 stored = await db.get_setting_json("customer", None, body.service_id) or {}
-                token = token or (stored.get("config") or {}).get("token") or ""
+                saved_cfg = (stored.get("config") or {})
+                token = token or saved_cfg.get("token") or ""
+            base_url = base_url or (saved_cfg.get("base_url") or "").rstrip("/")
+
+        if not base_url:
+            raise HTTPException(400, "Укажите адрес API")
 
         if body.provider == "remnawave":
             try:
                 info = await _remnawave_check_connection(base_url, token, cookie or None)
             except Exception as e:
-                return {"ok": False, "error": str(e)[:200]}
+                return {"ok": False, "error": redact(e)[:200]}
             return {"ok": True, "botName": f"Remnawave v{info['version']}" if info["version"] else "Remnawave",
                     "scopes": [f"{info['nodesTotal']} нод"]}
 
@@ -1181,7 +1216,7 @@ def build_app(
         try:
             meta = await provider.meta()
         except Exception as e:
-            return {"ok": False, "error": str(e)[:200]}
+            return {"ok": False, "error": redact(e)[:200]}
         return {"ok": True, "botId": meta.get("bot_id") or "",
                 "botName": meta.get("bot_name") or "",
                 "scopes": meta.get("scopes") or []}
@@ -1307,7 +1342,7 @@ def build_app(
             return await fallback.send_code(service_id, body.app_id, body.app_hash,
                                             body.phone.strip())
         except Exception as e:
-            raise HTTPException(400, str(e)[:200])
+            raise HTTPException(400, redact(e)[:200])
 
     @app.post("/api/services/{service_id}/fallback/sign-in")
     async def fallback_sign_in(service_id: int, body: FallbackCodeBody,
@@ -1316,7 +1351,7 @@ def build_app(
         try:
             return await fallback.sign_in(service_id, body.code.strip(), body.password)
         except Exception as e:
-            raise HTTPException(400, str(e)[:200])
+            raise HTTPException(400, redact(e)[:200])
 
     @app.post("/api/services/{service_id}/fallback/session")
     async def fallback_set_session(service_id: int, body: FallbackSessionBody,

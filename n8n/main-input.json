@@ -398,7 +398,7 @@
         "assignments": {
           "assignments": [
             { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "=", "type": "string" },
-            { "id": "20eaa7bd-6977-4bed-a2ed-606f3b2edafd", "name": "file_id", "value": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}", "type": "string" },
+            { "id": "20eaa7bd-6977-4bed-a2ed-606f3b2edafd", "name": "file_id", "value": "={{ $json.url }}", "type": "string" },
             { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $('Диалог: resolve').first().json.dialog_id }}", "type": "string" },
             { "id": "1c621010-38bf-4b9e-a49d-9498242dccee", "name": "file_type", "value": "video", "type": "string" }
           ]
@@ -553,12 +553,78 @@
     },
     {
       "parameters": {
+        "url": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-256, 2352],
+      "id": "b1d0f0aa-0000-4000-9000-000000000002",
+      "name": "Видео: скачать"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}api/n8n/upload",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [{ "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" }]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-32, 2352],
+      "id": "b1d0f0aa-0000-4000-9000-000000000003",
+      "name": "Видео → панель",
+      "notesInFlow": true,
+      "notes": "Ссылка на Bot API содержит токен бота, а её открывает браузер оператора. Поэтому файл кладём в своё хранилище, как это давно сделано у фото и голоса."
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1648, 1968],
+      "id": "b1d0f0aa-0000-4000-9000-000000000004",
+      "name": "Аватар: скачать"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}api/n8n/upload",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [{ "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" }]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1872, 1968],
+      "id": "b1d0f0aa-0000-4000-9000-000000000005",
+      "name": "Аватар: загрузить"
+    },
+    {
+      "parameters": {
         "assignments": {
           "assignments": [
             {
               "id": "6050c05c-a8f8-476e-a663-cc749984b475",
               "name": "photo_url",
-              "value": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
+              "value": "={{ $json.url }}",
               "type": "string"
             }
           ]
@@ -941,7 +1007,9 @@
     "Голос: getFile": { "main": [[{ "node": "Голос: скачать", "type": "main", "index": 0 }]] },
     "Голос: скачать": { "main": [[{ "node": "Голос → панель", "type": "main", "index": 0 }]] },
     "Голос → панель": { "main": [[{ "node": "Edit Fields7", "type": "main", "index": 0 }]] },
-    "Видео: getFile": { "main": [[{ "node": "Edit Fields9", "type": "main", "index": 0 }]] },
+    "Видео: getFile": { "main": [[{ "node": "Видео: скачать", "type": "main", "index": 0 }]] },
+    "Видео: скачать": { "main": [[{ "node": "Видео → панель", "type": "main", "index": 0 }]] },
+    "Видео → панель": { "main": [[{ "node": "Edit Fields9", "type": "main", "index": 0 }]] },
     "Edit Fields5": { "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]] },
     "Edit Fields6": { "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]] },
     "Edit Fields7": { "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]] },
@@ -961,7 +1029,9 @@
     "If4": { "main": [[], [{ "node": "Get a chat1", "type": "main", "index": 0 }]] },
     "Get a chat1": { "main": [[{ "node": "Filter1", "type": "main", "index": 0 }]] },
     "Filter1": { "main": [[{ "node": "Get a file1", "type": "main", "index": 0 }]] },
-    "Get a file1": { "main": [[{ "node": "Валидация1", "type": "main", "index": 0 }]] },
+    "Get a file1": { "main": [[{ "node": "Аватар: скачать", "type": "main", "index": 0 }]] },
+    "Аватар: скачать": { "main": [[{ "node": "Аватар: загрузить", "type": "main", "index": 0 }]] },
+    "Аватар: загрузить": { "main": [[{ "node": "Валидация1", "type": "main", "index": 0 }]] },
     "Валидация1": { "main": [[{ "node": "Аватар → панель", "type": "main", "index": 0 }]] },
     "Switch3": {
       "main": [

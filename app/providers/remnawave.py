@@ -58,6 +58,7 @@ from app.customer import (
     register_customer_provider,
 )
 from app.health import SERVERS, ComponentStatus, HealthProvider, register_provider
+from app.redact import redact
 
 GB = 1024 ** 3
 
@@ -395,7 +396,7 @@ class RemnawaveServerProvider(HealthProvider):
         try:
             nodes = await self._nodes()
         except Exception as e:
-            return [self.make("nodes-error", "Ошибка опроса Remnawave", "unknown", message=str(e)[:200])]
+            return [self.make("nodes-error", "Ошибка опроса Remnawave", "unknown", message=redact(e)[:200])]
         if not nodes:
             return [self.make("no-nodes", "Ноды не найдены", "unknown",
                               message="В Remnawave не заведено ни одной ноды")]

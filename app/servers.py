@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import aiohttp
 
 from app.health import SERVERS, ComponentStatus, HealthProvider, register_provider
+from app.redact import redact
 
 
 @dataclass
@@ -99,7 +100,7 @@ class TcpServerProvider(_ServerProvider):
                              location=server.location, metrics={"ping": ping_ms})
         except (asyncio.TimeoutError, OSError) as e:
             return self.make(_sid(server), server.name, "down",
-                             location=server.location, message=str(e)[:200] or "нет соединения")
+                             location=server.location, message=redact(e)[:200] or "нет соединения")
 
 
 class HttpServerProvider(_ServerProvider):
@@ -138,7 +139,7 @@ class HttpServerProvider(_ServerProvider):
                     )
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             return self.make(_sid(server), server.name, "down",
-                             location=server.location, message=str(e)[:200] or "недоступен")
+                             location=server.location, message=redact(e)[:200] or "недоступен")
 
 
 # ── Мок ───────────────────────────────────────────────────────────────────────

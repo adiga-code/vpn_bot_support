@@ -26,6 +26,8 @@ import time
 
 import aiohttp
 
+from app.redact import redact
+
 FALLBACK_DEFAULTS = {"enabled": False, "config": {}}
 
 # Незавершённые авторизации живут в памяти процесса: между «отправить код» и
@@ -116,7 +118,7 @@ class TelethonSender:
         except ImportError as e:
             return False, _install_hint(e)
         except Exception as e:
-            return False, str(e)[:200]
+            return False, redact(e)[:200]
 
         try:
             peer = int(str(chat_id).strip())
@@ -144,7 +146,7 @@ class TelethonSender:
             # Сессия могла протухнуть между вызовами — следующий заход
             # переподключится с нуля.
             await self.close()
-            return False, str(e)[:200]
+            return False, redact(e)[:200]
         return True, f"доставлено с аккаунта {self.account or 'поддержки'}"
 
     @staticmethod
@@ -316,7 +318,7 @@ class FallbackSenderService:
         except ImportError as e:
             return {"ok": False, "error": _install_hint(e)}
         except Exception as e:
-            return {"ok": False, "error": str(e)[:200]}
+            return {"ok": False, "error": redact(e)[:200]}
         finally:
             await sender.close()
 
