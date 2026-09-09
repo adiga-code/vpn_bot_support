@@ -12,13 +12,21 @@ class Settings(BaseSettings):
 
     # ── n8n webhook для исходящих событий ────────────────────────────────────
     # Если задан — исходящие события (manager_message / send_to_user /
-    # operator_notify / billing_action) отправляются POST-ом на этот Webhook
+    # operator_notify) отправляются POST-ом на этот Webhook
     # вместо очереди RabbitMQ vpn_bot.outgoing, например:
     #   N8N_WEBHOOK_URL=https://n8n.example.com/webhook/vpn-bot-outgoing
     # RabbitMQ остаётся резервным каналом: если вебхук недоступен после
     # ретраев, сообщение публикуется в очередь как раньше.
     # Запрос несёт заголовок X-API-Key: N8N_API_KEY (если N8N_API_KEY задан).
     N8N_WEBHOOK_URL: str = ""
+
+    # ── Сервис по умолчанию (мультитенантность) ───────────────────────────────
+    # При первом запуске создаётся один ВПН-сервис, и все существующие диалоги,
+    # статьи БЗ, шаблоны и настройки переносятся на него. Slug используется в
+    # ключах Redis, payload-е для n8n и имени коллекции Qdrant у новых сервисов;
+    # у этого, мигрированного, коллекция остаётся прежней — "kb".
+    DEFAULT_SERVICE_SLUG: str = "gruvpn"
+    DEFAULT_SERVICE_NAME: str = "GruVPN"
 
     # ── PostgreSQL ────────────────────────────────────────────────────────────
     POSTGRES_HOST: str = "postgres"
@@ -69,15 +77,14 @@ class Settings(BaseSettings):
     CHAT_PROVIDER: str = "openai"
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
-    # Модель для чанкинга базы знаний, классификации сообщений и сводок диалогов.
-    # Пусто = дефолт провайдера (openai: gpt-4o-mini, gemini: gemini-2.0-flash).
-    CHAT_MODEL: str = ""
 
     # ── Qdrant ────────────────────────────────────────────────────────────────
     QDRANT_URL: str = "http://qdrant:6333"
 
-    # ── Billing API ───────────────────────────────────────────────────────────
-    # Leave empty to fall back to StubBillingProvider
+    # ── Прежний биллинг (устарело) ────────────────────────────────────────────
+    # Читается один раз при первом запуске и переносится в пер-сервисную
+    # настройку `customer` (см. app/customer.py и README). Новые установки
+    # задают источник в «Настройки → Клиенты», а не здесь.
     BILLING_API_URL: str = ""
     BILLING_API_TOKEN: str = ""
 

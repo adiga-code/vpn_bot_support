@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Хелпдеск · VPN Support</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -10,6 +10,11 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
     html, body, #root { height: 100%; margin: 0; }
+    /* 100dvh — чтобы композер не уезжал под клавиатуру мобильного браузера */
+    @supports (height: 100dvh) {
+      html, body, #root { height: 100dvh; }
+    }
+    * { -webkit-tap-highlight-color: transparent; }
     body {
       font-family: 'Inter', system-ui, -apple-system, sans-serif;
       background: #0d0d12;
@@ -27,6 +32,19 @@
       to   { opacity: 1; transform: translateY(0); }
     }
     input[type=range] { height: 4px; }
+    /* Тост: на десктопе в углу, на телефоне — над нижней навигацией */
+    .hd-toast { position: fixed; z-index: 70; bottom: 1.5rem; right: 1.5rem; }
+    @media (max-width: 699.98px) {
+      .hd-toast {
+        right: auto; left: 50%; transform: translateX(-50%);
+        bottom: calc(78px + env(safe-area-inset-bottom)); max-width: 84vw;
+      }
+    }
+    .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+    .no-scrollbar::-webkit-scrollbar { width: 0; height: 0; }
+    @media (prefers-reduced-motion: reduce) {
+      * { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    }
   </style>
   <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
@@ -221,11 +239,13 @@
     function TopBar({ screen, setScreen, activeName, notifCount, onNotifClick, notifOpen, onProfileClick, profileOpen, onCloseMenus, currentOperator, onLogout, onTogglePause, notifItems, onNotifItemClick, onDismissAll }) {
       const screens = [
         { id: "dialogs",  label: "Диалоги",    icon: "chat"     },
+        { id: "health",   label: "Состояние",  icon: "server"   },
         { id: "stats",    label: "Статистика", icon: "chart"    },
         { id: "settings", label: "Настройки",  icon: "settings" },
       ];
       const breadcrumbMap = {
         dialogs:  ["Диалоги", activeName ? "@" + activeName : null],
+        health:   ["Состояние"],
         stats:    ["Статистика"],
         settings: ["Настройки"],
       };
@@ -237,13 +257,18 @@
       const opTg       = currentOperator?.tg       || "";
 
       return (
+        <>
+        {/* Горизонтальное переполнение шапки давим адресно — сжимаются и
+            обрезаются хлебные крошки. Общий overflow-hidden здесь уже стоял и
+            срезал выпадающие панели по высоте шапки; они вынесены наружу, но
+            возвращать его всё равно не нужно. */}
         <header className="h-[56px] shrink-0 bg-[#13131a] border-b border-[#2a2a3a] flex items-center px-3 gap-2 relative z-30">
-          <div className="flex items-center gap-2 pr-3 mr-1 border-r border-[#2a2a3a]">
+          <div className="shrink-0 flex items-center gap-2 pr-3 mr-1 border-r border-[#2a2a3a]">
             <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#4F8EF7] to-[#A855F7] flex items-center justify-center text-white text-xs font-bold">Х</div>
             <div className="font-semibold text-[#f1f1f5]">Хелпдеск</div>
           </div>
 
-          <nav className="flex items-center gap-0.5">
+          <nav className="shrink-0 flex items-center gap-0.5">
             {screens.filter(s => s.id !== "stats" || currentOperator?.role === "admin").map((s) => (
               <button
                 key={s.id}
@@ -261,11 +286,14 @@
             ))}
           </nav>
 
-          <div className="flex items-center gap-2 ml-4 text-sm">
+          {/* Длинное имя диалога не должно распирать шапку — крошки сжимаются
+              и обрезаются, остальное в шапке остаётся на месте. */}
+          <div className="hidden xl:flex items-center gap-2 ml-4 text-sm min-w-0 overflow-hidden">
             {crumbs.map((c, i) => (
               <React.Fragment key={i}>
-                {i > 0 && <Icon name="chevronRight" className="w-3 h-3 text-[#6b7280]" />}
-                <span className={i === crumbs.length - 1 ? "text-[#f1f1f5]" : "text-[#6b7280]"}>{c}</span>
+                {i > 0 && <Icon name="chevronRight" className="w-3 h-3 text-[#6b7280] shrink-0" />}
+                <span className={"truncate " +
+                  (i === crumbs.length - 1 ? "text-[#f1f1f5]" : "text-[#6b7280] shrink-0")}>{c}</span>
               </React.Fragment>
             ))}
           </div>
@@ -275,6 +303,7 @@
           <div className="flex items-center gap-2">
             <button
               onClick={onNotifClick}
+              aria-label="Уведомления"
               className="relative p-2 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded-lg transition"
             >
               <Icon name="bell" className="w-5 h-5" />
@@ -287,13 +316,14 @@
 
             <button
               onClick={onProfileClick}
+              aria-label="Меню профиля"
               className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg hover:bg-[#1a1a24] transition"
             >
               <div className="relative">
                 <Avatar initials={opInitials} color={opColor} size={28} />
                 <span className={"absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#13131a] " + (currentOperator?.paused ? "bg-[#eab308]" : "bg-[#22c55e]")}></span>
               </div>
-              <div className="text-left">
+              <div className="text-left hidden lg:block">
                 <div className="text-xs font-medium text-[#f1f1f5] leading-tight">{opName}</div>
                 <div className={"flex items-center gap-1 text-[10px] " + (currentOperator?.paused ? "text-[#eab308]" : "text-[#22c55e]")}>
                   <span className={"w-1 h-1 rounded-full " + (currentOperator?.paused ? "bg-[#eab308]" : "bg-[#22c55e]")}></span>
@@ -303,11 +333,15 @@
               <Icon name="chevronDown" className="w-3.5 h-3.5 text-[#6b7280]" />
             </button>
           </div>
+        </header>
 
-          {notifOpen && (
+        {/* Панели живут рядом с шапкой, а не внутри неё: иначе её высота и
+            слой (z-30) обрезают и прижимают их. Позиция — fixed от верха окна,
+            под шапкой ровно на её высоту. */}
+        {notifOpen && (
             <>
               <div className="fixed inset-0 z-40" onClick={onCloseMenus}></div>
-              <div className="absolute top-[52px] right-[80px] w-[340px] bg-[#13131a] border border-[#2a2a3a] rounded-xl shadow-2xl z-50 overflow-hidden">
+              <div className="fixed top-[60px] right-3 w-[340px] max-w-[calc(100vw-1.5rem)] bg-[#13131a] border border-[#2a2a3a] rounded-xl shadow-2xl z-50 overflow-hidden">
                 <div className="px-4 py-3 border-b border-[#2a2a3a] flex items-center justify-between">
                   <div className="font-medium text-sm text-[#f1f1f5]">Уведомления</div>
                   {(notifItems || []).length > 0 && (
@@ -336,7 +370,7 @@
           {profileOpen && (
             <>
               <div className="fixed inset-0 z-40" onClick={onCloseMenus}></div>
-              <div className="absolute top-[52px] right-3 w-[220px] bg-[#13131a] border border-[#2a2a3a] rounded-xl shadow-2xl z-50 overflow-hidden py-1">
+              <div className="fixed top-[60px] right-3 w-[220px] bg-[#13131a] border border-[#2a2a3a] rounded-xl shadow-2xl z-50 overflow-hidden py-1">
                 <div className="px-4 py-3 border-b border-[#2a2a3a]">
                   <div className="text-sm font-medium text-[#f1f1f5]">{opName}</div>
                   <div className="text-[10px] text-[#6b7280] font-mono">{opTg}</div>
@@ -368,7 +402,72 @@
               </div>
             </>
           )}
-        </header>
+        </>
+      );
+    }
+
+    // ── Мобильные шторки шапки ────────────────────────────────────────────────
+    // На телефоне колокольчик и меню профиля не помещаются в шапку экрана
+    // рядом с названием — их содержимое открывается шторкой снизу.
+
+    function NotificationsSheet({ open, onClose, items, onItemClick, onDismissAll }) {
+      return (
+        <BottomSheet open={open} onClose={onClose} title="Уведомления"
+                     subtitle={items.length ? `${items.length} вызов${items.length === 1 ? "" : "а"}` : null}>
+          {items.length === 0 ? (
+            <div className="px-5 py-10 text-center text-sm text-[#6b7280]">Нет новых уведомлений</div>
+          ) : (
+            <>
+              {items.map((c) => (
+                <button key={c.id} onClick={() => onItemClick(c.id)}
+                        className="w-[calc(100%-16px)] mx-2 min-h-[56px] px-3.5 py-3 rounded-xl flex items-center gap-3 text-left active:bg-[#1a1a24]">
+                  <span className="w-9 h-9 shrink-0 rounded-full bg-[#ef4444]/15 text-[#ef4444] flex items-center justify-center">
+                    <Icon name="bellRing" className="w-4 h-4" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm text-[#f1f1f5] truncate">{c.name}</span>
+                    <span className="block text-[11px] text-[#6b7280] truncate">{c.username} · вызвал оператора</span>
+                  </span>
+                </button>
+              ))}
+              <button onClick={onDismissAll}
+                      className="w-[calc(100%-16px)] mx-2 mt-1 min-h-[48px] rounded-xl text-sm font-medium text-[#7BA8F9] active:bg-[#1a1a24]">
+                Прочитать все
+              </button>
+            </>
+          )}
+        </BottomSheet>
+      );
+    }
+
+    function ProfileSheet({ open, onClose, operator, onOpenSettings, onTogglePause, onLogout }) {
+      const row = "w-full min-h-[56px] px-[18px] flex items-center gap-3 text-[14.5px] text-left border-b border-[#2a2a3a]/50 last:border-0 active:bg-[#1a1a24]";
+      return (
+        <BottomSheet open={open} onClose={onClose}>
+          <div className="px-[18px] pb-4 flex items-center gap-3">
+            <Avatar initials={operator?.initials || "??"} color={operator?.color || "#4F8EF7"} size={48} />
+            <div className="min-w-0">
+              <div className="text-[17px] font-semibold text-[#f1f1f5] truncate">{operator?.name || "Оператор"}</div>
+              <div className="text-xs text-[#6b7280] font-mono">{operator?.tg}</div>
+            </div>
+            <span className={"ml-auto shrink-0 text-[10px] px-2 py-1 rounded font-medium " +
+              (operator?.role === "admin" ? "bg-[#4F8EF7]/20 text-[#7BA8F9]" : "bg-[#2a2a3a] text-[#6b7280]")}>
+              {operator?.role === "admin" ? "Админ" : "Агент"}
+            </span>
+          </div>
+          <button className={row + " text-[#f1f1f5]"} onClick={onOpenSettings}>
+            <Icon name="user" className="w-[19px] h-[19px] text-[#9095a3]" />
+            Настройки профиля
+          </button>
+          <button className={row + (operator?.paused ? " text-[#eab308]" : " text-[#f1f1f5]")} onClick={onTogglePause}>
+            <Icon name="pause" className={"w-[19px] h-[19px] " + (operator?.paused ? "text-[#eab308]" : "text-[#9095a3]")} />
+            {operator?.paused ? "Снять паузу" : "Поставить на паузу"}
+          </button>
+          <button className={row + " text-[#f87171]"} onClick={onLogout}>
+            <Icon name="logout" className="w-[19px] h-[19px] text-[#f87171]" />
+            Выйти
+          </button>
+        </BottomSheet>
       );
     }
 
@@ -382,12 +481,52 @@
       const [screen, setScreenRaw] = useState(() => localStorage.getItem("screen") || "dialogs");
       const setScreen = (s) => { localStorage.setItem("screen", s); setScreenRaw(s); };
       const [conversations,   setConversations]   = useState([]);
+
+      // ── ВПН-сервисы ─────────────────────────────────────────────────────
+      // currentServiceId === null — режим «Все сервисы»: диалоги всех
+      // доступных ВПН-ов в одном списке. Настройкам режим «все» не подходит,
+      // поэтому они работают с settingsServiceId (последний конкретный).
+      const [services,        setServices]        = useState([]);
+      const [currentServiceId, setCurrentServiceIdRaw] = useState(() => {
+        const saved = localStorage.getItem("hd_service");
+        return saved && saved !== "all" ? Number(saved) : null;
+      });
+      const [aiPromptPreview, setAiPromptPreview] = useState("");
+      // Папки-ярлыки выбранного ВПН-а. В режиме «Все сервисы» их не показываем:
+      // они пер-сервисные, и одноимённые папки двух ВПН-ов слились бы в одну.
+      const [folders, setFolders] = useState([]);
+
+      const activeKey = (sid) => "hd_active:" + (sid === null ? "all" : sid);
       const [activeId,        setActiveIdRaw]     = useState(null);
-      const setActiveId = (id) => { id ? localStorage.setItem("hd_active", id) : localStorage.removeItem("hd_active"); setActiveIdRaw(id); };
+      const setActiveId = (id) => {
+        const k = activeKey(currentServiceIdRef.current);
+        id ? localStorage.setItem(k, id) : localStorage.removeItem(k);
+        setActiveIdRaw(id);
+      };
+      const currentServiceIdRef = useRef(currentServiceId);
+      useEffect(() => { currentServiceIdRef.current = currentServiceId; }, [currentServiceId]);
+      // Обработчик WebSocket создаётся один раз и замыкает старые значения —
+      // сервис для папок он читает через ref, как и текущий сервис.
+      const foldersServiceIdRef = useRef(null);
+
+      const activeService = currentServiceId === null
+        ? null
+        : services.find((s) => s.id === currentServiceId) || null;
+      // Конкретный сервис для настроек: в режиме «Все» — первый доступный.
+      const settingsServiceId = currentServiceId ?? (services[0]?.id ?? null);
+      // Папки пер-сервисные: в режиме «Все сервисы» одноимённые папки двух
+      // ВПН-ов в одном ряду читались бы как одна, поэтому там их не показываем.
+      // Но когда сервис всего один, «Все» и есть этот сервис — прятать нечего,
+      // а переключателя, чтобы выбрать его явно, в такой установке просто нет.
+      const foldersServiceId = currentServiceId ?? (services.length === 1 ? services[0].id : null);
       const [opsState,        setOpsState]        = useState([]);
       const [dataLoading,     setDataLoading]     = useState(false);
       const [notifOpen,       setNotifOpen]       = useState(false);
       const [profileOpen,     setProfileOpen]     = useState(false);
+      const viewport = useViewport();
+      // Телефон: пока открыта переписка, нижняя навигация уступает место
+      // клавиатуре и композеру.
+      const [mobileChatOpen, setMobileChatOpen] = useState(false);
       const [toast,           setToast]           = useState(null); // {msg, type}
       const [soundsConfig,    setSoundsConfig]    = useState({});
       const [soundEnabled,    setSoundEnabled]    = useState(true);
@@ -460,14 +599,51 @@
 
       // ── Load app data once authenticated ──────────────────────────────────
 
+      // Список сервисов и счётчики — отдельно от диалогов: они не зависят от
+      // выбранной пилюли и обновляются по WS-событиям.
+      const loadServices = React.useCallback(async () => {
+        try {
+          const list = await apiGet("/api/services");
+          setServices(list);
+          // Доступ к текущему сервису могли отобрать — уводим на первый доступный.
+          setCurrentServiceIdRaw((prev) =>
+            prev !== null && !list.some((s) => s.id === prev) ? (list[0]?.id ?? null) : prev
+          );
+          return list;
+        } catch { return []; }
+      }, []);
+
+      const loadFolders = React.useCallback(async (sid) => {
+        if (sid === null || sid === undefined) { setFolders([]); return; }
+        try { setFolders(await apiGet(`/api/folders?service_id=${sid}`)); }
+        catch { setFolders([]); }
+      }, []);
+
+      const selectService = (sid) => {
+        if (sid === currentServiceId) return;
+        localStorage.setItem("hd_service", sid === null ? "all" : String(sid));
+        currentServiceIdRef.current = sid;
+        // Диалоги другого сервиса — другой набор: сбрасываем список и кэши
+        // подгруженных сообщений, иначе в ленте останутся чужие тикеты.
+        loadedRef.current = new Set();
+        ticketsLoadedRef.current = new Set();
+        setConversations([]);
+        setActiveIdRaw(null);
+        setCurrentServiceIdRaw(sid);
+      };
+
       useEffect(() => {
         if (authState !== "app") return;
         setDataLoading(true);
+        const dialogsPath = currentServiceId === null
+          ? "/api/dialogs"
+          : `/api/dialogs?service_id=${currentServiceId}`;
         Promise.all([
-          apiGet("/api/dialogs"),
+          apiGet(dialogsPath),
           apiGet("/api/operators").catch(() => []),
           apiGet("/api/settings/sounds").catch(() => ({})),
           apiGet("/api/operators/me/notifications").catch(() => ({})),
+          loadServices(),
         ]).then(async ([dialogs, operators, sounds, notifPrefs]) => {
           const sc = sounds || {};
           const se = notifPrefs?.sound_enabled !== false;
@@ -478,9 +654,12 @@
           const withMessages = dialogs.map((d) => ({ ...d, messages: [], tickets: [] }));
           setConversations(withMessages);
           const pendingId = pendingDialogRef.current;
-          const savedId   = localStorage.getItem("hd_active");
-          const targetId  = pendingId || savedId;
+          const savedId   = localStorage.getItem(activeKey(currentServiceId));
+          // На телефоне экран открывается списком: сам собой тикет не
+          // выбирается, только по ссылке ?dialog= — она и означает «открой его».
+          const targetId  = viewport.isMobile ? pendingId : (pendingId || savedId);
           if (pendingId) pendingDialogRef.current = null;
+          if (viewport.isMobile && !targetId) { setOpsState(operators || []); return; }
           if (targetId) {
             const found = withMessages.find((d) => d.id === targetId);
             if (found) {
@@ -506,7 +685,24 @@
           setOpsState(operators || []);
         }).catch((e) => console.error("Failed to load initial data:", e))
           .finally(() => setDataLoading(false));
-      }, [authState]);
+      }, [authState, currentServiceId]);
+
+      useEffect(() => {
+        foldersServiceIdRef.current = foldersServiceId;
+        if (authState !== "app") return;
+        loadFolders(foldersServiceId);
+      }, [authState, foldersServiceId, loadFolders]);
+
+      // Превью промпта ИИ для контекстной полосы под пилюлями.
+      useEffect(() => {
+        if (authState !== "app" || settingsServiceId === null) { setAiPromptPreview(""); return; }
+        apiGet(`/api/settings/ai?service_id=${settingsServiceId}`)
+          .then((ai) => {
+            const p = (ai?.prompt || "").replace(/\s+/g, " ").trim();
+            setAiPromptPreview(p.length > 60 ? p.slice(0, 60) + "…" : p);
+          })
+          .catch(() => setAiPromptPreview(""));
+      }, [authState, settingsServiceId]);
 
       // ── WebSocket ─────────────────────────────────────────────────────────
 
@@ -530,7 +726,8 @@
             // initial GET snapshot and this socket opening (a slow GET can
             // even overwrite an already-received broadcast) — re-sync once,
             // keeping locally loaded messages.
-            apiGet("/api/dialogs").then((fresh) => {
+            const sid = currentServiceIdRef.current;
+            apiGet(sid === null ? "/api/dialogs" : `/api/dialogs?service_id=${sid}`).then((fresh) => {
               setConversations((prev) => fresh.map((d) => {
                 const old = prev.find((c) => c.id === d.id);
                 return { ...d, messages: old?.messages || [], tickets: old?.tickets || [] };
@@ -569,6 +766,10 @@
                 })
               );
             } else if (data.type === "new_dialog") {
+              // В режиме одного сервиса чужие тикеты в список не добавляем:
+              // сервер шлёт события по всем доступным ВПН-ам.
+              const sid = currentServiceIdRef.current;
+              if (sid !== null && data.dialog.serviceId !== sid) return;
               setConversations((prev) => {
                 const exists = prev.some((c) => c.id === data.dialog.id);
                 if (exists) {
@@ -580,6 +781,19 @@
                 }
                 return [{ ...data.dialog, messages: [], tickets: [] }, ...prev];
               });
+            } else if (data.type === "service_counts") {
+              setServices((prev) => prev.map((s) =>
+                data.counts[String(s.id)] === undefined
+                  ? s
+                  : { ...s, activeCount: data.counts[String(s.id)] }
+              ));
+            } else if (data.type === "folders_changed") {
+              // Админ завёл, переименовал или удалил папку — ряд разделов у всех
+              // должен обновиться, не дожидаясь перезагрузки вкладки.
+              loadFolders(foldersServiceIdRef.current);
+            } else if (data.type === "services_changed") {
+              // Список сервисов или флаги доступа изменились админом.
+              loadServices();
             } else if (data.type === "message_status") {
               setConversations((prev) => prev.map((c) => {
                 if (c.id !== data.dialog_id) return c;
@@ -594,7 +808,10 @@
               }));
             } else if (data.type === "operator_status") {
               setOpsState((prev) =>
-                prev.map((o) => o.id === data.op_id ? { ...o, online: data.online, paused: data.paused ?? o.paused } : o)
+                prev.map((o) => o.id === data.op_id
+                  ? { ...o, online: data.online, paused: data.paused ?? o.paused,
+                      lastSeen: data.last_seen ?? o.lastSeen }
+                  : o)
               );
               setCurrentOperator((prev) =>
                 prev && prev.id === data.op_id ? { ...prev, paused: data.paused ?? prev.paused } : prev
@@ -621,7 +838,7 @@
           clearInterval(pingInterval);
           if (wsRef.current) wsRef.current.close();
         };
-      }, [authState]);
+      }, [authState, loadServices, loadFolders]);
 
       // ── Lazy-load messages + history ──────────────────────────────────────
 
@@ -750,17 +967,6 @@
         }
       }
 
-      async function handleBillingAction(dialog_id, action, params) {
-        try {
-          await apiPost(`/api/dialogs/${dialog_id}/billing/${action}`, params || {});
-          const labels = { renew: "Подписка продлена", buy_traffic: "Трафик докуплен", reset_key: "Ключ сброшен" };
-          showToast(labels[action] || "Готово");
-        } catch (e) {
-          console.error("Billing action failed:", e);
-          showToast("Ошибка выполнения действия");
-        }
-      }
-
       // ── Render ────────────────────────────────────────────────────────────
 
       if (authState === "loading") {
@@ -806,25 +1012,49 @@
         );
       }
 
+      // На телефоне верхняя навигация и ряд пилюль заменяются шапкой экрана,
+      // лентой сервисов и нижней навигацией. Шапку и ленту рисует сам экран —
+      // ему виднее, нужна ли кнопка «назад» и лента вообще (в переписке её нет).
+      const mobileChrome = viewport.isMobile ? {
+        services,
+        currentServiceId,
+        onSelectService: selectService,
+        bellBadge: notifCount,
+        onBell:    () => { setNotifOpen(true); setProfileOpen(false); },
+        onProfile: () => { setProfileOpen(true); setNotifOpen(false); },
+        operator:  currentOperator,
+      } : null;
+
       return (
         <div className="h-full flex flex-col">
-          <TopBar
-            screen={screen}
-            setScreen={setScreen}
-            activeName={screen === "dialogs" && active ? active.username?.replace("@", "") : null}
-            notifCount={notifCount}
-            onNotifClick={() => { setNotifOpen((v) => !v); setProfileOpen(false); }}
-            notifOpen={notifOpen}
-            onProfileClick={() => { setProfileOpen((v) => !v); setNotifOpen(false); }}
-            profileOpen={profileOpen}
-            onCloseMenus={() => { setNotifOpen(false); setProfileOpen(false); }}
-            currentOperator={currentOperator}
-            onLogout={handleLogout}
-            onTogglePause={handleTogglePause}
-            notifItems={notifItems}
-            onNotifItemClick={handleNotifItemClick}
-            onDismissAll={handleDismissAll}
-          />
+          {!viewport.isMobile && (
+            <TopBar
+              screen={screen}
+              setScreen={setScreen}
+              activeName={screen === "dialogs" && active ? active.username?.replace("@", "") : null}
+              notifCount={notifCount}
+              onNotifClick={() => { setNotifOpen((v) => !v); setProfileOpen(false); }}
+              notifOpen={notifOpen}
+              onProfileClick={() => { setProfileOpen((v) => !v); setNotifOpen(false); }}
+              profileOpen={profileOpen}
+              onCloseMenus={() => { setNotifOpen(false); setProfileOpen(false); }}
+              currentOperator={currentOperator}
+              onLogout={handleLogout}
+              onTogglePause={handleTogglePause}
+              notifItems={notifItems}
+              onNotifItemClick={handleNotifItemClick}
+              onDismissAll={handleDismissAll}
+            />
+          )}
+          {!viewport.isMobile && (
+            <ServiceSwitcher
+              services={services}
+              currentServiceId={currentServiceId}
+              onSelect={selectService}
+              activeService={activeService}
+              aiPromptPreview={aiPromptPreview}
+            />
+          )}
           <main className="flex-1 min-h-0">
             <div className={"h-full " + (screen !== "dialogs" ? "hidden" : "")}>
               <DialogsScreen
@@ -839,19 +1069,55 @@
                 onHandoff={handleHandoff}
                 onReopen={handleReopen}
                 onWait={handleWait}
-                onBillingAction={handleBillingAction}
                 currentOperator={currentOperator}
                 operators={opsState}
-                servers={[]}
+                showServiceTag={currentServiceId === null}
+                serviceId={foldersServiceId}
+                folders={folders}
+                viewport={viewport}
+                mobileChrome={mobileChrome}
+                onMobileChatOpen={setMobileChatOpen}
               />
             </div>
+            <div className={"h-full " + (screen !== "health" ? "hidden" : "")}>
+              {/* Ключ по сервису — при переключении ВПН-а экран перезапрашивает
+                  состояние, а не показывает данные предыдущего. */}
+              <HealthScreen key={currentServiceId ?? "all"} serviceId={currentServiceId}
+                            currentOperator={currentOperator} mobileChrome={mobileChrome} />
+            </div>
             <div className={"h-full " + (screen !== "stats" ? "hidden" : "")}>
-              <StatisticsScreen />
+              <StatisticsScreen serviceId={currentServiceId} mobileChrome={mobileChrome} />
             </div>
             <div className={"h-full " + (screen !== "settings" ? "hidden" : "")}>
-              <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast} currentOperator={currentOperator} />
+              <SettingsScreen operators={opsState} setOperators={setOpsState} showToast={showToast}
+                              currentOperator={currentOperator}
+                              services={services} serviceId={settingsServiceId}
+                              onServicesChanged={loadServices} mobileChrome={mobileChrome} />
             </div>
           </main>
+          {viewport.isMobile && !(screen === "dialogs" && mobileChatOpen) && (
+            <MobileNav screen={screen} setScreen={setScreen} badge={notifCount}
+                       isAdmin={currentOperator?.role === "admin"} />
+          )}
+          {viewport.isMobile && (
+            <>
+              <NotificationsSheet
+                open={notifOpen}
+                onClose={() => setNotifOpen(false)}
+                items={notifItems}
+                onItemClick={handleNotifItemClick}
+                onDismissAll={handleDismissAll}
+              />
+              <ProfileSheet
+                open={profileOpen}
+                onClose={() => setProfileOpen(false)}
+                operator={currentOperator}
+                onOpenSettings={() => { setProfileOpen(false); setScreen("settings"); }}
+                onTogglePause={() => { setProfileOpen(false); handleTogglePause(); }}
+                onLogout={() => { setProfileOpen(false); handleLogout(); }}
+              />
+            </>
+          )}
           <Toast msg={toast?.msg ?? toast} type={toast?.type} />
         </div>
       );

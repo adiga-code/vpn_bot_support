@@ -1,17 +1,24 @@
+"""Провайдеры состояния VPN-серверов.
+
+Реализуют контракт app.health.HealthProvider и регистрируются внизу файла.
+Какой из них работает у конкретного ВПН-а — задаётся в пер-сервисной настройке
+`monitoring.servers.provider`.
+
+    mock  — случайные данные (по умолчанию, пока нет реального источника)
+    tcp   — доступность через TCP-соединение
+    http  — health-эндпоинт, отдающий JSON с load/uptime
+"""
 import asyncio
+import hashlib
 import random
 import time
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Callable, Literal, Optional
 
 import aiohttp
 
-StatusType = Literal["ok", "high", "down", "unknown"]
+from app.health import SERVERS, ComponentStatus, HealthProvider, register_provider
+from app.redact import redact
 
-
-# ── Data types ────────────────────────────────────────────────────────────────
 
 @dataclass
 class ServerInfo:
@@ -22,94 +29,64 @@ class ServerInfo:
     load_warn_pct: float = 80   # load above this threshold → status "high"
 
 
-@dataclass
-class ServerResult:
-    name: str
-    status: StatusType
-    location: str = ""
-    ping: float | None = None   # ms
-    load: float | None = None   # %
-    uptime: float | None = None  # %
+def parse_servers(raw: list[dict]) -> list[ServerInfo]:
+    return [
+        ServerInfo(
+            name=s["name"],
+            host=s.get("host", ""),
+            location=s.get("location", ""),
+            port=int(s.get("port", 443)),
+            load_warn_pct=float(s.get("load_warn_pct", 80)),
+        )
+        for s in (raw or [])
+    ]
 
 
-# ── Base class ────────────────────────────────────────────────────────────────
+class _ServerProvider(HealthProvider):
+    """Общая часть: список серверов из конфига и параллельный опрос."""
 
-class ServerMonitor(ABC):
-    """Implement check_one(); the polling loop and snapshot API come for free."""
+    kind = SERVERS
 
-    def __init__(self, servers: list[ServerInfo], interval: int = 300,
-                 on_server_down: Optional[Callable] = None):
-        self.servers = servers
-        self.interval = interval
-        self._results: list[ServerResult] = []
-        self._last_updated: str | None = None
-        self._on_server_down = on_server_down
-        self._prev_statuses: dict[str, str] = {}  # name → last known status
+    def __init__(self, service: dict, config: dict = None):
+        super().__init__(service, config)
+        self.servers = parse_servers(self.config.get("servers"))
 
-    def get_snapshot(self) -> dict:
-        """Return current results in the shape the frontend expects."""
-        return {
-            "servers": [self._result_to_dict(r) for r in self._results],
-            "last_updated": self._last_updated,
-        }
-
-    async def run_forever(self):
-        """Background polling loop — run via asyncio.gather() in main.py."""
-        print(f"Server monitor started ({len(self.servers)} servers, interval={self.interval}s)")
-        while True:
-            await self._run_check()
-            if self._on_server_down:
-                for r in self._results:
-                    prev = self._prev_statuses.get(r.name)
-                    if r.status == "down" and prev not in ("down", None):
-                        try:
-                            await self._on_server_down(r.name, r.location)
-                        except Exception as e:
-                            print(f"on_server_down callback error: {e}")
-            self._prev_statuses = {r.name: r.status for r in self._results}
-            await asyncio.sleep(self.interval)
-
-    @abstractmethod
-    async def check_one(self, server: ServerInfo) -> ServerResult: ...
-
-    async def _run_check(self):
-        tasks = [self.check_one(s) for s in self.servers]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        self._results = [
-            r if isinstance(r, ServerResult)
-            else ServerResult(name=s.name, status="unknown", location=s.location)
+    async def check(self) -> list[ComponentStatus]:
+        if not self.servers:
+            return [self.make(
+                "no-servers", "Серверы не заданы", "unknown",
+                message="В настройках мониторинга сервиса пустой список servers",
+            )]
+        results = await asyncio.gather(
+            *(self.check_one(s) for s in self.servers), return_exceptions=True
+        )
+        return [
+            r if isinstance(r, ComponentStatus)
+            else self.make(_sid(s), s.name, "unknown", location=s.location,
+                           message=str(r)[:200])
             for s, r in zip(self.servers, results)
         ]
-        self._last_updated = datetime.now().strftime("%d.%m.%Y %H:%M")
 
-    @staticmethod
-    def _result_to_dict(r: ServerResult) -> dict:
-        return {
-            "name": r.name,
-            "status": r.status,
-            "location": r.location,
-            "ping": r.ping,
-            "load": r.load,
-            "uptime": r.uptime,
-        }
+    async def check_one(self, server: ServerInfo) -> ComponentStatus:
+        raise NotImplementedError
 
 
-# ── Implementations ───────────────────────────────────────────────────────────
+def _sid(server: ServerInfo) -> str:
+    return f"srv-{server.name}"
 
-class TcpServerMonitor(ServerMonitor):
-    """
-    Checks reachability via a TCP connection.
 
-    Pros:  works for any TCP port (VPN, SSH, HTTPS).
-    Cons:  no load or uptime data — availability and ping only.
-    """
+# ── Реальные источники ────────────────────────────────────────────────────────
 
-    def __init__(self, servers: list[ServerInfo], interval: int = 300, timeout: float = 5.0,
-                 on_server_down: Optional[Callable] = None):
-        super().__init__(servers, interval, on_server_down)
-        self.timeout = timeout
+class TcpServerProvider(_ServerProvider):
+    """Доступность по TCP: работает для любого порта, но без нагрузки и uptime."""
 
-    async def check_one(self, server: ServerInfo) -> ServerResult:
+    source = "tcp"
+
+    def __init__(self, service: dict, config: dict = None):
+        super().__init__(service, config)
+        self.timeout = float(self.config.get("timeout", 5.0))
+
+    async def check_one(self, server: ServerInfo) -> ComponentStatus:
         start = time.monotonic()
         try:
             reader, writer = await asyncio.wait_for(
@@ -119,35 +96,24 @@ class TcpServerMonitor(ServerMonitor):
             writer.close()
             await writer.wait_closed()
             ping_ms = round((time.monotonic() - start) * 1000, 1)
-            return ServerResult(
-                name=server.name,
-                location=server.location,
-                status="ok",
-                ping=ping_ms,
-            )
-        except (asyncio.TimeoutError, OSError):
-            return ServerResult(name=server.name, location=server.location, status="down")
+            return self.make(_sid(server), server.name, "ok",
+                             location=server.location, metrics={"ping": ping_ms})
+        except (asyncio.TimeoutError, OSError) as e:
+            return self.make(_sid(server), server.name, "down",
+                             location=server.location, message=redact(e)[:200] or "нет соединения")
 
 
-class HttpServerMonitor(ServerMonitor):
-    """
-    Checks a server via HTTP GET to a health endpoint.
+class HttpServerProvider(_ServerProvider):
+    """Health-эндпоинт сервера: JSON вида {"load": 42.5, "uptime": 99.9}."""
 
-    Expected JSON response (fields optional):
-        { "load": 42.5, "uptime": 99.9 }
+    source = "http"
 
-    Status "down" if unreachable or HTTP >= 400.
-    Status "high" if load exceeds server.load_warn_pct.
-    """
+    def __init__(self, service: dict, config: dict = None):
+        super().__init__(service, config)
+        self.timeout = aiohttp.ClientTimeout(total=float(self.config.get("timeout", 10.0)))
+        self.health_path = self.config.get("health_path", "/health")
 
-    def __init__(self, servers: list[ServerInfo], interval: int = 300,
-                 timeout: float = 10.0, health_path: str = "/health",
-                 on_server_down: Optional[Callable] = None):
-        super().__init__(servers, interval, on_server_down)
-        self.timeout = aiohttp.ClientTimeout(total=timeout)
-        self.health_path = health_path
-
-    async def check_one(self, server: ServerInfo) -> ServerResult:
+    async def check_one(self, server: ServerInfo) -> ComponentStatus:
         url = f"https://{server.host}:{server.port}{self.health_path}"
         start = time.monotonic()
         try:
@@ -155,89 +121,90 @@ class HttpServerMonitor(ServerMonitor):
                 async with session.get(url, ssl=False) as resp:
                     ping_ms = round((time.monotonic() - start) * 1000, 1)
                     if resp.status >= 400:
-                        return ServerResult(name=server.name, location=server.location, status="down")
-
+                        return self.make(_sid(server), server.name, "down",
+                                         location=server.location,
+                                         message=f"HTTP {resp.status}")
                     try:
                         body = await resp.json(content_type=None)
                     except Exception:
                         body = {}
-
                     load = body.get("load")
                     uptime = body.get("uptime")
-                    status: StatusType = (
-                        "high" if load is not None and load > server.load_warn_pct else "ok"
-                    )
-                    return ServerResult(
-                        name=server.name,
+                    high = load is not None and load > server.load_warn_pct
+                    return self.make(
+                        _sid(server), server.name, "high" if high else "ok",
                         location=server.location,
-                        status=status,
-                        ping=ping_ms,
-                        load=load,
-                        uptime=uptime,
+                        metrics={"ping": ping_ms, "load": load, "uptime": uptime},
+                        message=f"нагрузка выше {server.load_warn_pct}%" if high else "",
                     )
-        except (aiohttp.ClientError, asyncio.TimeoutError):
-            return ServerResult(name=server.name, location=server.location, status="down")
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            return self.make(_sid(server), server.name, "down",
+                             location=server.location, message=redact(e)[:200] or "недоступен")
 
 
-class StubServerMonitor(ServerMonitor):
-    """Returns randomised fake data — use during development when no real servers exist."""
+# ── Мок ───────────────────────────────────────────────────────────────────────
 
-    async def check_one(self, server: ServerInfo) -> ServerResult:
-        load = round(random.uniform(10, 95), 1)
-        return ServerResult(
-            name=server.name,
-            location=server.location,
-            status="high" if load > server.load_warn_pct else "ok",
-            ping=round(random.uniform(5, 80), 1),
-            load=load,
-            uptime=round(random.uniform(97, 100), 2),
-        )
+# ВНИМАНИЕ: данные ниже выдуманы. Это заглушка на время, пока не подключён
+# реальный источник — панель VPN, Prometheus, свой API. Набор серверов
+# детерминированно выводится из слага сервиса, чтобы у разных ВПН-ов были
+# разные (но стабильные между перезапусками) города, а метрики слегка плавают,
+# чтобы экран выглядел живым.
 
-
-# ── Factory ───────────────────────────────────────────────────────────────────
-
-def make_server_monitor(
-    monitor_type: str,
-    servers: list[dict],
-    interval: int = 300,
-    health_path: str = "/health",
-    on_server_down: Optional[Callable] = None,
-) -> ServerMonitor:
-    """
-    Build a ServerMonitor from the app config.
-
-    monitor_type: "tcp" | "http" | "stub"
-    servers: list of dicts with ServerInfo fields, e.g.
-             [{"name": "Frankfurt-01", "host": "1.2.3.4", "port": 443, "location": "DE"}]
-    """
-    server_list = [
-        ServerInfo(
-            name=s["name"],
-            host=s.get("host", ""),
-            location=s.get("location", ""),
-            port=int(s.get("port", 443)),
-            load_warn_pct=float(s.get("load_warn_pct", 80)),
-        )
-        for s in servers
-    ]
-
-    if not server_list or monitor_type == "stub":
-        if not server_list:
-            print("SERVERS not configured — using StubServerMonitor")
-        return StubServerMonitor(server_list or _default_stub_servers(), interval, on_server_down)
-
-    if monitor_type == "tcp":
-        return TcpServerMonitor(server_list, interval, on_server_down=on_server_down)
-
-    if monitor_type == "http":
-        return HttpServerMonitor(server_list, interval, health_path=health_path, on_server_down=on_server_down)
-
-    raise ValueError(f"Unknown SERVERS_MONITOR_TYPE: {monitor_type!r}. Valid values: tcp, http, stub")
+_MOCK_LOCATIONS = [
+    ("Frankfurt", "DE"), ("Amsterdam", "NL"), ("Warsaw", "PL"), ("Stockholm", "SE"),
+    ("Paris", "FR"), ("London", "UK"), ("Vienna", "AT"), ("Helsinki", "FI"),
+    ("Zurich", "CH"), ("Madrid", "ES"),
+]
 
 
-def _default_stub_servers() -> list[ServerInfo]:
-    return [
-        ServerInfo("Frankfurt-01", "stub", "DE"),
-        ServerInfo("Amsterdam-03", "stub", "NL"),
-        ServerInfo("Warsaw-01",    "stub", "PL"),
-    ]
+class MockServerProvider(_ServerProvider):
+    """МОК: выдуманные серверы со случайными метриками."""
+
+    source = "mock"
+    is_mock = True
+
+    def __init__(self, service: dict, config: dict = None):
+        super().__init__(service, config)
+        if not self.servers:
+            self.servers = self._mock_servers()
+        self._rnd = random.Random(self._seed())
+
+    def _seed(self) -> int:
+        slug = self.service.get("slug", "")
+        return int(hashlib.md5(slug.encode()).hexdigest()[:8], 16)
+
+    def _mock_servers(self) -> list[ServerInfo]:
+        rnd = random.Random(self._seed())
+        count = rnd.randint(3, 6)
+        picked = rnd.sample(_MOCK_LOCATIONS, count)
+        return [
+            ServerInfo(name=f"{city}-{i + 1:02d}", host="mock", location=code)
+            for i, (city, code) in enumerate(picked)
+        ]
+
+    async def check(self) -> list[ComponentStatus]:
+        # Один «проблемный» сервер на сервис — чтобы на экране были видны все
+        # состояния, а не сплошной зелёный.
+        bad_idx = self._seed() % max(1, len(self.servers))
+        out = []
+        for i, s in enumerate(self.servers):
+            if i == bad_idx and self._rnd.random() < 0.5:
+                status, load = "high", round(self._rnd.uniform(82, 97), 1)
+                message = "МОК: имитация высокой нагрузки"
+            else:
+                status, load = "ok", round(self._rnd.uniform(8, 65), 1)
+                message = ""
+            out.append(self.make(
+                _sid(s), s.name, status, location=s.location, message=message,
+                metrics={
+                    "ping": round(self._rnd.uniform(5, 80), 1),
+                    "load": load,
+                    "uptime": round(self._rnd.uniform(98.5, 100), 2),
+                },
+            ))
+        return out
+
+
+register_provider("mock", MockServerProvider)
+register_provider("tcp", TcpServerProvider)
+register_provider("http", HttpServerProvider)

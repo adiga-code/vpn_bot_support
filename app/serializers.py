@@ -27,6 +27,11 @@ def fmt_dialog(row: dict, tickets: list = None) -> dict:
     return {
         "id": did,
         "chatId": row["chat_id"],
+        # Сервис (ВПН), которому принадлежит тикет — в режиме «Все сервисы»
+        # строка списка помечается точкой его цвета.
+        "serviceId": row.get("service_id"),
+        "serviceName": row.get("service_name"),
+        "serviceColor": row.get("service_color") or "#4F8EF7",
         "name": name,
         "username": username,
         "tgId": row["chat_id"],
@@ -54,10 +59,16 @@ def fmt_dialog(row: dict, tickets: list = None) -> dict:
         "rating": row.get("rating"),
         "notes": row.get("user_notes") or "",
         "photoUrl": row.get("user_photo_url") or None,
+        # Папка-ярлык: срез поверх статуса, тикет остаётся и в своём разделе.
+        "folderId": row.get("folder_id"),
+        "folderName": row.get("folder_name"),
+        "folderEmoji": row.get("folder_emoji"),
         "waitingReason": row.get("waiting_reason"),
         "slaSeconds": row.get("sla_seconds_total") or 0,
         "slaStartedAt": row["sla_started_at"].isoformat() if row.get("sla_started_at") else None,
         "returnRequested": bool(row.get("return_requested_at")),
+        # Кто из операторов просит передать ему этот тикет (см. require_dialog_write).
+        "claimRequestedBy": row.get("claim_requested_by"),
         "tickets": tickets or [],
     }
 
@@ -99,5 +110,8 @@ def fmt_operator(op: dict) -> dict:
         "color": op.get("color") or "#4F8EF7",
         "online": op.get("online", False),
         "paused": op.get("paused", False),
+        # «Был в сети» вместо безликого «Офлайн»: когда оператор в последний раз
+        # держал вкладку панели открытой.
+        "lastSeen": op["last_seen_at"].isoformat() if op.get("last_seen_at") else None,
         "notifPrefs": notif_prefs,
     }

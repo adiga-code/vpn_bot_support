@@ -9,12 +9,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.ai_client import make_chat_client
+from app.ai_client import make_chat_client, make_kb_chat_client
 from app.auth import create_token, decode_token, hash_password, verify_password
-from app.billing import BillingProvider
 from app.config import Settings
-from app.database import DatabaseManager
+from app.database import DatabaseManager, validate_slug as _validate_slug
+from app.dialogs import parse_ai_enabled, resolve_service, user_info_from
 from app.kb import delete_from_qdrant, process_document
+from app.media import internalize
+from app.redact import mask_tail, mask_url, redact
 from app.routing import AUTOMATION_DEFAULTS as _AUTOMATION_DEFAULTS, RoutingEngine
 from app.serializers import (
     fmt_dialog as _fmt_dialog,
@@ -25,7 +27,17 @@ from app.serializers import (
 from app.storage import make_storage
 from app.summarizer import summarize_dialog
 from app.n8n_client import N8NClient
-from app.servers import ServerMonitor, StubServerMonitor
+from app.customer import (
+    ACTIONS as _CUSTOMER_ACTIONS,
+    ACTIONS_BY_NAME as _CUSTOMER_ACTIONS_BY_NAME,
+    CUSTOMER_DEFAULTS,
+    DANGEROUS as _CUSTOMER_DANGEROUS,
+    CustomerService,
+    build_customer_provider,
+    known_customer_providers,
+)
+from app.health import MONITORING_DEFAULTS, ServiceHealthMonitor, known_providers
+from app.providers.remnawave import check_connection as _remnawave_check_connection
 from app.ws_manager import WebSocketManager
 
 _STATIC = Path(__file__).parent / "static"
@@ -43,27 +55,10 @@ _AI_DEFAULTS = {
     "classification_enabled": False,
 }
 
-# Sentinel marking the auto-appended escalation instruction inside the prompt
-# that gets published to n8n. Rebuilt from scratch on every sync (strip
-# everything from the marker onward, then conditionally re-add exactly one
-# copy) so the handoff toggle is authoritative regardless of what was there
-# before — a stale or duplicated copy left by a previous bug or a manual
-# edit can never survive a save.
-_HANDOFF_MARKER = "### AUTO-HANDOFF INSTRUCTION — do not edit below this line ###"
-
-
-def _strip_handoff_instruction(prompt: str) -> str:
-    return (prompt or "").split(_HANDOFF_MARKER, 1)[0].rstrip()
-
-
-def _build_n8n_prompt(prompt: str, handoff_enabled: bool, instruction_text: str = "") -> str:
-    base = _strip_handoff_instruction(prompt)
-    if not handoff_enabled:
-        return base
-    # An emptied-out instruction would silently kill auto-handoff — fall back
-    # to the default text instead.
-    text = (instruction_text or "").strip() or _AUTOMATION_DEFAULTS["handoff_instruction_text"]
-    return base + "\n\n" + _HANDOFF_MARKER + "\n" + text
+# The gate/handoff instruction is no longer concatenated onto the responder
+# prompt. It is published to n8n as its own field
+# (vpn_bot:ai_settings.handoff_prompt) that the gate node reads directly — see
+# _sync_ai_settings_to_redis.
 
 
 _SCHEDULE_DEFAULTS = {
@@ -114,6 +109,9 @@ class OperatorBody(BaseModel):
     tg_id: Optional[int] = None
     role: str = "agent"
     password: str = ""
+    # Флаги доступа к ВПН-ам при создании; правятся через
+    # PUT /api/operators/{id}/services.
+    service_ids: list[int] = []
 
 class AISettingsBody(BaseModel):
     prompt: str
@@ -170,6 +168,118 @@ class NotesBody(BaseModel):
 class PhotoBody(BaseModel):
     url: str
 
+class DialogResolveBody(BaseModel):
+    """Запрос n8n: «в какой тикет писать это сообщение». Сервис определяется по
+    business_id (или по слагу в service), клиент — по chat_id; номер тикета n8n
+    не придумывает и не хранит."""
+    chat_id: str
+    business_id: Optional[str] = None
+    service: Optional[str] = None
+    user_name: Optional[str] = None
+    user_username: Optional[str] = None
+    ai_enabled: Optional[bool] = None
+
+class ServiceBody(BaseModel):
+    # slug задаётся только при создании: он зашивается в воркфлоу n8n, ключи
+    # Redis, имя коллекции Qdrant и префикс dialog_id — менять его задним
+    # числом небезопасно.
+    slug: str = ""
+    name: str
+    color: str = "#4F8EF7"
+    emoji: Optional[str] = None
+    n8n_webhook_url: str = ""
+    is_active: bool = True
+    # business_connection_id аккаунта поддержки: по нему панель узнаёт свой
+    # сервис во входящем сообщении, поэтому воркфлоу n8n один на всех.
+    business_id: str = ""
+    # Support API этого ВПН-а. Заполняются в той же форме, что и сам сервис, и
+    # сохраняются в настройку `customer` — отдельный экран для этого не нужен.
+    # Пустой api_token при правке означает «оставить прежний».
+    api_base_url: str = ""
+    api_token: str = ""
+    # Remnawave: только статистика серверов (monitoring.servers), с
+    # источником данных о клиенте не связано — см. _save_service_remnawave.
+    # Пустые remnawave_token/remnawave_cookie при правке — «оставить прежние».
+    remnawave_base_url: str = ""
+    remnawave_token: str = ""
+    # Нужен, только если панель за прокси/WAF, требующим статическую куку.
+    remnawave_cookie: str = ""
+
+
+class ApiCheckBody(BaseModel):
+    base_url: str = ""
+    token: str = ""
+    # Нужен только для remnawave за прокси/WAF, требующим статическую куку.
+    cookie: str = ""
+    # bot_api — Support API этого ВПН-а, remnawave — панель Remnawave.
+    provider: str = "bot_api"
+    # Правка сохранённого сервиса: форма шлёт пустой токен, когда менять его не
+    # собираются, и проверка должна взять сохранённый — иначе она уходит с
+    # пустым Bearer и рисует «Связи нет» на исправном сервисе.
+    service_id: Optional[int] = None
+
+class FolderBody(BaseModel):
+    """Папка-ярлык: имя и эмодзи задаёт админ, цвет — из той же палитры, что
+    у сервисов."""
+    name: str
+    emoji: str = "📁"
+    color: str = "#4F8EF7"
+    sort_order: Optional[int] = None
+
+
+class DialogFolderBody(BaseModel):
+    # null — вынуть тикет из папки
+    folder_id: Optional[int] = None
+
+
+class FallbackAuthBody(BaseModel):
+    """Шаг 1 авторизации резервного аккаунта: реквизиты приложения с
+    my.telegram.org и телефон аккаунта поддержки."""
+    app_id: int
+    app_hash: str
+    phone: str
+
+
+class FallbackCodeBody(BaseModel):
+    """Шаг 2: код из Телеграм и, если он стоит, пароль двухфакторки."""
+    code: str = ""
+    password: str = ""
+
+
+class FallbackSessionBody(BaseModel):
+    """Готовая строка сессии, сгенерированная снаружи — вместо шагов с кодом."""
+    app_id: int
+    app_hash: str
+    phone: str = ""
+    session: str
+
+
+class FallbackToggleBody(BaseModel):
+    enabled: bool
+
+
+class OperatorServicesBody(BaseModel):
+    service_ids: list[int] = []
+
+class MonitoringSourceBody(BaseModel):
+    provider: str
+    config: dict = {}
+
+class MonitoringBody(BaseModel):
+    """Пер-сервисный мониторинг: какой источник данных опрашивать по серверам и
+    по ботам. Имена провайдеров — из реестра app.health."""
+    interval: int = 300
+    servers: MonitoringSourceBody
+    bots: MonitoringSourceBody
+
+
+class CustomerBody(BaseModel):
+    """Пер-сервисный источник данных о клиентах. Имя провайдера — из реестра
+    app.customer; config целиком отдаётся провайдеру, его форму знает только он."""
+    provider: str = "mock"
+    config: dict = {}
+    cacheTtl: int = 60
+
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
@@ -179,12 +289,14 @@ def build_app(
     ws: WebSocketManager,
     n8n: N8NClient,
     routing: RoutingEngine,
-    billing: BillingProvider,
-    server_monitor: ServerMonitor,
+    customers: CustomerService,
+    health: ServiceHealthMonitor,
+    fallback=None,
 ) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
-    chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY, settings.CHAT_MODEL)
+    chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
+    kb_chat_client = make_kb_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
     storage = make_storage(settings)
 
     if _STATIC.exists():
@@ -229,6 +341,59 @@ def build_app(
         if not op:
             raise HTTPException(401, "Operator not found")
         return op
+
+    # ── Доступ к сервисам ─────────────────────────────────────────────────────
+    # Оператор работает только с теми ВПН-сервисами, на которые ему выдан флаг
+    # (админ — со всеми). Каждый запрос по диалогу проходит через
+    # require_dialog, каждый настроечный — через require_service.
+
+    async def require_service(service_id: Optional[int], operator: dict) -> dict:
+        """Сервис из query-параметра с проверкой доступа. Без параметра —
+        первый доступный: настройкам и рассылке всегда нужен конкретный ВПН."""
+        ids = await db.get_operator_service_ids(operator)
+        if not ids:
+            raise HTTPException(403, "Оператору не назначен ни один сервис")
+        target = ids[0] if service_id is None else service_id
+        if target not in ids:
+            raise HTTPException(403, "Нет доступа к этому сервису")
+        service = await db.get_service(target)
+        if not service:
+            raise HTTPException(404, "Сервис не найден")
+        return service
+
+    async def require_api_key(request: Request) -> None:
+        """Доступ для n8n: заголовок X-API-Key. Пустой N8N_API_KEY в настройках
+        закрывает такие ручки совсем, а не открывает их всем."""
+        key = request.headers.get("X-API-Key", "")
+        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
+            raise HTTPException(401, "Invalid API key")
+
+    async def require_dialog(dialog_id: str, operator: dict) -> dict:
+        dialog = await db.get_dialog(dialog_id)
+        if not dialog:
+            raise HTTPException(404)
+        if dialog["service_id"] not in await db.get_operator_service_ids(operator):
+            raise HTTPException(403, "Нет доступа к этому сервису")
+        return dialog
+
+    async def require_dialog_write(dialog_id: str, operator: dict) -> dict:
+        """То же плюс владение: пока тикет в работе у одного оператора, второй
+        такого же уровня его только читает — двое, пишущих клиенту разное, хуже
+        любой задержки с ответом. Забрать тикет он может кнопкой «Запросить»:
+        владелец передаёт его сам.
+
+        Админ не ограничен — иначе разруливать зависшие тикеты было бы некому.
+        Комментарии и заметки под этот гард не попадают: ради них второй
+        оператор в чужой тикет и заходит.
+
+        423 Locked, а не 403: «тикет занят» и «нет доступа к сервису» — разные
+        вещи, и фронт должен уметь их различить."""
+        dialog = await require_dialog(dialog_id, operator)
+        owner = dialog.get("assigned_operator")
+        if (operator["role"] != "admin" and owner and owner != operator["name"]
+                and dialog["status"] in ("in_progress", "waiting")):
+            raise HTTPException(423, f"Тикет в работе у оператора {owner}")
+        return dialog
 
     # ── Static / index ────────────────────────────────────────────────────────
 
@@ -299,16 +464,21 @@ def build_app(
     # ── Dialogs ───────────────────────────────────────────────────────────────
 
     @app.get("/api/dialogs")
-    async def get_dialogs(operator: dict = Depends(require_auth)):
-        rows = await db.get_all_dialogs()
+    async def get_dialogs(service_id: Optional[int] = None, operator: dict = Depends(require_auth)):
+        """С service_id — один сервис; без него — все доступные оператору
+        (режим «Все сервисы» в переключателе)."""
+        ids = await db.get_operator_service_ids(operator)
+        if service_id is not None:
+            if service_id not in ids:
+                raise HTTPException(403, "Нет доступа к этому сервису")
+            ids = [service_id]
+        rows = await db.get_all_dialogs(ids)
         return [_fmt_dialog(r) for r in rows]
 
     @app.get("/api/dialogs/{dialog_id}")
     async def get_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
-        row = await db.get_dialog(dialog_id)
-        if not row:
-            raise HTTPException(404)
-        tickets = await db.get_dialog_history(row["chat_id"], dialog_id)
+        row = await require_dialog(dialog_id, operator)
+        tickets = await db.get_dialog_history(row["service_id"], row["chat_id"], dialog_id)
         return _fmt_dialog(row, [
             {
                 "id": f"T-{t['dialog_id'][-4:]}",
@@ -323,10 +493,8 @@ def build_app(
 
     @app.get("/api/dialogs/{dialog_id}/history")
     async def get_dialog_history(dialog_id: str, operator: dict = Depends(require_auth)):
-        row = await db.get_dialog(dialog_id)
-        if not row:
-            raise HTTPException(404)
-        history = await db.get_dialog_history(row["chat_id"], dialog_id)
+        row = await require_dialog(dialog_id, operator)
+        history = await db.get_dialog_history(row["service_id"], row["chat_id"], dialog_id)
         return [
             {
                 "id": f"T-{t['dialog_id'][-4:]}",
@@ -340,15 +508,15 @@ def build_app(
 
     @app.get("/api/dialogs/{dialog_id}/messages")
     async def get_messages(dialog_id: str, operator: dict = Depends(require_auth)):
+        await require_dialog(dialog_id, operator)
         await db.clear_unread(dialog_id)
         rows = await db.get_messages(dialog_id)
+        await routing.emit_counts()
         return [_fmt_message(r) for r in rows]
 
     @app.post("/api/dialogs/{dialog_id}/reply")
     async def reply(dialog_id: str, body: ReplyBody, operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        dialog = await require_dialog_write(dialog_id, operator)
 
         op_name = body.operator_name or operator["name"] or "Оператор"
         msg_row = await db.save_message(
@@ -364,13 +532,30 @@ def build_app(
         delivered = await n8n.send_manager_message(
             dialog_id, dialog["chat_id"], body.text,
             file_url=body.file_url, file_type=body.file_type,
-            message_id=msg_row["id"],
+            message_id=msg_row["id"], service=dialog,
         )
         if not delivered:
-            await db.update_message_delivery(msg_row["id"], "failed", "Очередь недоступна")
+            # До n8n сообщение не доехало вовсе — пробуем резервный канал сразу,
+            # подтверждения доставки ждать неоткуда.
+            status, error = "failed", "Очередь недоступна"
+            if fallback:
+                ok, detail = await fallback.send(
+                    dialog["service_id"], dialog["chat_id"], body.text, body.file_url)
+                if detail:
+                    note = ("Очередь недоступна — " +
+                            (detail if ok else f"резервная отправка тоже не удалась: {detail}"))
+                    sys_row = await db.save_message(dialog_id, "system", note)
+                    await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                                        "message": _fmt_message(sys_row)}, dialog["service_id"])
+                    if ok:
+                        status, delivered = "delivered_fallback", True
+                    else:
+                        error = f"Очередь недоступна · резерв: {detail}"
+            await db.update_message_delivery(msg_row["id"], status, error)
         await db.clear_unread(dialog_id)
 
-        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                            "message": _fmt_message(msg_row)}, dialog["service_id"])
         # Scenario 2: the answered ticket moves to waiting («ждём ответ»),
         # SLA pauses, the slot frees up (broadcasts the updated dialog).
         await routing.on_operator_reply(dialog, op_name)
@@ -378,85 +563,78 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/comment")
     async def add_comment(dialog_id: str, body: CommentBody, operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        dialog = await require_dialog(dialog_id, operator)
         if not body.text.strip():
             raise HTTPException(400, "Пустой комментарий")
         msg_row = await db.save_message(
             dialog_id, "comment", body.text.strip(), operator_name=operator["name"]
         )
-        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id, "message": _fmt_message(msg_row)})
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                            "message": _fmt_message(msg_row)}, dialog["service_id"])
         return {"ok": True}
 
     @app.put("/api/dialogs/{dialog_id}/notes")
     async def update_notes(dialog_id: str, body: NotesBody, operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        await require_dialog(dialog_id, operator)
         await db.pool.execute(
             "UPDATE dialogs SET user_notes=$1 WHERE dialog_id=$2", body.text, dialog_id
         )
         updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+                           updated["service_id"])
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/dismiss_called")
     async def dismiss_called(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        await require_dialog_write(dialog_id, operator)
         await db.pool.execute(
             "UPDATE dialogs SET operator_called=FALSE WHERE dialog_id=$1", dialog_id
         )
         updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+                           updated["service_id"])
         return {"ok": True}
 
     @app.get("/api/dialogs/{dialog_id}/has_photo")
-    async def has_photo(dialog_id: str, request: Request):
-        key = request.headers.get("X-API-Key", "")
-        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
-            raise HTTPException(401, "Invalid API key")
+    async def has_photo(dialog_id: str, _: None = Depends(require_api_key)):
         row = await db.pool.fetchrow(
             "SELECT user_photo_url FROM dialogs WHERE dialog_id=$1", dialog_id
         )
         return {"has_photo": bool(row and row["user_photo_url"])}
 
     @app.post("/api/dialogs/{dialog_id}/set_photo")
-    async def set_photo(dialog_id: str, request: Request, body: PhotoBody):
-        key = request.headers.get("X-API-Key", "")
-        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
-            raise HTTPException(401, "Invalid API key")
+    async def set_photo(dialog_id: str, body: PhotoBody,
+                        _: None = Depends(require_api_key)):
+        # Аватар приходит ссылкой на Bot API, а в такой ссылке стоит токен
+        # бота — и её открывает браузер оператора. Забираем картинку к себе и
+        # храним только свой адрес.
+        url = await internalize(body.url, storage, settings)
         await db.pool.execute(
-            "UPDATE dialogs SET user_photo_url=$1 WHERE dialog_id=$2", body.url, dialog_id
+            "UPDATE dialogs SET user_photo_url=$1 WHERE dialog_id=$2", url or None, dialog_id
         )
         updated = await db.get_dialog(dialog_id)
         if updated:
-            await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+            await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+                               updated["service_id"])
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/toggle_ai")
     async def toggle_ai(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        dialog = await require_dialog_write(dialog_id, operator)
         new_value = not dialog["ai_enabled"]
         await db.update_ai_enabled(dialog_id, new_value)
-        await db.sync_n8n_dialog_ai_status(dialog["chat_id"], new_value)
-        await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], new_value)
+        await n8n.notify_ai_toggled(dialog_id, dialog["chat_id"], new_value, dialog)
         # Keep the status model coherent: AI back on while queued → «ИИ» section;
         # AI off while unattended in «ИИ» → escalate to humans.
         await routing.on_ai_toggled(dialog_id, new_value)
         updated = await db.get_dialog(dialog_id)
-        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)})
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+                           updated["service_id"])
         return {"ai_enabled": new_value}
 
     @app.post("/api/dialogs/{dialog_id}/handoff")
     async def handoff(dialog_id: str, body: HandoffBody = HandoffBody(), operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        await require_dialog_write(dialog_id, operator)
         op_name = body.operator_name or operator["name"] or "Оператор"
         updated = await routing.take_in_work(dialog_id, op_name)
         if not updated:
@@ -465,12 +643,12 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/reopen-closed")
     async def reopen_closed_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        dialog = await require_dialog_write(dialog_id, operator)
         if dialog["status"] != "closed":
             raise HTTPException(400, "Dialog is not closed")
-        active = await db.get_active_dialog_by_chat_id(dialog["chat_id"], exclude_dialog_id=dialog_id)
+        active = await db.get_active_dialog_by_chat_id(
+            dialog["service_id"], dialog["chat_id"], exclude_dialog_id=dialog_id
+        )
         if active:
             return JSONResponse(status_code=409, content={"active_dialog_id": active["dialog_id"]})
         # → queue, unassigned; AI stays off (the ticket had been escalated)
@@ -479,9 +657,7 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/reopen")
     async def reopen_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        dialog = await require_dialog_write(dialog_id, operator)
         if dialog["status"] == "closed":
             raise HTTPException(400, "Cannot reopen closed dialog")
         # → queue for another operator; the AI is NOT re-enabled — the ticket
@@ -493,9 +669,7 @@ def build_app(
     async def wait_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
         """Manual «В ожидание»: pause an in_progress ticket (red label
         «клиент ждёт ответ») while the operator waits for the team."""
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        await require_dialog_write(dialog_id, operator)
         try:
             await routing.set_waiting_manual(dialog_id, operator["name"])
         except ValueError:
@@ -504,32 +678,117 @@ def build_app(
 
     @app.post("/api/dialogs/{dialog_id}/transfer")
     async def transfer_dialog(dialog_id: str, body: TransferBody, operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        dialog = await require_dialog_write(dialog_id, operator)
         if operator["role"] != "admin" and dialog.get("assigned_operator") != operator["name"]:
             raise HTTPException(403, "Can only transfer your own dialogs")
         target = await db.get_operator_by_name(body.operator_name)
         if not target:
             raise HTTPException(404, "Target operator not found")
+        # Передать тикет можно только тому, у кого есть доступ к этому сервису.
+        if dialog["service_id"] not in await db.get_operator_service_ids(target):
+            raise HTTPException(400, "У оператора нет доступа к сервису этого тикета")
         await routing.transfer(dialog_id, body.operator_name)
+        return {"ok": True}
+
+    # ── Запрос на передачу тикета ─────────────────────────────────────────────
+    # Пока тикет в работе у одного оператора, второй его только читает
+    # (require_dialog_write). Забрать тикет он может, попросив владельца:
+    # тот жмёт «Передать» и тикет переходит штатным transfer-ом.
+
+    async def _claim_state(dialog_id: str) -> dict:
+        """Свежий диалог + рассылка обновления тем, кто его видит."""
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+                           updated["service_id"])
+        return updated
+
+    @app.post("/api/dialogs/{dialog_id}/claim")
+    async def claim_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
+        """«Запросить»: второй оператор просит владельца отдать ему тикет."""
+        dialog = await require_dialog(dialog_id, operator)
+        owner = dialog.get("assigned_operator")
+        if not owner or dialog["status"] not in ("in_progress", "waiting"):
+            raise HTTPException(400, "Этот тикет ни за кем не закреплён — берите его в работу")
+        if owner == operator["name"]:
+            raise HTTPException(400, "Тикет уже ваш")
+        if dialog.get("claim_requested_by") == operator["name"]:
+            return {"ok": True, "detail": "Запрос уже отправлен"}
+        await db.set_claim_request(dialog_id, operator["name"])
+        msg_row = await db.save_message(
+            dialog_id, "system", f"{operator['name']} просит передать тикет")
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                            "message": _fmt_message(msg_row)}, dialog["service_id"])
+        await _claim_state(dialog_id)
+        # Точечно владельцу — чтобы просьба не потерялась среди чужих событий.
+        owner_row = await db.get_operator_by_name(owner)
+        if owner_row:
+            await ws.send_to_operator(owner_row["id"], {
+                "type": "claim_requested", "dialog_id": dialog_id,
+                "by": operator["name"], "client": dialog.get("user_name") or dialog_id,
+            })
+        # И в Телеграм — владелец может быть не за панелью.
+        await n8n.schedule_notify("claim_requested", {
+            "dialog_id": dialog_id, "operator_name": operator["name"],
+            "owner_name": owner, "username": dialog.get("user_username") or dialog_id,
+        }, dialog)
+        return {"ok": True}
+
+    async def _require_claim_owner(dialog_id: str, operator: dict) -> dict:
+        """Отвечать на запрос вправе владелец тикета и админ."""
+        dialog = await require_dialog(dialog_id, operator)
+        if not dialog.get("claim_requested_by"):
+            raise HTTPException(400, "По этому тикету запроса нет")
+        if (operator["role"] != "admin"
+                and dialog.get("assigned_operator") != operator["name"]):
+            raise HTTPException(403, "Ответить на запрос может только владелец тикета")
+        return dialog
+
+    @app.post("/api/dialogs/{dialog_id}/claim/approve")
+    async def approve_claim(dialog_id: str, operator: dict = Depends(require_auth)):
+        dialog = await _require_claim_owner(dialog_id, operator)
+        target_name = dialog["claim_requested_by"]
+        target = await db.get_operator_by_name(target_name)
+        if not target:
+            await db.set_claim_request(dialog_id, None)
+            raise HTTPException(404, "Просивший оператор больше не существует")
+        if dialog["service_id"] not in await db.get_operator_service_ids(target):
+            await db.set_claim_request(dialog_id, None)
+            raise HTTPException(400, "У оператора нет доступа к сервису этого тикета")
+        # transfer сам снимет запрос (set_assigned_operator / move_to_in_progress).
+        await routing.transfer(dialog_id, target_name)
+        return {"ok": True, "operator_name": target_name}
+
+    @app.post("/api/dialogs/{dialog_id}/claim/decline")
+    async def decline_claim(dialog_id: str, operator: dict = Depends(require_auth)):
+        dialog = await _require_claim_owner(dialog_id, operator)
+        who = dialog["claim_requested_by"]
+        await db.set_claim_request(dialog_id, None)
+        msg_row = await db.save_message(
+            dialog_id, "system", f"{operator['name']} оставил тикет за собой (запрос {who} отклонён)")
+        await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                            "message": _fmt_message(msg_row)}, dialog["service_id"])
+        await _claim_state(dialog_id)
         return {"ok": True}
 
     @app.post("/api/dialogs/{dialog_id}/close")
     async def close_dialog(dialog_id: str, operator: dict = Depends(require_auth)):
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
+        dialog = await require_dialog_write(dialog_id, operator)
         # Transition + system message + broadcasts + n8n sync + queue drain
         await routing.close(dialog_id, dialog["chat_id"], operator["name"])
         if chat_client:
             asyncio.create_task(_summarize_dialog_bg(dialog_id))
-        automation = await db.get_setting_json("automation", _AUTOMATION_DEFAULTS)
+        automation = await db.get_setting_json(
+            "automation", _AUTOMATION_DEFAULTS, dialog["service_id"]
+        )
         if automation.get("close_message_enabled") and automation.get("close_message_text"):
-            asyncio.create_task(n8n.send_to_user(dialog["chat_id"], automation["close_message_text"]))
+            asyncio.create_task(
+                n8n.send_to_user(dialog["chat_id"], automation["close_message_text"], service=dialog)
+            )
         if automation.get("rating_enabled"):
             rating_text = automation.get("rating_message_text") or "Оцените качество поддержки:"
-            asyncio.create_task(n8n.send_rating_request(dialog["chat_id"], dialog_id, rating_text))
+            asyncio.create_task(
+                n8n.send_rating_request(dialog["chat_id"], dialog_id, rating_text, service=dialog)
+            )
         return {"ok": True}
 
     async def _summarize_dialog_bg(dialog_id: str):
@@ -542,17 +801,105 @@ def build_app(
         except Exception as e:
             print(f"[summarizer] bg error: {e}")
 
-    @app.post("/api/dialogs/{dialog_id}/billing/{action}")
-    async def billing_action(dialog_id: str, action: str, body: dict = Body(default={}), operator: dict = Depends(require_auth)):
-        if action not in ("renew", "buy_traffic", "reset_key"):
-            raise HTTPException(400, f"Unknown action: {action}")
-        dialog = await db.get_dialog(dialog_id)
-        if not dialog:
-            raise HTTPException(404)
-        result = await billing.execute(action, dialog["chat_id"], dialog_id, params=body)
+    # ── Карточка клиента ──────────────────────────────────────────────────────
+    # Профиль и управление аккаунтом живут во внешней API; панель знает только
+    # канонический вид (app/customer.py) и никогда не падает из-за чужого
+    # сервиса — при недоступности отдаётся снапшот с пометкой stale.
+
+    @app.get("/api/dialogs/{dialog_id}/customer")
+    async def get_customer(dialog_id: str, refresh: bool = False,
+                           operator: dict = Depends(require_auth)):
+        dialog = await require_dialog(dialog_id, operator)
+        service = await db.get_service(dialog["service_id"])
+        profile = await customers.profile(service, dialog, refresh=refresh)
+        supported = set(await customers.supports(service))
+        is_admin = operator["role"] == "admin"
+        # Кнопку, которой нет у источника или прав, панель просто не рисует.
+        actions = [a.to_dict() for a in _CUSTOMER_ACTIONS
+                   if a.name in supported and (is_admin or not a.danger)]
+        return {**profile.to_dict(), "actions": actions,
+                "options": await customers.options(service, dialog)}
+
+    @app.post("/api/dialogs/{dialog_id}/customer/{action}")
+    async def customer_action(dialog_id: str, action: str, body: dict = Body(default={}),
+                              operator: dict = Depends(require_auth)):
+        spec = _CUSTOMER_ACTIONS_BY_NAME.get(action)
+        if not spec:
+            raise HTTPException(400, f"Неизвестное действие: {action}")
+        if action in _CUSTOMER_DANGEROUS and operator["role"] != "admin":
+            raise HTTPException(403, "Действие доступно только администратору")
+        dialog = await require_dialog_write(dialog_id, operator)
+        service = await db.get_service(dialog["service_id"])
+        result = await customers.execute(service, dialog, action, body or {},
+                                         operator=operator["name"])
         if not result.ok:
             raise HTTPException(502, result.message)
-        return {"ok": True, "message": result.message}
+        # След в переписке: кто и что сделал с аккаунтом клиента. Отдельная
+        # таблица не нужна — история тикета и есть журнал.
+        msg_row = await db.save_message(
+            dialog_id, "system",
+            f"{operator['name']}: {result.message or spec.label}",
+        )
+        if msg_row:
+            await ws.broadcast({"type": "new_message", "dialog_id": dialog_id,
+                                "message": _fmt_message(msg_row)}, dialog["service_id"])
+        return {"ok": True, "message": result.message, "data": result.data or {}}
+
+    @app.get("/api/dialogs/{dialog_id}/activity")
+    async def get_customer_activity(dialog_id: str, limit: int = 100,
+                                    operator: dict = Depends(require_auth)):
+        """Лента «Действия»: всё, что происходило с аккаунтом клиента — оплаты и
+        пополнения, продления и сбросы ключей, баны, изменения баланса, — и то,
+        что делали операторы из самой панели.
+
+        Внешний источник и наша БД собираются в один список по времени. Отчёт об
+        источниках уходит рядом: если журнал бота закрыт скоупом токена, оператор
+        должен видеть, чего он НЕ видит, а не решить, что ничего не было."""
+        dialog = await require_dialog(dialog_id, operator)
+        service = await db.get_service(dialog["service_id"])
+        events, sources = await customers.activity(service, dialog, limit)
+        items = [e.to_dict() for e in events]
+
+        for row in await db.get_customer_activity(dialog["service_id"], dialog["chat_id"], limit):
+            text = row.get("text") or ""
+            # Строка записана как «Оператор: что сделал» — имя слева от первого
+            # двоеточия, по этому же признаку она и отобрана в запросе.
+            actor, _, rest = text.partition(": ")
+            items.append({
+                "at": row["created_at"].isoformat() if row.get("created_at") else "",
+                "kind": "panel", "title": rest or text, "detail": "",
+                "actor": actor if rest else "", "amount": None, "currency": "₽",
+                "source": "панель",
+            })
+        sources.append({"name": "панель", "ok": True, "error": ""})
+
+        items.sort(key=lambda e: e.get("at") or "", reverse=True)
+        return {"items": items[:limit], "sources": sources}
+
+    @app.get("/api/settings/customer")
+    async def get_customer_settings(service_id: Optional[int] = None,
+                                    operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
+        stored = await db.get_setting_json("customer", None, service["id"]) or {}
+        return {**CUSTOMER_DEFAULTS, **stored,
+                "serviceId": service["id"], "serviceName": service["name"],
+                # Реестр источников — админка строит выбор по нему, поэтому свой
+                # провайдер появляется в UI сам собой.
+                "available": known_customer_providers(),
+                "catalog": [a.to_dict() for a in _CUSTOMER_ACTIONS]}
+
+    @app.put("/api/settings/customer")
+    async def save_customer_settings(body: CustomerBody, service_id: Optional[int] = None,
+                                     operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
+        await db.set_setting_json("customer", body.model_dump(), service["id"])
+        # Пересоздать провайдера и выкинуть кэш, не дожидаясь истечения TTL.
+        customers.invalidate(service["id"])
+        return {"ok": True}
 
     # ── File upload ───────────────────────────────────────────────────────────
 
@@ -566,45 +913,610 @@ def build_app(
 
     @app.post("/api/n8n/upload")
     async def n8n_upload(
-        request: Request,
         file: UploadFile = File(...),
+        _: None = Depends(require_api_key),
     ):
-        key = request.headers.get("X-API-Key", "")
-        if not settings.N8N_API_KEY or key != settings.N8N_API_KEY:
-            raise HTTPException(401, "Invalid API key")
         ext = Path(file.filename).suffix if file.filename else ""
         filename = f"{uuid.uuid4().hex}{ext}"
         content = await file.read()
         url = await storage.save(content, filename)
         return {"url": url, "filename": filename}
 
-    # ── Servers ───────────────────────────────────────────────────────────────
+    @app.post("/api/n8n/dialog/resolve")
+    async def n8n_resolve_dialog(body: DialogResolveBody,
+                                 _: None = Depends(require_api_key)):
+        """Тикет клиента для воркфлоу n8n: находит открытый, а нет такого —
+        заводит. Идемпотентно: сколько угодно повторов дают тот же dialog_id.
 
-    @app.get("/api/servers")
-    async def get_servers(operator: dict = Depends(require_auth)):
-        snapshot = server_monitor.get_snapshot()
-        snapshot["is_stub"] = isinstance(server_monitor, StubServerMonitor)
-        return snapshot
+        Панель — единственный владелец диалога. n8n получает отсюда и номер
+        тикета, и флаг ИИ, и слаг сервиса с коллекцией Qdrant, поэтому своей
+        копии состояния (и шанса с ней разойтись) у него больше нет.
+        """
+        data = body.model_dump()
+        service = await resolve_service(db, data)
+        if not service:
+            raise HTTPException(404, "Сервис не опознан: проверьте "
+                                     "business_connection_id в карточке сервиса")
+        dialog = await db.resolve_open_dialog(
+            service, str(body.chat_id),
+            parse_ai_enabled(body.ai_enabled), user_info_from(data),
+        )
+        if dialog["is_new_dialog"]:
+            print(f"[resolve] новый тикет {dialog['dialog_id']} "
+                  f"({service['slug']}, chat_id={body.chat_id})")
+        return {
+            "dialog_id":         dialog["dialog_id"],
+            "ai_enabled":        dialog["ai_enabled"],
+            "status":            dialog["status"],
+            "is_new":            dialog["is_new_dialog"],
+            "service_slug":      service["slug"],
+            "qdrant_collection": service["qdrant_collection"],
+        }
+
+    # ── Состояние серверов и ботов ────────────────────────────────────────────
+
+    @app.get("/api/health")
+    async def get_health(service_id: Optional[int] = None,
+                         operator: dict = Depends(require_auth)):
+        """С service_id — состояние одного ВПН-а; без него сводка по всем
+        доступным оператору (режим «Все сервисы»). Доступно всем операторам —
+        каждый видит только свои сервисы."""
+        ids = await db.get_operator_service_ids(operator)
+        if service_id is not None:
+            if service_id not in ids:
+                raise HTTPException(403, "Нет доступа к этому сервису")
+            ids = [service_id]
+        services = {s["id"]: s for s in await db.get_services()}
+        out = []
+        for sid in ids:
+            service = services.get(sid)
+            if service:
+                out.append(await health.ensure(service))
+        return {"services": out, "isMock": any(s.get("isMock") for s in out),
+                "serversMock": any(s.get("serversMock") for s in out),
+                "botsMock": any(s.get("botsMock") for s in out)}
+
+    @app.post("/api/health/refresh")
+    async def refresh_health(service_id: Optional[int] = None,
+                             operator: dict = Depends(require_auth)):
+        """Кнопка «Обновить»: внеочередной опрос вместо ожидания цикла."""
+        ids = await db.get_operator_service_ids(operator)
+        if service_id is not None:
+            if service_id not in ids:
+                raise HTTPException(403, "Нет доступа к этому сервису")
+            ids = [service_id]
+        services = {s["id"]: s for s in await db.get_services()}
+        out = [await health.refresh(services[sid]) for sid in ids if sid in services]
+        return {"services": out, "isMock": any(s.get("isMock") for s in out),
+                "serversMock": any(s.get("serversMock") for s in out),
+                "botsMock": any(s.get("botsMock") for s in out)}
+
+    @app.get("/api/settings/monitoring")
+    async def get_monitoring(service_id: Optional[int] = None,
+                             operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
+        stored = await db.get_setting_json("monitoring", None, service["id"]) or {}
+        return {**MONITORING_DEFAULTS, **stored,
+                "serviceId": service["id"], "serviceName": service["name"],
+                # Список зарегистрированных источников — админка строит выбор по
+                # нему, поэтому свой провайдер появляется в UI сам собой.
+                "available": {"servers": known_providers("servers"),
+                              "bots": known_providers("bots")}}
+
+    @app.put("/api/settings/monitoring")
+    async def save_monitoring(body: MonitoringBody, service_id: Optional[int] = None,
+                              operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
+        data = body.model_dump()
+        await db.set_setting_json("monitoring", data, service["id"])
+        # Подхватить новый источник сразу, не дожидаясь цикла опроса.
+        asyncio.create_task(health.refresh(service))
+        return {"ok": True}
 
     # ── Statistics ────────────────────────────────────────────────────────────
 
     @app.get("/api/stats")
-    async def get_stats(days: int = 14, operator: dict = Depends(require_auth)):
+    async def get_stats(days: int = 14, service_id: Optional[int] = None,
+                        operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
-        return await db.get_stats(days)
+        return await db.get_stats(days, await _stats_scope(service_id, operator))
 
     @app.get("/api/stats/times")
-    async def get_time_stats(days: int = 30, operator: dict = Depends(require_auth)):
+    async def get_time_stats(days: int = 30, service_id: Optional[int] = None,
+                             operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
-        return await db.get_time_stats(days)
+        return await db.get_time_stats(days, await _stats_scope(service_id, operator))
+
+    async def _stats_scope(service_id: Optional[int], operator: dict) -> list[int]:
+        """Статистика по одному сервису или сводная по всем доступным."""
+        ids = await db.get_operator_service_ids(operator)
+        if service_id is None:
+            return ids
+        if service_id not in ids:
+            raise HTTPException(403, "Нет доступа к этому сервису")
+        return [service_id]
+
+    # ── Services (ВПН-ы) ──────────────────────────────────────────────────────
+
+    def _fmt_service(s: dict, count: int = 0, api: dict = None, fb: dict = None,
+                     mon: dict = None) -> dict:
+        """Карточка сервиса для фронта.
+
+        Адреса апстримов наружу не уходят — только флаг «задан» и маска вида
+        `https://…/api/v1`: по ней видно, что настройка на месте и куда в API
+        она смотрит, но не видно, на какой машине это API живёт. Правится
+        адрес так же, как токен: пустое поле формы означает «оставить
+        прежний». Без `api`/`fb`/`mon` (список для рядового оператора) в
+        ответе не остаётся и масок — там они не нужны.
+        """
+        cfg = (api or {}).get("config") or {}
+        fb_cfg = (fb or {}).get("config") or {}
+        # Remnawave для мониторинга серверов — это monitoring.servers, отдельная
+        # от customer настройка: с источником данных о клиенте она не связана.
+        rw_block = (mon or {}).get("servers") or {}
+        rw_cfg = rw_block.get("config") or {}
+        rw_active = rw_block.get("provider") == "remnawave"
+        admin_view = api is not None or fb is not None or mon is not None
+        out = {
+            "id": s["id"], "slug": s["slug"], "name": s["name"],
+            "color": s["color"], "emoji": s.get("emoji"),
+            "qdrantCollection": s["qdrant_collection"],
+            "dialogIdPrefix": s["dialog_id_prefix"],
+            "isActive": s["is_active"], "sortOrder": s["sort_order"],
+            "activeCount": count,
+        }
+        if not admin_view:
+            return out
+        hook = s.get("n8n_webhook_url") or ""
+        business = s.get("business_connection_id") or ""
+        rw_url = (rw_cfg.get("base_url") or "") if rw_active else ""
+        out.update({
+            "hasN8nWebhookUrl": bool(hook),
+            "n8nWebhookUrlMask": mask_url(hook),
+            "hasBusinessId": bool(business),
+            "businessIdMask": mask_tail(business),
+            "hasApiBaseUrl": bool(cfg.get("base_url")),
+            "apiBaseUrlMask": mask_url(cfg.get("base_url") or ""),
+            "hasApiToken": bool(cfg.get("token")),
+            # Remnawave для статистики серверов (экран «Состояние») — только
+            # когда в monitoring.servers выбран именно remnawave.
+            "hasRemnawaveBaseUrl": bool(rw_url),
+            "remnawaveBaseUrlMask": mask_url(rw_url),
+            "hasRemnawaveToken": bool(rw_cfg.get("token")) if rw_active else False,
+            "hasRemnawaveCookie": bool(rw_cfg.get("cookie")) if rw_active else False,
+            # Резервная отправка. app_hash и строка сессии — секреты и наружу не
+            # уходят никогда, ровно как токен Support API.
+            "fallbackEnabled": bool((fb or {}).get("enabled")),
+            "fallbackAppId": fb_cfg.get("app_id") or "",
+            "fallbackPhone": mask_tail(str(fb_cfg.get("phone") or "")),
+            "fallbackAccount": fb_cfg.get("account") or "",
+            "hasFallbackSession": bool(fb_cfg.get("session")),
+        })
+        return out
+
+    async def _save_service_api(service_id: int, base_url: str, token: str) -> None:
+        """URL и токен Support API живут в настройке `customer` того же сервиса
+        — там же, где их ищет карточка клиента. Пустой токен означает «не
+        трогать сохранённый», иначе правка названия стирала бы доступ."""
+        stored = await db.get_setting_json("customer", None, service_id) or {}
+        cfg = dict(stored.get("config") or {})
+        base_url = (base_url or "").strip().rstrip("/")
+        if not base_url and not token:
+            return
+        cfg["base_url"] = base_url or cfg.get("base_url", "")
+        if token:
+            cfg["token"] = token.strip()
+        # remnawave и http выбирают осознанно на экране «Клиенты», и форма
+        # сервиса их не перебивает. Всё остальное (в том числе мок по
+        # умолчанию) при заполненном URL становится Support API.
+        provider = stored.get("provider")
+        await db.set_setting_json("customer", {
+            **CUSTOMER_DEFAULTS, **stored,
+            "provider": provider if provider in ("remnawave", "http") else "bot_api",
+            "config": cfg,
+        }, service_id)
+        customers.invalidate(service_id)
+
+    async def _save_service_remnawave(service: dict, base_url: str, token: str,
+                                      cookie: str = "") -> None:
+        """Remnawave-поля формы сервиса — ИСКЛЮЧИТЕЛЬНО источник статистики
+        серверов на экране «Состояние» (`monitoring.servers`). С профилем
+        клиента (`customer`, вкладки Профиль/Ключи в карточке) это никак не
+        связано и переключать `customer.provider` эта функция не имеет права
+        — источник данных о клиенте настраивается отдельно, в «Настройки →
+        Источник данных». Пустые токен/cookie при правке — «не трогать
+        сохранённые», как и у Support API. Cookie нужна, только если панель
+        стоит за прокси/WAF, требующим статический заголовок Cookie."""
+        base_url = (base_url or "").strip().rstrip("/")
+        token = (token or "").strip()
+        cookie = (cookie or "").strip()
+        if not base_url and not token and not cookie:
+            return
+        service_id = service["id"]
+
+        stored_m = await db.get_setting_json("monitoring", None, service_id) or {}
+        monitoring = {**MONITORING_DEFAULTS, **stored_m}
+        servers_block = dict(monitoring.get("servers") or {})
+        cfg_s = dict(servers_block.get("config") or {})
+        cfg_s["base_url"] = base_url or cfg_s.get("base_url", "")
+        if token:
+            cfg_s["token"] = token
+        if cookie:
+            cfg_s["cookie"] = cookie
+        monitoring["servers"] = {"provider": "remnawave", "config": cfg_s}
+        await db.set_setting_json("monitoring", monitoring, service_id)
+
+        asyncio.create_task(health.refresh(service))
+
+    async def _check_business_id_free(business_id: str, service_id: int | None) -> None:
+        """Один аккаунт поддержки — один ВПН. В БД это стережёт уникальный
+        индекс, но человеку нужен внятный текст, а не ошибка драйвера."""
+        business_id = (business_id or "").strip()
+        if not business_id:
+            return
+        other = await db.get_service_by_business_id(business_id)
+        if other and other["id"] != service_id:
+            raise HTTPException(409, f"Этот business_id уже занят сервисом «{other['name']}»")
+
+    @app.post("/api/services/test-connection")
+    async def test_service_connection(body: ApiCheckBody,
+                                      operator: dict = Depends(require_auth)):
+        """Проверка адреса и токена до сохранения сервиса: дёргаем /meta и
+        показываем, что за бот ответил. Дешевле, чем завести сервис с опечаткой
+        в токене и выяснить это на живом клиенте."""
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        base_url = (body.base_url or "").strip().rstrip("/")
+        token = (body.token or "").strip()
+        cookie = (body.cookie or "").strip()
+        # Адрес, который админ вписал в форму сам, прятать в ответе незачем —
+        # он его только что напечатал, а без хоста диагностика («не тот порт»,
+        # «имя не резолвится») превращается в гадание. А вот когда взят
+        # сохранённый адрес, показывать его нельзя: он наружу не отдаётся.
+        typed_by_hand = bool(base_url)
+        def _err(e) -> str:
+            return (str(e) if typed_by_hand else redact(e))[:200]
+        # Адрес наружу отдаётся маской, поэтому форма правки шлёт его пустым,
+        # когда менять не собираются — берём сохранённый оттуда же, откуда
+        # берём сохранённый токен, иначе «Проверить» падало бы на исправном
+        # сервисе.
+        if body.service_id is not None and (
+            not base_url or not token or (body.provider == "remnawave" and not cookie)
+        ):
+            # Токен (и кука у remnawave) наружу не отдаются, поэтому форма
+            # правки шлёт их пустыми: берём сохранённые оттуда же, куда их
+            # кладёт соответствующий _save_service_* — bot_api в
+            # customer.config, remnawave в monitoring.servers.config (это
+            # разные настройки, не путать).
+            if body.provider == "remnawave":
+                stored = await db.get_setting_json("monitoring", None, body.service_id) or {}
+                saved_cfg = (stored.get("servers") or {}).get("config") or {}
+                token = token or saved_cfg.get("token") or ""
+                cookie = cookie or saved_cfg.get("cookie") or ""
+            else:
+                stored = await db.get_setting_json("customer", None, body.service_id) or {}
+                saved_cfg = (stored.get("config") or {})
+                token = token or saved_cfg.get("token") or ""
+            base_url = base_url or (saved_cfg.get("base_url") or "").rstrip("/")
+
+        if not base_url:
+            raise HTTPException(400, "Укажите адрес API")
+
+        if body.provider == "remnawave":
+            try:
+                info = await _remnawave_check_connection(base_url, token, cookie or None)
+            except Exception as e:
+                return {"ok": False, "error": _err(e)}
+            return {"ok": True, "botName": f"Remnawave v{info['version']}" if info["version"] else "Remnawave",
+                    "scopes": [f"{info['nodesTotal']} нод"]}
+
+        provider = build_customer_provider(
+            "bot_api", {}, {"base_url": base_url, "token": token})
+        if not provider:
+            raise HTTPException(500, "Провайдер bot_api не зарегистрирован")
+        try:
+            meta = await provider.meta()
+        except Exception as e:
+            return {"ok": False, "error": _err(e)}
+        return {"ok": True, "botId": meta.get("bot_id") or "",
+                "botName": meta.get("bot_name") or "",
+                "scopes": meta.get("scopes") or []}
+
+    @app.get("/api/services")
+    async def get_services(operator: dict = Depends(require_auth)):
+        """Сервисы, доступные оператору, со счётчиком «новые + непрочитанные»
+        для бейджа на пилюле переключателя."""
+        ids = await db.get_operator_service_ids(operator)
+        counts = await db.get_service_counts(ids)
+        services = [s for s in await db.get_services() if s["id"] in ids]
+        return [_fmt_service(s, counts.get(s["id"], 0)) for s in services]
+
+    @app.get("/api/services/all")
+    async def get_all_services(operator: dict = Depends(require_auth)):
+        """Полный список для админки — включая выключенные сервисы. Вместе с
+        адресом Support API, чтобы форма подключения открывалась заполненной."""
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        out = []
+        for s in await db.get_services(only_active=False):
+            api = await db.get_setting_json("customer", None, s["id"]) or {}
+            fb = await db.get_setting_json("fallback_sender", None, s["id"]) or {}
+            mon = await db.get_setting_json("monitoring", None, s["id"]) or {}
+            out.append(_fmt_service(s, 0, api, fb, mon))
+        return out
+
+    @app.post("/api/services")
+    async def create_service(body: ServiceBody, operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not body.name.strip():
+            raise HTTPException(400, "Название обязательно")
+        try:
+            slug = _validate_slug(body.slug)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if await db.get_service_by_slug(slug):
+            raise HTTPException(409, "Сервис с таким слагом уже есть")
+        await _check_business_id_free(body.business_id, None)
+        service = await db.create_service(
+            slug, body.name.strip(), body.color, body.emoji, body.n8n_webhook_url,
+            body.business_id,
+        )
+        await _save_service_api(service["id"], body.api_base_url, body.api_token)
+        await _save_service_remnawave(service, body.remnawave_base_url, body.remnawave_token, body.remnawave_cookie)
+        # Пустая коллекция создаётся сразу — воркфлоу n8n сможет обращаться к
+        # ней ещё до первой загрузки базы знаний.
+        try:
+            from app.kb import ensure_collection
+            await ensure_collection(settings.QDRANT_URL, service["qdrant_collection"])
+        except Exception as e:
+            print(f"[services] ensure_collection failed: {e}")
+        await ws.broadcast({"type": "services_changed"})
+        return _fmt_service(service, 0,
+                            await db.get_setting_json("customer", None, service["id"]),
+                            await db.get_setting_json("fallback_sender", None, service["id"]),
+                            await db.get_setting_json("monitoring", None, service["id"]))
+
+    @app.put("/api/services/{service_id}")
+    async def update_service(service_id: int, body: ServiceBody,
+                             operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not body.name.strip():
+            raise HTTPException(400, "Название обязательно")
+        await _check_business_id_free(body.business_id, service_id)
+        service = await db.update_service(
+            service_id, body.name.strip(), body.color, body.emoji,
+            body.n8n_webhook_url, body.is_active, body.business_id,
+        )
+        if not service:
+            raise HTTPException(404)
+        await _save_service_api(service_id, body.api_base_url, body.api_token)
+        await _save_service_remnawave(service, body.remnawave_base_url, body.remnawave_token, body.remnawave_cookie)
+        await ws.broadcast({"type": "services_changed"})
+        return _fmt_service(service, 0,
+                            await db.get_setting_json("customer", None, service_id),
+                            await db.get_setting_json("fallback_sender", None, service_id),
+                            await db.get_setting_json("monitoring", None, service_id))
+
+    @app.delete("/api/services/{service_id}")
+    async def delete_service(service_id: int, operator: dict = Depends(require_auth)):
+        """Удаление сервиса уносит его диалоги, сообщения и статьи БЗ — поэтому
+        последний сервис удалить нельзя, иначе входящим некуда попадать."""
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await db.get_service(service_id)
+        if not service:
+            raise HTTPException(404)
+        if len(await db.get_services(only_active=False)) <= 1:
+            raise HTTPException(400, "Нельзя удалить единственный сервис")
+        await db.delete_service(service_id)
+        try:
+            from app.kb import delete_collection
+            await delete_collection(settings.QDRANT_URL, service["qdrant_collection"])
+        except Exception as e:
+            print(f"[services] delete_collection failed: {e}")
+        await ws.broadcast({"type": "services_changed"})
+        return {"ok": True}
+
+    # ── Резервная отправка ────────────────────────────────────────────────────
+    # Ответ оператора уходит через n8n в business-чат Telegram, и тот иногда
+    # отвечает BUSINESS_PEER_USAGE_MISSING. Резервный канал шлёт то же самое по
+    # MTProto от того же аккаунта поддержки — клиент видит сообщение в той же
+    # переписке. Настраивается в форме сервиса.
+
+    async def _require_fallback(service_id: int, operator: dict) -> dict:
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not fallback:
+            raise HTTPException(503, "Резервная отправка не собрана в этой установке")
+        service = await db.get_service(service_id)
+        if not service:
+            raise HTTPException(404, "Сервис не найден")
+        return service
+
+    @app.post("/api/services/{service_id}/fallback/send-code")
+    async def fallback_send_code(service_id: int, body: FallbackAuthBody,
+                                 operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        try:
+            return await fallback.send_code(service_id, body.app_id, body.app_hash,
+                                            body.phone.strip())
+        except Exception as e:
+            raise HTTPException(400, redact(e)[:200])
+
+    @app.post("/api/services/{service_id}/fallback/sign-in")
+    async def fallback_sign_in(service_id: int, body: FallbackCodeBody,
+                               operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        try:
+            return await fallback.sign_in(service_id, body.code.strip(), body.password)
+        except Exception as e:
+            raise HTTPException(400, redact(e)[:200])
+
+    @app.post("/api/services/{service_id}/fallback/session")
+    async def fallback_set_session(service_id: int, body: FallbackSessionBody,
+                                   operator: dict = Depends(require_auth)):
+        """Строка сессии, сгенерированная снаружи. Сразу проверяем её боем: без
+        проверки админ узнал бы об опечатке на первом же несработавшем фолбеке."""
+        await _require_fallback(service_id, operator)
+        stored = await fallback.settings(service_id)
+        await fallback.save(service_id, {
+            **stored, "enabled": True,
+            "config": {**(stored.get("config") or {}), "app_id": body.app_id,
+                       "app_hash": body.app_hash, "phone": body.phone.strip(),
+                       "session": body.session.strip(), "account": ""},
+        })
+        result = await fallback.check(service_id)
+        if result.get("ok"):
+            fresh = await fallback.settings(service_id)
+            await fallback.save(service_id, {
+                **fresh, "config": {**(fresh.get("config") or {}),
+                                    "account": result.get("account") or ""}})
+        return result
+
+    @app.post("/api/services/{service_id}/fallback/test")
+    async def fallback_test(service_id: int, operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        return await fallback.check(service_id)
+
+    @app.patch("/api/services/{service_id}/fallback")
+    async def fallback_toggle(service_id: int, body: FallbackToggleBody,
+                              operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        stored = await fallback.settings(service_id)
+        await fallback.save(service_id, {**stored, "enabled": body.enabled})
+        return {"ok": True, "enabled": body.enabled}
+
+    @app.delete("/api/services/{service_id}/fallback")
+    async def fallback_forget(service_id: int, operator: dict = Depends(require_auth)):
+        """Отвязать аккаунт: сессия удаляется, канал выключается."""
+        await _require_fallback(service_id, operator)
+        await fallback.save(service_id, {"enabled": False, "config": {}})
+        return {"ok": True}
+
+    # ── Папки тикетов ─────────────────────────────────────────────────────────
+    # Папка — второй срез списка поверх статусов: тикет остаётся в «В работе»
+    # или «Ожидании» и дополнительно лежит в папке, куда его положил оператор.
+    # Создаёт и правит папки админ, раскладывает по ним — любой оператор.
+
+    def _fmt_folder(f: dict) -> dict:
+        return {"id": f["id"], "serviceId": f["service_id"], "name": f["name"],
+                "emoji": f.get("emoji") or "📁", "color": f.get("color") or "#4F8EF7",
+                "sortOrder": f.get("sort_order") or 0,
+                "openCount": int(f.get("open_count") or 0)}
+
+    async def require_folder(folder_id: int, operator: dict) -> dict:
+        folder = await db.get_folder(folder_id)
+        if not folder:
+            raise HTTPException(404, "Папка не найдена")
+        if folder["service_id"] not in await db.get_operator_service_ids(operator):
+            raise HTTPException(403, "Нет доступа к этому сервису")
+        return folder
+
+    @app.get("/api/folders")
+    async def get_folders(service_id: Optional[int] = None,
+                          operator: dict = Depends(require_auth)):
+        """С service_id — папки одного ВПН-а; без него — всех доступных."""
+        ids = await db.get_operator_service_ids(operator)
+        if service_id is not None:
+            if service_id not in ids:
+                raise HTTPException(403, "Нет доступа к этому сервису")
+            ids = [service_id]
+        return [_fmt_folder(f) for f in await db.get_folders(ids)]
+
+    @app.post("/api/folders")
+    async def create_folder(body: FolderBody, service_id: Optional[int] = None,
+                            operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        if not body.name.strip():
+            raise HTTPException(400, "Название обязательно")
+        service = await require_service(service_id, operator)
+        folder = await db.create_folder(service["id"], body.name.strip(),
+                                        body.emoji.strip() or "📁", body.color)
+        await ws.broadcast({"type": "folders_changed", "service_id": service["id"]})
+        return _fmt_folder(folder)
+
+    @app.put("/api/folders/{folder_id}")
+    async def update_folder(folder_id: int, body: FolderBody,
+                            operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        folder = await require_folder(folder_id, operator)
+        if not body.name.strip():
+            raise HTTPException(400, "Название обязательно")
+        updated = await db.update_folder(folder_id, body.name.strip(),
+                                         body.emoji.strip() or "📁", body.color,
+                                         body.sort_order)
+        await ws.broadcast({"type": "folders_changed", "service_id": folder["service_id"]})
+        return _fmt_folder(updated)
+
+    @app.delete("/api/folders/{folder_id}")
+    async def delete_folder(folder_id: int, operator: dict = Depends(require_auth)):
+        """Тикеты из удалённой папки не пропадают — просто перестают быть
+        разложенными (folder_id → NULL по внешнему ключу)."""
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        folder = await require_folder(folder_id, operator)
+        await db.delete_folder(folder_id)
+        await ws.broadcast({"type": "folders_changed", "service_id": folder["service_id"]})
+        return {"ok": True}
+
+    @app.post("/api/dialogs/{dialog_id}/folder")
+    async def set_dialog_folder(dialog_id: str, body: DialogFolderBody,
+                                operator: dict = Depends(require_auth)):
+        dialog = await require_dialog_write(dialog_id, operator)
+        if body.folder_id is not None:
+            folder = await require_folder(body.folder_id, operator)
+            if folder["service_id"] != dialog["service_id"]:
+                raise HTTPException(400, "Папка другого сервиса")
+        await db.set_dialog_folder(dialog_id, body.folder_id)
+        updated = await db.get_dialog(dialog_id)
+        await ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+                           updated["service_id"])
+        return {"ok": True, "folderId": body.folder_id}
 
     # ── Operators ─────────────────────────────────────────────────────────────
 
     @app.get("/api/operators")
     async def get_operators(operator: dict = Depends(require_auth)):
-        return [_fmt_operator(op) for op in await db.get_operators()]
+        ops = await db.get_operators()
+        result = []
+        for op in ops:
+            fmt = _fmt_operator(op)
+            fmt["serviceIds"] = await db.get_operator_flag_ids(op["id"])
+            result.append(fmt)
+        return result
+
+    @app.put("/api/operators/{op_id}/services")
+    async def set_operator_services(op_id: int, body: OperatorServicesBody,
+                                    operator: dict = Depends(require_auth)):
+        """Флаги доступа к ВПН-ам. Снятый флаг возвращает тикеты оператора в
+        этом сервисе в очередь, новый — сразу подключает его к раздаче."""
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        target = await db.get_operator(op_id)
+        if not target:
+            raise HTTPException(404)
+        known = {s["id"] for s in await db.get_services(only_active=False)}
+        unknown = [sid for sid in body.service_ids if sid not in known]
+        if unknown:
+            raise HTTPException(400, f"Неизвестные сервисы: {unknown}")
+        removed = await db.set_operator_services(op_id, body.service_ids)
+        for sid in removed:
+            await routing.release_operator_service(target["name"], sid)
+        ws.set_operator_services(op_id, await db.get_operator_service_ids(target))
+        await ws.send_to_operator(op_id, {"type": "services_changed"})
+        await routing.emit_counts()
+        asyncio.create_task(routing.drain())
+        return {"ok": True, "service_ids": body.service_ids}
 
     @app.get("/api/operators/me/notifications")
     async def get_my_notif_prefs(operator: dict = Depends(require_auth)):
@@ -637,7 +1549,11 @@ def build_app(
             if len(body.password) < 6:
                 raise HTTPException(400, "Password must be at least 6 characters")
             await db.set_password(op["id"], hash_password(body.password))
-        return _fmt_operator(op)
+        if body.service_ids:
+            await db.set_operator_services(op["id"], body.service_ids)
+        result = _fmt_operator(op)
+        result["serviceIds"] = await db.get_operator_flag_ids(op["id"])
+        return result
 
     @app.put("/api/operators/{op_id}")
     async def update_operator(op_id: int, body: OperatorBody, operator: dict = Depends(require_auth)):
@@ -646,7 +1562,9 @@ def build_app(
         result = await db.update_operator(op_id, body.name, body.tg, body.role, tg_id=body.tg_id)
         if not result:
             raise HTTPException(404)
-        return _fmt_operator(result)
+        fmt = _fmt_operator(result)
+        fmt["serviceIds"] = await db.get_operator_flag_ids(op_id)
+        return fmt
 
     @app.delete("/api/operators/{op_id}")
     async def delete_operator(op_id: int, operator: dict = Depends(require_auth)):
@@ -662,56 +1580,70 @@ def build_app(
     # ── Settings: AI ──────────────────────────────────────────────────────────
 
     @app.get("/api/settings/ai")
-    async def get_ai_settings(operator: dict = Depends(require_auth)):
-        stored = await db.get_setting_json("ai_settings", None) or {}
+    async def get_ai_settings(service_id: Optional[int] = None,
+                              operator: dict = Depends(require_auth)):
+        service = await require_service(service_id, operator)
+        stored = await db.get_setting_json("ai_settings", None, service["id"]) or {}
         # merge so settings saved before 'model' existed still expose the default
-        return {**_AI_DEFAULTS, **stored}
+        return {**_AI_DEFAULTS, **stored, "serviceId": service["id"], "serviceName": service["name"]}
 
-    async def _sync_ai_settings_to_redis(ai: dict):
-        """Push AI settings to the Redis copy the n8n agent reads, rebuilding
-        the escalation instruction from scratch every time (strip, then
-        conditionally re-add exactly one copy). EVERY endpoint that rewrites
-        vpn_bot:ai_settings must go through here — writing the raw prompt
-        silently kills auto-handoff (the model stops being told how to
-        escalate), and appending without stripping first can leave a stale
-        copy behind when the toggle is switched off."""
-        automation = await db.get_setting_json("automation", None) or {}
+    async def _sync_ai_settings_to_redis(ai: dict, service: dict):
+        """Push AI settings to the Redis copy the n8n agent reads. The responder
+        prompt goes out raw; the gate/handoff instruction is published as a
+        separate `handoff_prompt` field the n8n gate node reads on its own — no
+        concatenation. An emptied-out instruction falls back to the default so
+        the gate never loses its routing criteria. EVERY endpoint that rewrites
+        vpn_bot:<slug>:ai_settings must go through here.
+
+        Ключ пер-сервисный: у каждого ВПН-а свой воркфлоу n8n и свой промпт."""
+        automation = await db.get_setting_json("automation", None, service["id"]) or {}
         n8n_data = dict(ai)
-        n8n_data["prompt"] = _build_n8n_prompt(
-            ai.get("prompt"),
-            bool(ai.get("handoff_enabled")),
-            automation.get("handoff_instruction_text") or "",
+        n8n_data["prompt"] = ai.get("prompt") or ""
+        n8n_data["handoff_prompt"] = (
+            (automation.get("handoff_instruction_text") or "").strip()
+            or _AUTOMATION_DEFAULTS["handoff_instruction_text"]
         )
-        await n8n.redis.set("vpn_bot:ai_settings", json.dumps(n8n_data, ensure_ascii=False))
+        await n8n.redis.set(
+            f"vpn_bot:{service['slug']}:ai_settings", json.dumps(n8n_data, ensure_ascii=False)
+        )
 
     @app.put("/api/settings/ai")
-    async def save_ai_settings(body: AISettingsBody, operator: dict = Depends(require_auth)):
+    async def save_ai_settings(body: AISettingsBody, service_id: Optional[int] = None,
+                               operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
         data = body.model_dump()
-        await db.set_setting_json("ai_settings", data)
-        await _sync_ai_settings_to_redis(data)
+        await db.set_setting_json("ai_settings", data, service["id"])
+        await _sync_ai_settings_to_redis(data, service)
         return {"ok": True}
 
     # ── Settings: Schedule ────────────────────────────────────────────────────
 
     @app.get("/api/settings/schedule")
-    async def get_schedule(operator: dict = Depends(require_auth)):
-        return await db.get_setting_json("schedule", _SCHEDULE_DEFAULTS)
+    async def get_schedule(service_id: Optional[int] = None,
+                           operator: dict = Depends(require_auth)):
+        service = await require_service(service_id, operator)
+        return await db.get_setting_json("schedule", _SCHEDULE_DEFAULTS, service["id"])
 
     @app.put("/api/settings/schedule")
-    async def save_schedule(body: ScheduleBody, operator: dict = Depends(require_auth)):
+    async def save_schedule(body: ScheduleBody, service_id: Optional[int] = None,
+                            operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
-        await db.set_setting_json("schedule", body.schedule)
-        await n8n.redis.set("vpn_bot:schedule", json.dumps(body.schedule, ensure_ascii=False))
+        service = await require_service(service_id, operator)
+        await db.set_setting_json("schedule", body.schedule, service["id"])
+        await n8n.redis.set(
+            f"vpn_bot:{service['slug']}:schedule", json.dumps(body.schedule, ensure_ascii=False)
+        )
         return {"ok": True}
 
     # ── Knowledge Base ────────────────────────────────────────────────────────
 
     @app.get("/api/kb")
-    async def get_kb(operator: dict = Depends(require_auth)):
-        articles = await db.get_kb_articles()
+    async def get_kb(service_id: Optional[int] = None, operator: dict = Depends(require_auth)):
+        service = await require_service(service_id, operator)
+        articles = await db.get_kb_articles(service["id"])
         for a in articles:
             try:
                 a["keywords"] = json.loads(a["keywords"])
@@ -720,9 +1652,11 @@ def build_app(
         return articles
 
     @app.post("/api/kb/upload")
-    async def upload_kb(file: UploadFile = File(...), operator: dict = Depends(require_auth)):
+    async def upload_kb(file: UploadFile = File(...), service_id: Optional[int] = None,
+                        operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
         if not settings.OPENAI_API_KEY:
             raise HTTPException(400, "OPENAI_API_KEY is required for embeddings")
         if not file.filename.endswith((".txt", ".md")):
@@ -730,40 +1664,44 @@ def build_app(
         text = (await file.read()).decode("utf-8", errors="ignore")
         if not text.strip():
             raise HTTPException(400, "File is empty")
-        chunks = await process_document(text, chat_client, settings.OPENAI_API_KEY, settings.QDRANT_URL)
+        # У каждого сервиса своя коллекция Qdrant — базы знаний не смешиваются.
+        # db+service_id заставляют process_document полностью заменить прежнюю
+        # базу знаний сервиса новой — иначе разделы, удалённые из документа при
+        # правке, навсегда оставались бы в поиске ИИ.
+        chunks = await process_document(
+            text, kb_chat_client, settings.OPENAI_API_KEY, settings.QDRANT_URL,
+            service["qdrant_collection"], db=db, service_id=service["id"],
+        )
         for c in chunks:
             await db.save_kb_article(
                 c["id"], c["title"], c["category"],
                 json.dumps(c["keywords"], ensure_ascii=False),
-                c["content"],
+                c["content"], service["id"],
             )
         return {"chunks_created": len(chunks), "ids": [c["id"] for c in chunks]}
 
     @app.delete("/api/kb")
-    async def reset_kb_all(operator: dict = Depends(require_auth)):
+    async def reset_kb_all(service_id: Optional[int] = None,
+                           operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
-        await db.reset_kb()
-        from qdrant_client import AsyncQdrantClient
-        from app.kb import ensure_collection
-        client = AsyncQdrantClient(url=settings.QDRANT_URL)
-        try:
-            await client.delete_collection("kb")
-        except Exception:
-            pass
-        finally:
-            await client.close()
-        await ensure_collection(settings.QDRANT_URL)
+        service = await require_service(service_id, operator)
+        from app.kb import delete_collection, ensure_collection
+        await db.reset_kb(service["id"])
+        await delete_collection(settings.QDRANT_URL, service["qdrant_collection"])
+        await ensure_collection(settings.QDRANT_URL, service["qdrant_collection"])
         return {"ok": True}
 
     @app.delete("/api/kb/{article_id}")
-    async def delete_kb_article(article_id: str, operator: dict = Depends(require_auth)):
+    async def delete_kb_article(article_id: str, service_id: Optional[int] = None,
+                                operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
-        ok = await db.delete_kb_article(article_id)
+        service = await require_service(service_id, operator)
+        ok = await db.delete_kb_article(article_id, service["id"])
         if not ok:
             raise HTTPException(404)
-        await delete_from_qdrant(article_id, settings.QDRANT_URL)
+        await delete_from_qdrant(article_id, settings.QDRANT_URL, service["qdrant_collection"])
         return {"ok": True}
 
     # ── Settings: Sounds ─────────────────────────────────────────────────────
@@ -794,46 +1732,59 @@ def build_app(
     # ── Settings: Automation ─────────────────────────────────────────────────
 
     @app.get("/api/settings/automation")
-    async def get_automation(operator: dict = Depends(require_auth)):
-        stored = await db.get_setting_json("automation", None) or {}
+    async def get_automation(service_id: Optional[int] = None,
+                             operator: dict = Depends(require_auth)):
+        service = await require_service(service_id, operator)
+        stored = await db.get_setting_json("automation", None, service["id"]) or {}
         # merge so settings saved before new keys existed still expose defaults
-        return {**_AUTOMATION_DEFAULTS, **stored}
+        return {**_AUTOMATION_DEFAULTS, **stored,
+                "serviceId": service["id"], "serviceName": service["name"]}
 
     @app.put("/api/settings/automation")
-    async def save_automation(body: AutomationSettingsBody, operator: dict = Depends(require_auth)):
+    async def save_automation(body: AutomationSettingsBody, service_id: Optional[int] = None,
+                              operator: dict = Depends(require_auth)):
+        """Вся вкладка «Автоматизация» настраивается отдельно у каждого ВПН-а —
+        включая лимит тикетов на оператора и грейс офлайна."""
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
         data = body.model_dump()
-        await db.set_setting_json("automation", data)
+        await db.set_setting_json("automation", data, service["id"])
         # Синхронизировать auto_handoff_enabled → ai_settings для консьюмеров
         # (get_setting_json returns the default object AS-IS when nothing is
         # stored yet — never mutate it in place, or the process-wide default
         # gets corrupted on the very first save of a fresh install)
-        ai = await db.get_setting_json("ai_settings", None) or dict(_AI_DEFAULTS)
+        ai = await db.get_setting_json("ai_settings", None, service["id"]) or dict(_AI_DEFAULTS)
         ai["handoff_enabled"] = data["auto_handoff_enabled"]
-        await db.set_setting_json("ai_settings", ai)
+        await db.set_setting_json("ai_settings", ai, service["id"])
         # через общий хелпер — иначе инструкция эскалации пропадёт из промпта
-        await _sync_ai_settings_to_redis(ai)
+        await _sync_ai_settings_to_redis(ai, service)
+        # Лимит слотов мог вырасти — раздать очередь по новой ёмкости.
+        asyncio.create_task(routing.drain())
         return {"ok": True}
 
     # ── Broadcast ─────────────────────────────────────────────────────────────
 
     @app.post("/api/broadcast")
-    async def broadcast_msg(body: BroadcastBody, operator: dict = Depends(require_auth)):
+    async def broadcast_msg(body: BroadcastBody, service_id: Optional[int] = None,
+                            operator: dict = Depends(require_auth)):
+        """Рассылка идёт клиентам ОДНОГО сервиса и уходит через его бота.
+        Лок тоже пер-сервисный — рассылка в одном ВПН-е не блокирует другой."""
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
         if not body.text.strip():
             raise HTTPException(400, "Текст не может быть пустым")
-        lock_key = "vpn_bot:broadcast_lock"
+        lock_key = f"vpn_bot:broadcast_lock:{service['slug']}"
         if await n8n.redis.get(lock_key):
             raise HTTPException(429, "Рассылка уже выполняется")
         await n8n.redis.set(lock_key, "1", ex=30)
-        chat_ids = await db.get_all_chat_ids()
+        chat_ids = await db.get_all_chat_ids(service["id"])
         sent = 0
         failed = 0
         try:
             for cid in chat_ids:
-                ok = await n8n.send_to_user(cid, body.text)
+                ok = await n8n.send_to_user(cid, body.text, service=service)
                 if ok:
                     sent += 1
                 else:
@@ -847,42 +1798,59 @@ def build_app(
     # ── Templates ─────────────────────────────────────────────────────────────
 
     @app.get("/api/templates")
-    async def get_templates(operator: dict = Depends(require_auth)):
-        return await db.get_templates()
+    async def get_templates(service_id: Optional[int] = None,
+                            operator: dict = Depends(require_auth)):
+        service = await require_service(service_id, operator)
+        return await db.get_templates(service["id"])
 
     @app.post("/api/templates")
-    async def create_template(body: TemplateBody, operator: dict = Depends(require_auth)):
+    async def create_template(body: TemplateBody, service_id: Optional[int] = None,
+                              operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
         if not body.title.strip() or not body.text.strip():
             raise HTTPException(400, "Название и текст обязательны")
-        return await db.save_template(None, body.group_name.strip() or "Общие", body.title.strip(), body.text.strip())
+        return await db.save_template(
+            None, body.group_name.strip() or "Общие", body.title.strip(), body.text.strip(),
+            service["id"],
+        )
 
     @app.put("/api/templates/{template_id}")
-    async def update_template(template_id: int, body: TemplateBody, operator: dict = Depends(require_auth)):
+    async def update_template(template_id: int, body: TemplateBody,
+                              service_id: Optional[int] = None,
+                              operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
-        row = await db.save_template(template_id, body.group_name.strip() or "Общие", body.title.strip(), body.text.strip())
+        service = await require_service(service_id, operator)
+        row = await db.save_template(
+            template_id, body.group_name.strip() or "Общие", body.title.strip(),
+            body.text.strip(), service["id"],
+        )
         if not row:
             raise HTTPException(404)
         return row
 
     @app.delete("/api/templates/{template_id}")
-    async def delete_template_ep(template_id: int, operator: dict = Depends(require_auth)):
+    async def delete_template_ep(template_id: int, service_id: Optional[int] = None,
+                                 operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
-        ok = await db.delete_template(template_id)
+        service = await require_service(service_id, operator)
+        ok = await db.delete_template(template_id, service["id"])
         if not ok:
             raise HTTPException(404)
         return {"ok": True}
 
     @app.patch("/api/templates/group")
-    async def rename_template_group(body: RenameGroupBody, operator: dict = Depends(require_auth)):
+    async def rename_template_group(body: RenameGroupBody, service_id: Optional[int] = None,
+                                    operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
         if not body.new_name.strip():
             raise HTTPException(400, "Название группы не может быть пустым")
-        await db.rename_template_group(body.old_name.strip(), body.new_name.strip())
+        await db.rename_template_group(body.old_name.strip(), body.new_name.strip(), service["id"])
         return {"ok": True}
 
     # ── WebSocket ─────────────────────────────────────────────────────────────
@@ -893,15 +1861,21 @@ def build_app(
         if not op_id:
             await websocket.close(code=4001)
             return
-        went_online = await ws.connect(websocket, op_id)
+        op = await db.get_operator(op_id)
+        if not op:
+            await websocket.close(code=4001)
+            return
+        # Сокет запоминает доступные сервисы: события по чужим ВПН-ам на эту
+        # вкладку не пойдут.
+        went_online = await ws.connect(websocket, op_id, await db.get_operator_service_ids(op))
+        await routing.emit_counts()
         if went_online:
-            op = await db.get_operator(op_id)
             await db.set_operator_online(op_id, True)
             # back within the grace period — cancel the offline timer
             await db.set_operator_offline_since(op_id, False)
-            await ws.broadcast({"type": "operator_status", "op_id": op_id, "online": True, "paused": op.get("paused", False) if op else False})
-            if op:
-                asyncio.create_task(routing.drain())
+            await ws.broadcast({"type": "operator_status", "op_id": op_id, "online": True,
+                                "paused": op.get("paused", False)})
+            asyncio.create_task(routing.drain())
         try:
             while True:
                 text = await websocket.receive_text()
@@ -914,6 +1888,11 @@ def build_app(
                 # start the offline grace timer; the routing sweeper releases
                 # the operator's in_progress tickets when it expires
                 await db.set_operator_offline_since(departed_id, True)
-                await ws.broadcast({"type": "operator_status", "op_id": departed_id, "online": False, "paused": False})
+                # last_seen проставлен в set_operator_online — перечитываем, чтобы
+                # в списке операторов сразу встало «был в сети», а не «не заходил».
+                departed = await db.get_operator(departed_id)
+                await ws.broadcast({"type": "operator_status", "op_id": departed_id,
+                                    "online": False, "paused": False,
+                                    "last_seen": _fmt_operator(departed)["lastSeen"] if departed else None})
 
     return app

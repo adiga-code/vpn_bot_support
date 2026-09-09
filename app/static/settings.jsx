@@ -2,23 +2,73 @@
 
 const { useState: useStateT, useEffect: useEffectT, useMemo: useMemoT } = React;
 
-function SettingsScreen({ operators: ops, setOperators, showToast, currentOperator }) {
+// Все контентные настройки (промпт, БЗ, автоматизация, шаблоны, рассылка)
+// пер-сервисные — запросы всегда несут service_id открытого ВПН-а.
+function svcQuery(service, extra = "") {
+  const q = service ? `service_id=${service.id}` : "";
+  const all = [q, extra].filter(Boolean).join("&");
+  return all ? "?" + all : "";
+}
+
+// Плашка «какой ВПН сейчас правим» — чтобы админ не отредактировал промпт или
+// не отправил рассылку не тому сервису.
+function ServiceBanner({ service, hint }) {
+  if (!service) return null;
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#13131a] border border-[#2a2a3a]/60 text-xs">
+      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: service.color }}></span>
+      <span className="text-[#6b7280]">Сервис:</span>
+      <span className="text-[#f1f1f5] font-semibold">{service.name}</span>
+      <span className="text-[#6b7280] font-mono text-[10px]">{service.slug}</span>
+      {hint && <span className="text-[#6b7280] ml-auto">{hint}</span>}
+    </div>
+  );
+}
+
+function SettingsScreen({ operators: ops, setOperators, showToast, currentOperator,
+                          services = [], serviceId = null, onServicesChanged,
+                          mobileChrome = null }) {
   const isAdmin = currentOperator?.role === "admin";
   const defaultSection = isAdmin ? "operators" : "profile";
   const [section, setSection] = useStateT(defaultSection);
   const [modalOpen, setModalOpen] = useStateT(false);
   const [editingOp, setEditingOp] = useStateT(null);
   const [confirmDelete, setConfirmDelete] = useStateT(null);
+  // Телефон: null — список разделов, иначе открыт конкретный раздел.
+  const [mobileSection, setMobileSection] = useStateT(null);
 
+  // Настройки всегда правятся у конкретного ВПН-а: промпт, база знаний,
+  // автоматизация и рассылка у каждого свои.
+  const svc = services.find((s) => s.id === serviceId) || null;
+
+  // hint — подпись под названием в мобильном списке; scope делит список на
+  // «настройки этого ВПН-а» и «общие для всех».
   const allSections = [
-    { id: "operators",     label: "Операторы",    icon: "operators", adminOnly: true  },
-    { id: "profile",       label: "Профиль",      icon: "user",      adminOnly: false },
-    { id: "ai",            label: "ИИ-настройки", icon: "sparkles",  adminOnly: true  },
-    { id: "kb",            label: "База знаний",  icon: "book",      adminOnly: true  },
-    { id: "automation",    label: "Автоматизация",icon: "zap",       adminOnly: true  },
-    { id: "sounds",        label: "Звуки",        icon: "bellRing",  adminOnly: true  },
-    { id: "broadcast",     label: "Рассылка",     icon: "megaphone", adminOnly: true  },
-    { id: "templates",     label: "Шаблоны",      icon: "template",  adminOnly: true  },
+    { id: "operators",  label: "Операторы",     icon: "operators", adminOnly: true,  scope: "common",
+      hint: "команда, роли, доступ к ВПН" },
+    { id: "services",   label: "Сервисы",       icon: "server",    adminOnly: true,  scope: "common",
+      hint: "подключить ВПН: API, токен, business_id" },
+    { id: "profile",    label: "Профиль",       icon: "user",      adminOnly: false, scope: "common",
+      hint: "имя, пароль, уведомления" },
+    { id: "ai",         label: "ИИ-настройки",  icon: "sparkles",  adminOnly: true,  scope: "service",
+      hint: "промпт, модель, автоответ" },
+    { id: "kb",         label: "База знаний",   icon: "book",      adminOnly: true,  scope: "service",
+      hint: "статьи для ответов ИИ" },
+    { id: "automation", label: "Автоматизация", icon: "zap",       adminOnly: true,  scope: "service",
+      hint: "эскалация, оценки, лимиты" },
+    // advanced: URL и токен теперь спрашивают прямо в форме сервиса, поэтому
+    // сюда заходят редко — только чтобы выбрать другой источник или погасить
+    // отдельные кнопки. В меню уезжает вниз, под разделитель.
+    { id: "customer",   label: "Источник данных", icon: "user",    adminOnly: true,  scope: "service",
+      advanced: true, hint: "нужно, только если это не Support API бота" },
+    { id: "sounds",     label: "Звуки",         icon: "bellRing",  adminOnly: true,  scope: "common",
+      hint: "новое сообщение, вызов оператора" },
+    { id: "broadcast",  label: "Рассылка",      icon: "megaphone", adminOnly: true,  scope: "service",
+      hint: "сообщение клиентам сервиса" },
+    { id: "templates",  label: "Шаблоны",       icon: "template",  adminOnly: true,  scope: "service",
+      hint: "быстрые ответы по «/»" },
+    { id: "folders",    label: "Папки",         icon: "grid",      adminOnly: true,  scope: "service",
+      hint: "свои разделы в списке тикетов" },
   ];
   const sections = allSections.filter(s => !s.adminOnly || isAdmin);
 
@@ -50,38 +100,29 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
     setConfirmDelete(null);
   }
 
-  return (
-    <div className="flex-1 flex bg-[#0d0d12] min-h-0">
-      <aside className="w-[240px] shrink-0 bg-[#13131a] border-r border-[#2a2a3a] p-4">
-        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3 px-2">Настройки</div>
-        <nav className="space-y-0.5">
-          {sections.map((s) => (
-            <button key={s.id} onClick={() => setSection(s.id)}
-              className={"w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition " +
-                (section === s.id ? "bg-[#4F8EF7]/15 text-[#7BA8F9]" : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}>
-              <Icon name={s.icon} className="w-4 h-4" />
-              {s.label}
-            </button>
-          ))}
-        </nav>
-      </aside>
+  const sectionBody = (
+    <>
+      {section === "operators"     && <OperatorsSection operators={ops} services={services} showToast={showToast} setOperators={setOperators} onAdd={() => { setEditingOp(null); setModalOpen(true); }} onEdit={(op) => { setEditingOp(op); setModalOpen(true); }} onDelete={(op) => setConfirmDelete(op)} />}
+      {section === "services"      && <ServicesSection showToast={showToast} onChanged={onServicesChanged} />}
+      {section === "profile"       && <ProfileSection showToast={showToast} />}
+      {section === "ai"            && <AISection showToast={showToast} service={svc} />}
+      {section === "kb"            && <KBSection service={svc} />}
+      {section === "automation"    && <AutomationSection showToast={showToast} service={svc} />}
+      {section === "customer"      && <CustomerSection showToast={showToast} service={svc} />}
+      {section === "sounds"        && <SoundsSection showToast={showToast} />}
+      {section === "broadcast"     && <BroadcastSection showToast={showToast} service={svc} />}
+      {section === "templates"     && <TemplatesSection showToast={showToast} service={svc} />}
+      {section === "folders"       && <FoldersSection showToast={showToast} service={svc} />}
+    </>
+  );
 
-      <div className="flex-1 overflow-y-auto scrollbar-thin">
-        {section === "operators"     && <OperatorsSection operators={ops} onAdd={() => { setEditingOp(null); setModalOpen(true); }} onEdit={(op) => { setEditingOp(op); setModalOpen(true); }} onDelete={(op) => setConfirmDelete(op)} />}
-        {section === "profile"       && <ProfileSection showToast={showToast} />}
-        {section === "ai"            && <AISection showToast={showToast} />}
-        {section === "kb"            && <KBSection />}
-        {section === "automation"    && <AutomationSection showToast={showToast} />}
-        {section === "sounds"        && <SoundsSection showToast={showToast} />}
-        {section === "broadcast"     && <BroadcastSection showToast={showToast} />}
-        {section === "templates"     && <TemplatesSection showToast={showToast} />}
-      </div>
-
-      {modalOpen && <OperatorModal editing={editingOp} onClose={() => setModalOpen(false)} onSave={saveOperator} />}
+  const modals = (
+    <>
+      {modalOpen && <OperatorModal editing={editingOp} services={services} onClose={() => setModalOpen(false)} onSave={saveOperator} />}
 
       {confirmDelete && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirmDelete(null)}>
-          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setConfirmDelete(null)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
             <div className="font-semibold text-[#f1f1f5] mb-1">Удалить оператора?</div>
             <div className="text-sm text-[#6b7280] mb-5">«{confirmDelete.name}» больше не сможет отвечать.</div>
             <div className="flex justify-end gap-2">
@@ -89,15 +130,141 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
               <button onClick={() => deleteOperator(confirmDelete)} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30">Удалить</button>
             </div>
           </div>
-        </div>
+        </ModalOverlay>
       )}
+    </>
+  );
+
+  // ── Телефон: боковое меню превращается в список с провалами ──────────────
+  if (mobileChrome) {
+    const chrome = mobileChrome;
+    const current = sections.find((x) => x.id === section);
+    if (mobileSection) {
+      return (
+        <div className="h-full flex flex-col min-h-0 bg-[#0d0d12]">
+          <MobileAppBar title={current?.label || "Настройки"}
+                        subtitle={current?.scope === "service" ? (svc?.name || "") : "общая настройка"}
+                        onBack={() => setMobileSection(null)} />
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">{sectionBody}</div>
+          {modals}
+        </div>
+      );
+    }
+    const groups = [
+      { title: "Этот сервис", items: sections.filter((x) => x.scope === "service" && !x.advanced) },
+      { title: "Общее",       items: sections.filter((x) => x.scope === "common"  && !x.advanced) },
+      { title: "Дополнительно", items: sections.filter((x) => x.advanced) },
+    ].filter((g) => g.items.length);
+    return (
+      <div className="h-full flex flex-col min-h-0 bg-[#0d0d12]">
+        <MobileAppBar title="Настройки" subtitle={svc?.name || ""}
+          right={<>
+            <AppBarButton icon="user" label="Профиль оператора" onClick={chrome.onProfile} />
+            <AppBarButton icon="bell" label="Уведомления" badge={chrome.bellBadge} onClick={chrome.onBell} />
+          </>} />
+        <ServiceRail services={chrome.services} currentServiceId={chrome.currentServiceId}
+                     onSelect={chrome.onSelectService} />
+        <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin pb-4">
+          {svc && (
+            <div className="flex items-center gap-3 m-3 p-3 bg-[#13131a] border border-[#2a2a3a] rounded-xl">
+              <span className="w-9 h-9 rounded-[11px] flex items-center justify-center font-bold shrink-0"
+                    style={{ background: svc.color, color: contrastOn(svc.color) }}>
+                {svc.emoji || svc.name[0]}
+              </span>
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-[#f1f1f5] truncate">{svc.name}</div>
+                <div className="text-[11px] text-[#6b7280] font-mono truncate">{svc.qdrantCollection}</div>
+              </div>
+            </div>
+          )}
+          {groups.map((g) => (
+            <div key={g.title}>
+              <div className="text-[10.5px] uppercase tracking-wider text-[#4F8EF7] font-semibold mx-4 mt-4 mb-1.5">
+                {g.title}
+              </div>
+              <div className="mx-3 bg-[#13131a] border border-[#2a2a3a] rounded-xl overflow-hidden">
+                {g.items.map((x) => (
+                  <button key={x.id}
+                    onClick={() => { setSection(x.id); setMobileSection(x.id); }}
+                    className="w-full min-h-[56px] px-3.5 py-3 flex items-center gap-3 text-left border-b border-[#2a2a3a] last:border-0 active:bg-[#1a1a24]">
+                    <span className="w-8 h-8 shrink-0 rounded-[9px] bg-[#1a1a24] flex items-center justify-center text-[#9095a3]">
+                      <Icon name={x.icon} className="w-[18px] h-[18px]" />
+                    </span>
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm text-[#f1f1f5]">{x.label}</span>
+                      <span className="block text-[11.5px] text-[#6b7280] truncate">{x.hint}</span>
+                    </span>
+                    <Icon name="chevronRight" className="w-4 h-4 text-[#6b7280] shrink-0" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        {modals}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 flex bg-[#0d0d12] min-h-0">
+      <aside className="w-[240px] shrink-0 bg-[#13131a] border-r border-[#2a2a3a] p-4">
+        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3 px-2">Настройки</div>
+        <nav className="space-y-0.5">
+          {sections.filter((s) => !s.advanced).map((s) => (
+            <button key={s.id} onClick={() => setSection(s.id)}
+              className={"w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition " +
+                (section === s.id ? "bg-[#4F8EF7]/15 text-[#7BA8F9]" : "text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}>
+              <Icon name={s.icon} className="w-4 h-4" />
+              {s.label}
+            </button>
+          ))}
+          {sections.some((s) => s.advanced) && (
+            <div className="text-[10px] uppercase tracking-wider text-[#3a3a4a] font-semibold pt-4 pb-1 px-3">
+              Дополнительно
+            </div>
+          )}
+          {sections.filter((s) => s.advanced).map((s) => (
+            <button key={s.id} onClick={() => setSection(s.id)} title={s.hint}
+              className={"w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition " +
+                (section === s.id ? "bg-[#4F8EF7]/15 text-[#7BA8F9]" : "text-[#4a4a5a] hover:text-[#d1d1d8] hover:bg-[#1a1a24]")}>
+              <Icon name={s.icon} className="w-4 h-4" />
+              {s.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
+
+      <div className="flex-1 overflow-y-auto scrollbar-thin">{sectionBody}</div>
+
+      {modals}
     </div>
   );
 }
 
-function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
+function OperatorsSection({ operators, services = [], setOperators, showToast, onAdd, onEdit, onDelete }) {
+  const [saving, setSaving] = useStateT(null);
+
+  // Флаг = доступ оператора к ВПН-сервису. Снятие возвращает его тикеты в
+  // этом сервисе в очередь, установка сразу подключает к раздаче.
+  async function toggleService(op, serviceId) {
+    const current = op.serviceIds || [];
+    const next = current.includes(serviceId)
+      ? current.filter((id) => id !== serviceId)
+      : [...current, serviceId];
+    setSaving(`${op.id}:${serviceId}`);
+    try {
+      await window.apiFetch("PUT", `/api/operators/${op.id}/services`, { service_ids: next });
+      setOperators((arr) => arr.map((o) => (o.id === op.id ? { ...o, serviceIds: next } : o)));
+    } catch {
+      showToast && showToast("Ошибка изменения доступа");
+    } finally {
+      setSaving(null);
+    }
+  }
+
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-[#f1f1f5]">Операторы</h1>
@@ -108,14 +275,73 @@ function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
           Добавить оператора
         </button>
       </div>
-      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+      {/* Телефон: шесть колонок не помещаются — те же данные карточками */}
+      <div className="sm:hidden space-y-2">
+        {operators.length === 0 && (
+          <div className="text-center text-xs text-[#6b7280] py-8">Нет операторов</div>
+        )}
+        {operators.map((op) => (
+          <div key={op.id} className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-3.5">
+            <div className="flex items-center gap-3">
+              <Avatar initials={op.initials || "??"} color={op.color || "#4F8EF7"} size={36} />
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-[#f1f1f5] truncate">{op.name}</div>
+                <div className="text-[11px] text-[#6b7280] font-mono truncate">
+                  {op.tg}{op.tgId ? ` · ID ${op.tgId}` : ""}
+                </div>
+              </div>
+              <button onClick={() => onEdit(op)} aria-label="Изменить"
+                className="w-11 h-11 shrink-0 flex items-center justify-center text-[#6b7280] active:text-[#7BA8F9] rounded-lg"><Icon name="edit" className="w-4 h-4" /></button>
+              <button onClick={() => onDelete(op)} aria-label="Удалить"
+                className="w-11 h-11 shrink-0 flex items-center justify-center text-[#6b7280] active:text-[#ef4444] rounded-lg"><Icon name="trash" className="w-4 h-4" /></button>
+            </div>
+            <div className="flex items-center gap-2 mt-2.5 flex-wrap">
+              <span className={"inline-flex px-2 py-0.5 rounded-md text-[11px] font-medium border " +
+                (op.role === "admin" ? "bg-[#A855F7]/15 text-[#C084FC] border-[#A855F7]/30" : "bg-[#1a1a24] text-[#f1f1f5] border-[#2a2a3a]")}>
+                {op.role === "admin" ? "Администратор" : "Агент"}
+              </span>
+              <PresenceLabel online={op.online} paused={op.paused} lastSeen={op.lastSeen} />
+            </div>
+            <div className="mt-2.5">
+              <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-1.5">Доступ к ВПН</div>
+              {op.role === "admin" ? (
+                <span className="text-[11px] text-[#6b7280]">все сервисы</span>
+              ) : services.length === 0 ? (
+                <span className="text-[11px] text-[#6b7280]">—</span>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {services.map((sv) => {
+                    const on = (op.serviceIds || []).includes(sv.id);
+                    const busy = saving === `${op.id}:${sv.id}`;
+                    return (
+                      <button key={sv.id} disabled={busy} onClick={() => toggleService(op, sv.id)}
+                        className={"inline-flex items-center gap-1.5 min-h-[36px] px-2.5 rounded-md text-[11px] font-medium border transition disabled:opacity-40 " +
+                          (on ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]" : "text-[#6b7280] border-[#2a2a3a]")}>
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0"
+                              style={{ background: on ? sv.color : "#3a3a4a" }}></span>
+                        {sv.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* overflow-x-auto, а не hidden: на планшете таблица шире колонки, и
+          скрытые колонки иначе не достать. */}
+      <div className="hidden sm:block bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
+        <div className="overflow-x-auto scrollbar-thin">
+        <table className="w-full text-sm min-w-[640px]">
           <thead>
             <tr className="text-[10px] uppercase tracking-wider text-[#6b7280] border-b border-[#2a2a3a]/60">
               <th className="text-left px-5 py-3 font-medium">Имя</th>
               <th className="text-left px-3 py-3 font-medium">Telegram</th>
               <th className="text-left px-3 py-3 font-medium">Роль</th>
-              <th className="text-left px-3 py-3 font-medium">Статус</th>
+              <th className="text-left px-3 py-3 font-medium">Доступ к ВПН</th>
+              <th className="text-left px-3 py-3 font-medium w-[200px]">Статус</th>
               <th className="text-right px-5 py-3 font-medium w-[120px]">Действия</th>
             </tr>
           </thead>
@@ -140,12 +366,32 @@ function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
                   </span>
                 </td>
                 <td className="px-3 py-3">
-                  <span className="inline-flex items-center gap-1.5 text-xs">
-                    <span className={"w-1.5 h-1.5 rounded-full " + (op.online ? (op.paused ? "bg-[#eab308]" : "bg-[#22c55e]") : "bg-zinc-600")}></span>
-                    <span className={op.online ? (op.paused ? "text-[#eab308]" : "text-[#22c55e]") : "text-[#6b7280]"}>
-                      {op.online ? (op.paused ? "На паузе" : "Онлайн") : "Офлайн"}
-                    </span>
-                  </span>
+                  {op.role === "admin" ? (
+                    <span className="text-[11px] text-[#6b7280]">все сервисы</span>
+                  ) : services.length === 0 ? (
+                    <span className="text-[11px] text-[#6b7280]">—</span>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {services.map((s) => {
+                        const on = (op.serviceIds || []).includes(s.id);
+                        const busy = saving === `${op.id}:${s.id}`;
+                        return (
+                          <button key={s.id} disabled={busy} onClick={() => toggleService(op, s.id)}
+                            title={on ? `Снять доступ к ${s.name}` : `Выдать доступ к ${s.name}`}
+                            className={"inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border transition disabled:opacity-40 " +
+                              (on ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
+                                  : "text-[#6b7280] border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24]/60")}>
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0"
+                                  style={{ background: on ? s.color : "#3a3a4a" }}></span>
+                            {s.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </td>
+                <td className="px-3 py-3">
+                  <PresenceLabel online={op.online} paused={op.paused} lastSeen={op.lastSeen} />
                 </td>
                 <td className="px-5 py-3">
                   <div className="flex items-center justify-end gap-1">
@@ -155,21 +401,898 @@ function OperatorsSection({ operators, onAdd, onEdit, onDelete }) {
                 </td>
               </tr>
             ))}
-            {operators.length === 0 && <tr><td colSpan={5} className="px-5 py-8 text-center text-xs text-[#6b7280]">Нет операторов</td></tr>}
+            {operators.length === 0 && <tr><td colSpan={6} className="px-5 py-8 text-center text-xs text-[#6b7280]">Нет операторов</td></tr>}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
 }
 
-function OperatorModal({ editing, onClose, onSave }) {
+// ── Секция «Клиенты»: откуда панель берёт профиль клиента ────────────────────
+// Список источников приходит из реестра app.customer — свой провайдер
+// появляется здесь сам, достаточно положить файл в app/providers/.
+
+function CustomerSection({ showToast, service }) {
+  const [cfg, setCfg] = useStateT(null);
+  const [configText, setConfigText] = useStateT("{}");
+  const [saving, setSaving] = useStateT(false);
+  const [err, setErr] = useStateT(null);
+
+  useEffectT(() => {
+    setCfg(null);
+    setErr(null);
+    window.apiFetch("GET", "/api/settings/customer" + svcQuery(service))
+      .then((d) => {
+        setCfg(d);
+        setConfigText(JSON.stringify(d.config || {}, null, 2));
+      })
+      .catch(() => setCfg(null));
+  }, [service?.id]);
+
+  async function save(next) {
+    setSaving(true);
+    try {
+      await window.apiFetch("PUT", "/api/settings/customer" + svcQuery(service), {
+        provider: next.provider, config: next.config, cacheTtl: next.cacheTtl,
+      });
+      showToast("Источник данных о клиентах сохранён");
+      setErr(null);
+    } catch (e) {
+      showToast("Ошибка сохранения");
+    }
+    setSaving(false);
+  }
+
+  function pickProvider(name) {
+    const next = { ...cfg, provider: name };
+    setCfg(next);
+    save(next);
+  }
+
+  function saveConfig() {
+    let parsed;
+    try {
+      parsed = JSON.parse(configText || "{}");
+    } catch (e) {
+      setErr("Это не похоже на JSON: " + e.message);
+      return;
+    }
+    const next = { ...cfg, config: parsed };
+    setCfg(next);
+    save(next);
+  }
+
+  if (!cfg) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+
+  const current = (cfg.available || []).find((p) => p.name === cfg.provider);
+  const supported = new Set(current?.actions || []);
+  const disabled = new Set((cfg.config || {}).disable || []);
+
+  return (
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
+      <div>
+        <h1 className="text-xl font-semibold text-[#f1f1f5]">Источник данных о клиентах</h1>
+        <div className="text-xs text-[#6b7280] mt-0.5">
+          Адрес и токен Support API спрашивают прямо в форме сервиса — сюда
+          заходят, только чтобы выбрать другой источник или погасить лишние кнопки
+        </div>
+      </div>
+
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-4 space-y-3">
+        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold">
+          Источник данных · {cfg.serviceName}
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Остальные источники (http, mock, remnawave и свои) в проде не
+              используются — показываем только bot_api, плюс то, что уже
+              реально выбрано у этого сервиса, чтобы не спрятать активный
+              выбор молча, если он вдруг не bot_api. */}
+          {(cfg.available || [])
+            .filter((p) => p.name === "bot_api" || p.name === cfg.provider)
+            .map((p) => {
+              const on = cfg.provider === p.name;
+              return (
+                <button key={p.name} disabled={saving} onClick={() => pickProvider(p.name)}
+                  title={p.description}
+                  className={"px-3 py-1.5 rounded-md text-xs font-medium border transition disabled:opacity-40 " +
+                    (on ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
+                        : "text-[#6b7280] border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24]/60")}>
+                  {p.name}{p.isMock ? " (мок)" : ""}
+                </button>
+              );
+            })}
+        </div>
+        {current && <div className="text-[11px] text-[#6b7280]">{current.description}</div>}
+        {current?.isMock && (
+          <div className="text-[11px] text-[#f59e0b] bg-[#f59e0b]/10 border border-[#f59e0b]/30 rounded-lg px-3 py-2">
+            Сейчас показываются выдуманные данные. Чтобы подключить настоящую API,
+            выберите <code className="text-[#7BA8F9]">bot_api</code> и заполните адрес и
+            токен Support API в форме сервиса («Настройки → Сервисы»).
+          </div>
+        )}
+      </div>
+
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold">
+            Конфигурация источника
+          </div>
+          <label className="flex items-center gap-2 text-xs text-[#6b7280]">
+            Кэш профиля, сек
+            <input type="number" min="0" value={cfg.cacheTtl}
+              onChange={(e) => setCfg({ ...cfg, cacheTtl: Number(e.target.value) })}
+              onBlur={() => save(cfg)}
+              className="w-20 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-2 py-1 text-xs text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50" />
+          </label>
+        </div>
+        <textarea value={configText} onChange={(e) => setConfigText(e.target.value)} rows={10}
+          spellCheck={false}
+          className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5 text-xs font-mono text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 resize-y scrollbar-thin" />
+        {err && (
+          <div className="text-xs text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-3 py-2">
+            {err}
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-[10px] text-[#6b7280]">
+            Для <code className="text-[#7BA8F9]">http</code>: base_url, token, paths и mapping —
+            см. README, «Карточка клиента: подключение своего API».
+          </div>
+          <button onClick={saveConfig} disabled={saving}
+            className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold transition disabled:opacity-40">
+            Сохранить конфигурацию
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-4">
+        <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold mb-3">
+          Действия над клиентом
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+          {(cfg.catalog || []).map((a) => {
+            const off = !supported.has(a.name) || disabled.has(a.name);
+            return (
+              <div key={a.name}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#0d0d12] border border-[#2a2a3a]/60">
+                <span className={"w-1.5 h-1.5 rounded-full shrink-0 " + (off ? "bg-zinc-600" : "bg-[#22c55e]")}></span>
+                <span className={"text-xs truncate flex-1 " + (off ? "text-[#6b7280]" : "text-[#f1f1f5]")}>
+                  {a.label}
+                </span>
+                {a.danger && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#ef4444]/15 text-[#ef4444] shrink-0">
+                    админ
+                  </span>
+                )}
+                <span className="text-[10px] text-[#3a3a4a] font-mono shrink-0">{a.name}</span>
+              </div>
+            );
+          })}
+        </div>
+        <div className="text-[10px] text-[#6b7280] mt-3 leading-relaxed">
+          Зелёным — то, что умеет выбранный источник; такие кнопки видны оператору в карточке
+          клиента. Погасить лишнее можно списком <code className="text-[#7BA8F9]">disable</code> в
+          конфигурации. Помеченные «админ» доступны только администратору.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Секция «Сервисы»: CRUD ВПН-ов ────────────────────────────────────────────
+// slug, коллекция Qdrant и префикс dialog_id задаются один раз при создании:
+// они зашиваются в воркфлоу n8n, ключи Redis и первичные ключи диалогов.
+
+const SERVICE_COLORS = ["#4F8EF7", "#A855F7", "#22c55e", "#eab308", "#ef4444", "#06b6d4", "#f97316", "#ec4899"];
+
+function ServicesSection({ showToast, onChanged }) {
+  const [services, setServices] = useStateT(null);
+  const [modal, setModal] = useStateT(null);      // {} — новый, объект — правка
+  const [confirmDel, setConfirmDel] = useStateT(null);
+
+  async function reload() {
+    try {
+      const list = await window.apiFetch("GET", "/api/services/all");
+      setServices(list);
+      onChanged && onChanged();
+    } catch { setServices([]); }
+  }
+  useEffectT(() => { reload(); }, []);
+
+  async function save(form) {
+    try {
+      if (form.id) {
+        await window.apiFetch("PUT", `/api/services/${form.id}`, form);
+        showToast("Сервис обновлён");
+      } else {
+        await window.apiFetch("POST", "/api/services", form);
+        showToast("Сервис добавлен");
+      }
+      setModal(null);
+      reload();
+    } catch (e) {
+      showToast(e?.detail || "Ошибка сохранения");
+    }
+  }
+
+  async function remove(svc) {
+    try {
+      await window.apiFetch("DELETE", `/api/services/${svc.id}`);
+      showToast("Сервис удалён");
+      reload();
+    } catch (e) {
+      showToast(e?.detail || "Ошибка удаления");
+    }
+    setConfirmDel(null);
+  }
+
+  if (services === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+
+  return (
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold text-[#f1f1f5]">ВПН-сервисы</h1>
+          <div className="text-xs text-[#6b7280] mt-0.5">
+            Название, адрес API бота, токен и business_id — этого достаточно,
+            чтобы сервис заработал
+          </div>
+        </div>
+        <button onClick={() => setModal({})}
+          className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5">
+          <Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />
+          Добавить сервис
+        </button>
+      </div>
+
+      <div className="sm:hidden space-y-2">
+        {services.map((s) => (
+          <div key={s.id} className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-3.5">
+            <div className="flex items-center gap-2.5">
+              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: s.color }}></span>
+              <span className="font-medium text-[#f1f1f5] truncate flex-1">
+                {s.emoji ? s.emoji + " " : ""}{s.name}
+              </span>
+              <button onClick={() => setModal(s)} aria-label="Изменить"
+                className="w-11 h-11 shrink-0 flex items-center justify-center text-[#6b7280] active:text-[#7BA8F9] rounded-lg"><Icon name="edit" className="w-4 h-4" /></button>
+              <button onClick={() => setConfirmDel(s)} aria-label="Удалить"
+                className="w-11 h-11 shrink-0 flex items-center justify-center text-[#6b7280] active:text-[#ef4444] rounded-lg"><Icon name="trash" className="w-4 h-4" /></button>
+            </div>
+            <div className="mt-2 space-y-1 text-[11px]">
+              <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">API</span>
+                <span className="font-mono text-[#d1d1d8] truncate">
+                  {s.hasApiBaseUrl ? s.apiBaseUrlMask : <span className="text-[#ef4444]">не задан</span>}</span></div>
+              <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">business_id</span>
+                <span className="font-mono text-[#d1d1d8] truncate">
+                  {s.hasBusinessId ? s.businessIdMask : <span className="text-[#f59e0b]">не задан</span>}</span></div>
+              <div className="flex gap-2"><span className="text-[#6b7280] w-[86px] shrink-0">Слаг</span>
+                <span className="font-mono text-[#d1d1d8] truncate">{s.slug}</span></div>
+              <div className="flex gap-2 items-center"><span className="text-[#6b7280] w-[86px] shrink-0">Статус</span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className={"w-1.5 h-1.5 rounded-full " + (s.isActive ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
+                  <span className={s.isActive ? "text-[#22c55e]" : "text-[#6b7280]"}>
+                    {s.isActive ? "Активен" : "Выключен"}
+                  </span>
+                </span></div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* overflow-x-auto, а не hidden: на планшете таблица шире колонки, и
+          скрытые колонки иначе не достать. */}
+      <div className="hidden sm:block bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
+        <div className="overflow-x-auto scrollbar-thin">
+        <table className="w-full text-sm min-w-[640px]">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-wider text-[#6b7280] border-b border-[#2a2a3a]/60">
+              <th className="text-left px-5 py-3 font-medium">Название</th>
+              <th className="text-left px-3 py-3 font-medium">API бота</th>
+              <th className="text-left px-3 py-3 font-medium">business_id</th>
+              <th className="text-left px-3 py-3 font-medium">Слаг</th>
+              <th className="text-left px-3 py-3 font-medium">Статус</th>
+              <th className="text-right px-5 py-3 font-medium w-[120px]">Действия</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#2a2a3a]/40">
+            {services.map((s) => (
+              <tr key={s.id} className="hover:bg-[#1a1a24]/40 transition">
+                <td className="px-5 py-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: s.color }}></span>
+                    <span className="font-medium text-[#f1f1f5]">{s.emoji ? s.emoji + " " : ""}{s.name}</span>
+                  </div>
+                </td>
+                <td className="px-3 py-3 font-mono text-xs text-[#6b7280] max-w-[220px] truncate">
+                  {s.hasApiBaseUrl ? s.apiBaseUrlMask : <span className="text-[#ef4444]">не задан</span>}
+                </td>
+                <td className="px-3 py-3 font-mono text-xs text-[#6b7280] max-w-[180px] truncate">
+                  {s.hasBusinessId ? s.businessIdMask : <span className="text-[#f59e0b]">не задан</span>}
+                </td>
+                <td className="px-3 py-3 font-mono text-xs text-[#6b7280]">{s.slug}</td>
+                <td className="px-3 py-3">
+                  <span className="inline-flex items-center gap-1.5 text-xs">
+                    <span className={"w-1.5 h-1.5 rounded-full " + (s.isActive ? "bg-[#22c55e]" : "bg-zinc-600")}></span>
+                    <span className={s.isActive ? "text-[#22c55e]" : "text-[#6b7280]"}>
+                      {s.isActive ? "Активен" : "Выключен"}
+                    </span>
+                  </span>
+                </td>
+                <td className="px-5 py-3">
+                  <div className="flex items-center justify-end gap-1">
+                    <button onClick={() => setModal(s)} className="p-1.5 text-[#6b7280] hover:text-[#7BA8F9] hover:bg-[#4F8EF7]/10 rounded transition"><Icon name="edit" className="w-4 h-4" /></button>
+                    <button onClick={() => setConfirmDel(s)} className="p-1.5 text-[#6b7280] hover:text-[#ef4444] hover:bg-[#ef4444]/10 rounded transition"><Icon name="trash" className="w-4 h-4" /></button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        </div>
+      </div>
+
+      <div className="text-[11px] text-[#6b7280] leading-relaxed bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-4">
+        <div className="text-[#f1f1f5] font-medium mb-1.5">Как подключить новый ВПН</div>
+        1. Создайте сервис здесь — слаг попадёт в ключи Redis и имя коллекции Qdrant.<br />
+        2. Скопируйте воркфлоу n8n, подставьте токен своего бота и добавьте в стартовую
+        Set-ноду поле <code className="font-mono text-[#7BA8F9]">service</code> со слагом сервиса.<br />
+        3. Переключите Redis-ключи на <code className="font-mono text-[#7BA8F9]">vpn_bot:&lt;слаг&gt;:ai_settings</code> и
+        коллекцию Qdrant на указанную в таблице.<br />
+        4. Выдайте операторам флаги доступа на вкладке «Операторы».<br />
+        5. Загрузите базу знаний и задайте промпт — они пер-сервисные.
+      </div>
+
+      {modal && <ServiceModal editing={modal.id ? modal : null} onSave={save}
+                              showToast={showToast} onClose={() => setModal(null)} />}
+
+      {confirmDel && (
+        <ModalOverlay onClose={() => setConfirmDel(null)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
+            <div className="font-semibold text-[#f1f1f5] mb-1">Удалить сервис «{confirmDel.name}»?</div>
+            <div className="text-sm text-[#6b7280] mb-5">
+              Вместе с ним удалятся все его диалоги, сообщения, статьи базы знаний и коллекция
+              Qdrant <span className="font-mono">{confirmDel.qdrantCollection}</span>. Действие необратимо.
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirmDel(null)} className="px-3 py-1.5 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+              <button onClick={() => remove(confirmDel)} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30">Удалить</button>
+            </div>
+          </div>
+        </ModalOverlay>
+      )}
+    </div>
+  );
+}
+
+// Подключение ВПН-сервиса. На виду только то, что нельзя не заполнить:
+// название, адрес и токен Support API, business_id аккаунта поддержки.
+// Слаг, цвет, эмодзи и вебхук n8n заполняются сами и лежат под «Дополнительно».
+// Резервный канал доставки. Ответ оператора уходит через n8n в business-чат
+// Telegram, и тот иногда отвечает BUSINESS_PEER_USAGE_MISSING — сообщение
+// теряется. Здесь подключается тот же аккаунт поддержки по MTProto: панель
+// повторит отправку им и покажет результат прямо в переписке.
+//
+// Авторизация требует сохранённого сервиса: коду из Телеграм нужно, куда
+// вернуться, а у несохранённого сервиса ещё нет id.
+function FallbackBlock({ service, showToast }) {
+  const [appId, setAppId] = useStateT(service?.fallbackAppId ? String(service.fallbackAppId) : "");
+  const [appHash, setAppHash] = useStateT("");
+  // fallbackPhone приходит маской («…0000»), а не номером: в поле её класть
+  // нельзя — уедет в send-code вместо телефона. Показываем подсказкой.
+  const [phone, setPhone] = useStateT("");
+  const [code, setCode] = useStateT("");
+  const [password, setPassword] = useStateT("");
+  const [session, setSession] = useStateT("");
+  // idle | code | 2fa
+  const [step, setStep] = useStateT("idle");
+  const [busy, setBusy] = useStateT(false);
+  const [state, setState] = useStateT({
+    enabled: !!service?.fallbackEnabled,
+    account: service?.fallbackAccount || "",
+    linked: !!service?.hasFallbackSession,
+  });
+  const [check, setCheck] = useStateT(null);
+
+  const base = service ? `/api/services/${service.id}/fallback` : null;
+
+  async function call(path, body, method = "POST") {
+    setBusy(true);
+    try {
+      return await window.apiFetch(method, base + path, body);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendCode() {
+    setCheck(null);
+    try {
+      await call("/send-code", { app_id: Number(appId), app_hash: appHash.trim(), phone: phone.trim() });
+      setStep("code");
+      showToast("Код отправлен в Телеграм");
+    } catch (e) { setCheck({ ok: false, error: e?.detail || "Не удалось отправить код" }); }
+  }
+
+  async function signIn() {
+    setCheck(null);
+    try {
+      const r = await call("/sign-in", { code: code.trim(), password });
+      if (r.needs2fa) { setStep("2fa"); showToast("Нужен пароль двухфакторки"); return; }
+      setState({ enabled: true, account: r.account, linked: true });
+      setStep("idle"); setCode(""); setPassword(""); setAppHash("");
+      showToast(`Аккаунт подключён: ${r.account}`);
+    } catch (e) { setCheck({ ok: false, error: e?.detail || "Не удалось войти" }); }
+  }
+
+  async function useSession() {
+    setCheck(null);
+    try {
+      const r = await call("/session", { app_id: Number(appId), app_hash: appHash.trim(),
+                                         phone: phone.trim(), session: session.trim() });
+      setCheck(r);
+      if (r.ok) {
+        setState({ enabled: true, account: r.account, linked: true });
+        setSession(""); setAppHash("");
+        showToast(`Аккаунт подключён: ${r.account}`);
+      }
+    } catch (e) { setCheck({ ok: false, error: e?.detail || "Сессия не подошла" }); }
+  }
+
+  async function test() {
+    setCheck("…");
+    try { setCheck(await call("/test", {})); }
+    catch (e) { setCheck({ ok: false, error: e?.detail || "Не удалось проверить" }); }
+  }
+
+  async function toggle() {
+    const next = !state.enabled;
+    try {
+      await call("", { enabled: next }, "PATCH");
+      setState((s) => ({ ...s, enabled: next }));
+    } catch { showToast("Не удалось переключить"); }
+  }
+
+  async function forget() {
+    try {
+      await call("", undefined, "DELETE");
+      setState({ enabled: false, account: "", linked: false });
+      setCheck(null);
+      showToast("Аккаунт отвязан");
+    } catch { showToast("Не удалось отвязать"); }
+  }
+
+  const input = "w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50";
+
+  if (!service) {
+    return (
+      <div className="text-[11px] text-[#6b7280] bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2.5">
+        Резервная отправка настраивается после сохранения сервиса — коду из
+        Телеграм нужно, куда вернуться.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {state.linked ? (
+        <>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm text-[#f1f1f5] truncate">
+                Аккаунт {state.account || "подключён"}
+              </div>
+              <div className="text-[10px] text-[#6b7280]">
+                {state.enabled
+                  ? "Панель повторит недоставленный ответ этим аккаунтом"
+                  : "Канал выключен — недоставленные ответы останутся недоставленными"}
+              </div>
+            </div>
+            <Switch on={state.enabled} onChange={toggle} />
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={test} disabled={busy || check === "…"}
+              className="px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40">
+              {check === "…" ? "Проверяем…" : "Проверить"}
+            </button>
+            <button type="button" onClick={forget} disabled={busy}
+              className="px-3 py-2 rounded-lg border border-[#ef4444]/30 text-xs text-[#ef4444] hover:bg-[#ef4444]/10 disabled:opacity-40">
+              Отвязать
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">app_id</label>
+              <input value={appId} onChange={(e) => setAppId(e.target.value.replace(/\D/g, ""))}
+                placeholder="123456" className={input + " font-mono text-xs"} />
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">Телефон</label>
+              <input value={phone} onChange={(e) => setPhone(e.target.value)}
+                placeholder={service?.fallbackPhone || "+79990000000"}
+                className={input + " font-mono text-xs"} />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">app_hash</label>
+            <input type="password" value={appHash} onChange={(e) => setAppHash(e.target.value)}
+              placeholder="из my.telegram.org" className={input + " font-mono text-xs"} />
+          </div>
+
+          {step === "idle" && (
+            <button type="button" onClick={sendCode}
+              disabled={busy || !appId || !appHash.trim() || !phone.trim()}
+              className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold disabled:opacity-40">
+              {busy ? "Отправляем код…" : "Подключить аккаунт"}
+            </button>
+          )}
+
+          {step !== "idle" && (
+            <div className="space-y-3 border-l-2 border-[#4F8EF7]/40 pl-3">
+              <div>
+                <label className="block text-xs text-[#6b7280] mb-1.5">Код из Телеграм</label>
+                <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="12345"
+                  className={input + " font-mono"} />
+              </div>
+              {step === "2fa" && (
+                <div>
+                  <label className="block text-xs text-[#6b7280] mb-1.5">Пароль двухфакторки</label>
+                  <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                    className={input} />
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={signIn} disabled={busy || (!code.trim() && step !== "2fa")}
+                  className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold disabled:opacity-40">
+                  {busy ? "Входим…" : "Войти"}
+                </button>
+                <button type="button" onClick={() => { setStep("idle"); setCode(""); setPassword(""); }}
+                  className="px-3 py-2 rounded-lg text-xs text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">
+                  Отмена
+                </button>
+              </div>
+            </div>
+          )}
+
+          <details className="text-[11px] text-[#6b7280]">
+            <summary className="cursor-pointer hover:text-[#d1d1d8]">Уже есть строка сессии</summary>
+            <div className="mt-2 space-y-2">
+              <textarea value={session} onChange={(e) => setSession(e.target.value)} rows={3}
+                placeholder="StringSession, сгенерированная снаружи"
+                className={input + " font-mono text-[10px] resize-y"} />
+              <button type="button" onClick={useSession}
+                disabled={busy || !appId || !appHash.trim() || !session.trim()}
+                className="px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40">
+                Использовать сессию
+              </button>
+            </div>
+          </details>
+        </>
+      )}
+
+      {check && check !== "…" && (
+        <div className={"rounded-lg px-3 py-2 text-[11px] border " + (check.ok
+          ? "bg-[#22c55e]/10 border-[#22c55e]/25 text-[#22c55e]"
+          : "bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]")}>
+          {check.ok ? <>Связь есть: <b>{check.account}</b></> : check.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ServiceModal({ editing, onSave, onClose, showToast }) {
+  const [name,  setName]  = useStateT(editing?.name  || "");
+  const [slug,  setSlug]  = useStateT(editing?.slug  || "");
+  const [color, setColor] = useStateT(editing?.color || SERVICE_COLORS[0]);
+  const [emoji, setEmoji] = useStateT(editing?.emoji || "");
+  // Адреса, business_id и токены сервер наружу не отдаёт — только маску и
+  // флаг «задан». Поэтому поля правки открываются пустыми, а пустое поле при
+  // сохранении означает «оставить прежнее».
+  const [hook,  setHook]  = useStateT("");
+  const [active, setActive] = useStateT(editing ? editing.isActive : true);
+  const [apiUrl, setApiUrl] = useStateT("");
+  const [token, setToken] = useStateT("");
+  const [business, setBusiness] = useStateT("");
+  const [more, setMore] = useStateT(false);
+  const [fb, setFb] = useStateT(false);
+  const [check, setCheck] = useStateT(null);      // null | "…" | {ok, ...}
+  const [rwUrl, setRwUrl] = useStateT("");
+  const [rwToken, setRwToken] = useStateT("");
+  const [rwCookie, setRwCookie] = useStateT("");
+  const [rwCheck, setRwCheck] = useStateT(null);   // null | "…" | {ok, ...}
+
+  // Слаг сам предлагается из названия, но остаётся редактируемым.
+  function changeName(v) {
+    setName(v);
+    if (!editing && !slug) return;
+    if (!editing) setSlug(slugify(v));
+  }
+  function slugify(v) {
+    return v.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 31);
+  }
+
+  // Проверка идёт до сохранения: опечатку в токене лучше увидеть здесь, чем
+  // на первом клиенте. Токен при правке может быть пустым — сервер тогда
+  // проверяет сохранённым.
+  async function testConnection() {
+    setCheck("…");
+    try {
+      const r = await window.apiFetch("POST", "/api/services/test-connection",
+                                      { base_url: apiUrl.trim(), token: token.trim(),
+                                        provider: "bot_api", service_id: editing?.id ?? null });
+      setCheck(r);
+    } catch (e) {
+      setCheck({ ok: false, error: e?.detail || "Не удалось проверить" });
+    }
+  }
+
+  // Токен и кука Remnawave лежат в monitoring.servers.config — пустое поле
+  // при правке значит «сервер, проверь сохранённое».
+  async function testRwConnection() {
+    setRwCheck("…");
+    try {
+      const r = await window.apiFetch("POST", "/api/services/test-connection",
+                                      { base_url: rwUrl.trim(), token: rwToken.trim(),
+                                        cookie: rwCookie.trim(),
+                                        provider: "remnawave", service_id: editing?.id ?? null });
+      setRwCheck(r);
+    } catch (e) {
+      setRwCheck({ ok: false, error: e?.detail || "Не удалось проверить" });
+    }
+  }
+
+  function submit(e) {
+    e?.preventDefault();
+    if (!name.trim()) return;
+    const finalSlug = editing ? editing.slug : (slug || slugify(name));
+    onSave({
+      id: editing?.id, name: name.trim(), slug: finalSlug, color,
+      emoji: emoji.trim() || null, n8n_webhook_url: hook.trim(), is_active: active,
+      business_id: business.trim(),
+      api_base_url: apiUrl.trim(), api_token: token.trim(),
+      remnawave_base_url: rwUrl.trim(), remnawave_token: rwToken.trim(),
+      remnawave_cookie: rwCookie.trim(),
+    });
+  }
+
+  return (
+    <ModalOverlay onClose={onClose}>
+      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden">
+        <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
+          <div className="font-semibold text-[#f1f1f5]">{editing ? "Редактировать сервис" : "Новый ВПН-сервис"}</div>
+          <button type="button" onClick={onClose} className="p-1 text-[#6b7280] hover:text-[#f1f1f5] rounded"><Icon name="x" /></button>
+        </div>
+        <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto scrollbar-thin">
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Название</label>
+            <input autoFocus value={name} onChange={(e) => changeName(e.target.value)} placeholder="NordFlow"
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
+          </div>
+
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Адрес API бота {editing && editing.hasApiBaseUrl && !apiUrl &&
+                <span className="text-[#22c55e]">— сохранён: {editing.apiBaseUrlMask}, оставьте пустым, чтобы не менять</span>}
+            </label>
+            <input value={apiUrl} onChange={(e) => { setApiUrl(e.target.value); setCheck(null); }}
+              placeholder={editing && editing.hasApiBaseUrl ? editing.apiBaseUrlMask : "https://host/nemoivpn/api/v1"}
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+          </div>
+
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">
+              Токен {editing && editing.hasApiToken && !token &&
+                <span className="text-[#22c55e]">— сохранён, оставьте пустым, чтобы не менять</span>}
+            </label>
+            <input type="password" value={token} onChange={(e) => { setToken(e.target.value); setCheck(null); }}
+              placeholder={editing && editing.hasApiToken ? "••••••••" : "токен этого бота"}
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+          </div>
+
+          <div>
+            <button type="button" onClick={testConnection} disabled={(!apiUrl.trim() && !editing?.hasApiBaseUrl) || check === "…"}
+              className="px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40">
+              {check === "…" ? "Проверяем…" : "Проверить подключение"}
+            </button>
+            {check && check !== "…" && (
+              <div className={"mt-2 rounded-lg px-3 py-2 text-[11px] border " + (check.ok
+                ? "bg-[#22c55e]/10 border-[#22c55e]/25 text-[#22c55e]"
+                : "bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]")}>
+                {check.ok
+                  ? <>Связь есть: <b>{check.botName || check.botId}</b>
+                      <span className="opacity-70"> · {check.botId}</span>
+                      {check.scopes?.length ? <span className="opacity-70"> · {check.scopes.join(", ")}</span> : null}</>
+                  : check.error}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">business_id {editing && editing.hasBusinessId && !business &&
+                <span className="text-[#22c55e]">— сохранён: {editing.businessIdMask}, оставьте пустым, чтобы не менять</span>}
+            </label>
+            <input value={business} onChange={(e) => setBusiness(e.target.value)}
+              placeholder={editing && editing.hasBusinessId ? editing.businessIdMask : "business_connection_id аккаунта поддержки"}
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+            <div className="text-[10px] text-[#6b7280] mt-1">
+              По нему панель узнаёт, чей это тикет. Приходит от Telegram, когда бот
+              подключён к аккаунту поддержки этого ВПН-а.
+            </div>
+          </div>
+
+          <div className="pt-1 border-t border-[#2a2a3a]/60 space-y-3">
+            <div className="text-[10px] uppercase tracking-wider text-[#6b7280] font-semibold pt-2">
+              Remnawave
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">Адрес панели {editing && editing.hasRemnawaveBaseUrl && !rwUrl &&
+                <span className="text-[#22c55e]">— сохранён: {editing.remnawaveBaseUrlMask}, оставьте пустым, чтобы не менять</span>}
+              </label>
+              <input value={rwUrl} onChange={(e) => { setRwUrl(e.target.value); setRwCheck(null); }}
+                placeholder={editing && editing.hasRemnawaveBaseUrl ? editing.remnawaveBaseUrlMask : "https://panel.example.com"}
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">
+                Токен {editing && editing.hasRemnawaveToken && !rwToken &&
+                  <span className="text-[#22c55e]">— сохранён, оставьте пустым, чтобы не менять</span>}
+              </label>
+              <input type="password" value={rwToken} onChange={(e) => { setRwToken(e.target.value); setRwCheck(null); }}
+                placeholder={editing && editing.hasRemnawaveToken ? "••••••••" : "токен из /api/tokens панели"}
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">
+                Cookie <span className="text-[#3a3a4a]">— только если панель за прокси/WAF</span>
+                {editing && editing.hasRemnawaveCookie && !rwCookie &&
+                  <span className="text-[#22c55e]"> — сохранена, оставьте пустым, чтобы не менять</span>}
+              </label>
+              <input type="password" value={rwCookie} onChange={(e) => { setRwCookie(e.target.value); setRwCheck(null); }}
+                placeholder={editing && editing.hasRemnawaveCookie ? "••••••••" : "ИмяКуки=значение"}
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+              <div className="text-[10px] text-[#6b7280] mt-1">
+                Нужна, если сервер отдаёт 403 даже с верным токеном — значение то же,
+                что после «Cookie:» в рабочем curl-запросе.
+              </div>
+            </div>
+            <div>
+              <button type="button" onClick={testRwConnection} disabled={(!rwUrl.trim() && !editing?.hasRemnawaveBaseUrl) || rwCheck === "…"}
+                className="px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40">
+                {rwCheck === "…" ? "Проверяем…" : "Проверить подключение"}
+              </button>
+              {rwCheck && rwCheck !== "…" && (
+                <div className={"mt-2 rounded-lg px-3 py-2 text-[11px] border " + (rwCheck.ok
+                  ? "bg-[#22c55e]/10 border-[#22c55e]/25 text-[#22c55e]"
+                  : "bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]")}>
+                  {rwCheck.ok
+                    ? <>Связь есть: <b>{rwCheck.botName}</b>
+                        {rwCheck.scopes?.length ? <span className="opacity-70"> · {rwCheck.scopes.join(", ")}</span> : null}</>
+                    : rwCheck.error}
+                </div>
+              )}
+            </div>
+            <div className="text-[10px] text-[#6b7280]">
+              Только для статистики серверов на экране «Состояние». Источник
+              данных о клиенте (Профиль/Ключи в карточке) это не меняет —
+              он настраивается отдельно, в «Настройки → Источник данных».
+            </div>
+          </div>
+
+          <div className="pt-1 border-t border-[#2a2a3a]/60">
+            <button type="button" onClick={() => setFb((v) => !v)}
+              className="w-full flex items-center gap-1.5 text-[11px] text-[#6b7280] hover:text-[#d1d1d8] py-1">
+              <Icon name={fb ? "chevronDown" : "chevronRight"} className="w-3.5 h-3.5" />
+              Резервная отправка
+              <span className={"ml-auto text-[10px] " +
+                (editing?.hasFallbackSession
+                  ? (editing?.fallbackEnabled ? "text-[#22c55e]" : "text-[#eab308]")
+                  : "text-[#3a3a4a]")}>
+                {editing?.hasFallbackSession
+                  ? (editing?.fallbackEnabled
+                      ? (editing.fallbackAccount || "включена")
+                      : "выключена")
+                  : "не настроена"}
+              </span>
+            </button>
+            {fb && (
+              <div className="mt-2 mb-1">
+                <div className="text-[10px] text-[#6b7280] mb-3 leading-relaxed">
+                  Если n8n не смог доставить ответ в business-чат (например,
+                  <span className="font-mono text-[#7BA8F9]"> BUSINESS_PEER_USAGE_MISSING</span>),
+                  панель повторит отправку по MTProto от этого же аккаунта поддержки
+                  и покажет результат в переписке.
+                </div>
+                <FallbackBlock service={editing} showToast={showToast} />
+              </div>
+            )}
+          </div>
+
+          <button type="button" onClick={() => setMore((v) => !v)}
+            className="w-full flex items-center gap-1.5 text-[11px] text-[#6b7280] hover:text-[#d1d1d8] pt-1">
+            <Icon name={more ? "chevronDown" : "chevronRight"} className="w-3.5 h-3.5" />
+            Дополнительно {!more && <span className="text-[#3a3a4a]">— заполнено автоматически</span>}
+          </button>
+
+          {more && (
+            <div className="space-y-4 border-l-2 border-[#2a2a3a] pl-3">
+              <div className="grid grid-cols-[1fr_80px] gap-3">
+                <div>
+                  <label className="block text-xs text-[#6b7280] mb-1.5">
+                    Слаг {editing && <span className="text-[#3a3a4a]">— неизменяем</span>}
+                  </label>
+                  <input value={editing ? editing.slug : slug} disabled={!!editing}
+                    onChange={(e) => setSlug(slugify(e.target.value))} placeholder="nordflow"
+                    className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono disabled:opacity-50" />
+                </div>
+                <div>
+                  <label className="block text-xs text-[#6b7280] mb-1.5">Эмодзи</label>
+                  <input value={emoji} onChange={(e) => setEmoji(e.target.value)} placeholder="🛡"
+                    className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 text-center" />
+                </div>
+              </div>
+              {!editing && (
+                <div className="text-[10px] text-[#6b7280] -mt-2">
+                  Коллекция Qdrant: <span className="font-mono text-[#7BA8F9]">kb_{slug || "…"}</span> ·
+                  префикс ID диалогов: <span className="font-mono text-[#7BA8F9]">{slug || "…"}_</span>
+                </div>
+              )}
+              <div>
+                <label className="block text-xs text-[#6b7280] mb-1.5">Цвет</label>
+                <div className="flex flex-wrap gap-2">
+                  {SERVICE_COLORS.map((c) => (
+                    <button key={c} type="button" onClick={() => setColor(c)}
+                      className={"w-7 h-7 rounded-lg transition " + (color === c ? "ring-2 ring-offset-2 ring-offset-[#13131a] ring-white/60" : "")}
+                      style={{ background: c }}></button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-[#6b7280] mb-1.5">
+                  Вебхук n8n <span className="text-[#3a3a4a]">— пусто = общий</span>
+                </label>
+                <input value={hook} onChange={(e) => setHook(e.target.value)}
+                  placeholder={editing && editing.hasN8nWebhookUrl ? editing.n8nWebhookUrlMask : "https://n8n.example.com/webhook/..."}
+                  className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
+              </div>
+            </div>
+          )}
+
+          {editing && (
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm text-[#f1f1f5]">Активен</div>
+                <div className="text-[10px] text-[#6b7280]">Выключенный сервис пропадает из переключателя</div>
+              </div>
+              <Switch on={active} onChange={() => setActive((v) => !v)} />
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-4 border-t border-[#2a2a3a] flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+          <button type="submit" disabled={!name.trim() || (!editing && !slug)}
+            className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold disabled:opacity-40">
+            {editing ? "Сохранить" : "Создать"}
+          </button>
+        </div>
+      </form>
+    </ModalOverlay>
+  );
+}
+
+function OperatorModal({ editing, services = [], onClose, onSave }) {
   const [name,     setName]     = useStateT(editing?.name || "");
   const [tg,       setTg]       = useStateT(editing?.tg   || "@");
   const [tgId,     setTgId]     = useStateT(editing?.tgId != null ? String(editing.tgId) : "");
   const [role,     setRole]     = useStateT(editing?.role  || "agent");
   const [password, setPassword] = useStateT("");
   const [pwErr,    setPwErr]    = useStateT(null);
+  // Флаги доступа задаются при создании; у существующего правятся прямо в
+  // таблице операторов, поэтому здесь показываются только для нового.
+  const [serviceIds, setServiceIds] = useStateT(editing?.serviceIds || []);
 
   function submit(e) {
     e?.preventDefault();
@@ -179,12 +1302,12 @@ function OperatorModal({ editing, onClose, onSave }) {
     }
     setPwErr(null);
     const tg_id = tgId.trim() ? parseInt(tgId.trim(), 10) : null;
-    onSave({ name: name.trim(), tg: tg.trim(), tg_id, role, password });
+    onSave({ name: name.trim(), tg: tg.trim(), tg_id, role, password, service_ids: serviceIds });
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden" onClick={(e) => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose}>
+      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden">
         <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
           <div className="font-semibold text-[#f1f1f5]">{editing ? "Редактировать" : "Добавить оператора"}</div>
           <button type="button" onClick={onClose} className="p-1 text-[#6b7280] hover:text-[#f1f1f5] rounded"><Icon name="x" /></button>
@@ -219,6 +1342,36 @@ function OperatorModal({ editing, onClose, onSave }) {
                 </button>
               ))}
             </div>
+            {role === "agent" && services.length > 0 && (
+              <div className="mt-4">
+                <label className="block text-xs text-[#6b7280] mb-1.5">
+                  Доступ к ВПН-сервисам
+                  <span className="text-[#3a3a4a]"> — по каким тикетам сможет отвечать</span>
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {services.map((s) => {
+                    const on = serviceIds.includes(s.id);
+                    return (
+                      <button key={s.id} type="button"
+                        onClick={() => setServiceIds((ids) =>
+                          on ? ids.filter((i) => i !== s.id) : [...ids, s.id])}
+                        className={"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition " +
+                          (on ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
+                              : "bg-[#0d0d12] text-[#6b7280] border-[#2a2a3a] hover:text-[#f1f1f5]")}>
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0"
+                              style={{ background: on ? s.color : "#3a3a4a" }}></span>
+                        {s.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {role === "admin" && (
+              <div className="mt-3 text-[10px] text-[#6b7280]">
+                Администратор видит все ВПН-сервисы — отдельные флаги не нужны.
+              </div>
+            )}
           </div>
           {!editing && (
             <div>
@@ -237,7 +1390,7 @@ function OperatorModal({ editing, onClose, onSave }) {
           </button>
         </div>
       </form>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -282,7 +1435,7 @@ function ProfileSection({ showToast }) {
   }
 
   return (
-    <div className="max-w-[600px] mx-auto p-6 space-y-5">
+    <div className="max-w-[600px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Профиль</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">Управление своим аккаунтом</div>
@@ -377,7 +1530,7 @@ function ScheduleSection({ showToast }) {
   if (!schedule) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Расписание</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">Уведомления в нерабочее время накапливаются и отправляются операторам в начале рабочего дня. ИИ работает круглосуточно.</div>
@@ -412,16 +1565,17 @@ function ScheduleSection({ showToast }) {
   );
 }
 
-function AISection({ showToast }) {
+function AISection({ showToast, service }) {
   const [settings, setSettings] = useStateT(null);
 
   useEffectT(() => {
-    window.apiFetch("GET", "/api/settings/ai").then(setSettings).catch(() => {});
-  }, []);
+    setSettings(null);
+    window.apiFetch("GET", "/api/settings/ai" + svcQuery(service)).then(setSettings).catch(() => {});
+  }, [service?.id]);
 
   async function save() {
     try {
-      await window.apiFetch("PUT", "/api/settings/ai", settings);
+      await window.apiFetch("PUT", "/api/settings/ai" + svcQuery(service), settings);
       showToast("Настройки ИИ сохранены");
     } catch { showToast("Ошибка сохранения"); }
   }
@@ -429,11 +1583,12 @@ function AISection({ showToast }) {
   if (!settings) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">ИИ-настройки</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">Сохраняется в БД и Redis — n8n подхватывает сразу</div>
       </div>
+      <ServiceBanner service={service} hint={service ? `ключ Redis: vpn_bot:${service.slug}:ai_settings` : ""} />
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
         <SettingsRow title="Автоматические ответы" desc="ИИ сам отвечает на сообщения" control={<Switch on={settings.auto_reply} onChange={() => setSettings((s) => ({ ...s, auto_reply: !s.auto_reply }))} />} />
         <div className="px-5 py-4">
@@ -500,7 +1655,7 @@ function NotificationsSection({ showToast }) {
   if (!s) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Уведомления</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">Python публикует события в Redis → n8n доставляет в Telegram</div>
@@ -533,7 +1688,7 @@ const CATEGORY_COLORS = {
   escalation:      "bg-[#A855F7]/15 text-[#C084FC] border-[#A855F7]/30",
 };
 
-function KBSection() {
+function KBSection({ service }) {
   const [articles,   setArticles]   = useStateT(null);
   const [uploading,  setUploading]  = useStateT(false);
   const [uploadErr,  setUploadErr]  = useStateT(null);
@@ -543,13 +1698,21 @@ function KBSection() {
   const fileRef = React.createRef();
 
   useEffectT(() => {
-    window.apiFetch("GET", "/api/kb").then(setArticles).catch(() => setArticles([]));
-  }, []);
+    setArticles(null);
+    window.apiFetch("GET", "/api/kb" + svcQuery(service)).then(setArticles).catch(() => setArticles([]));
+  }, [service?.id]);
 
   async function handleUpload(e) {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = "";
+    // Загрузка заменяет базу знаний целиком, а не дополняет её — иначе разделы,
+    // удалённые из документа при правке, навсегда оставались бы в поиске ИИ.
+    // Поэтому спрашиваем, когда есть что потерять.
+    if (articles && articles.length > 0 &&
+        !window.confirm(`Загрузка заменит базу знаний целиком: ${articles.length} ` +
+                        `чанков будут удалены, вместо них встанут чанки из нового файла. ` +
+                        `Продолжить?`)) return;
     setUploading(true);
     setUploadErr(null);
     try {
@@ -558,13 +1721,13 @@ function KBSection() {
       const headers = {};
       const token = localStorage.getItem("hd_token");
       if (token) headers["Authorization"] = "Bearer " + token;
-      const res = await fetch("/api/kb/upload", { method: "POST", headers, body: form });
+      const res = await fetch("/api/kb/upload" + svcQuery(service), { method: "POST", headers, body: form });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || res.statusText);
       }
       const data = await res.json();
-      const fresh = await window.apiFetch("GET", "/api/kb");
+      const fresh = await window.apiFetch("GET", "/api/kb" + svcQuery(service));
       setArticles(fresh);
       setUploadErr(null);
     } catch (err) {
@@ -577,7 +1740,7 @@ function KBSection() {
   async function handleDelete(id) {
     setDeleting(id);
     try {
-      await window.apiFetch("DELETE", `/api/kb/${id}`);
+      await window.apiFetch("DELETE", `/api/kb/${id}` + svcQuery(service));
       setArticles((arr) => arr.filter((a) => a.id !== id));
     } catch {
     } finally {
@@ -589,7 +1752,7 @@ function KBSection() {
     if (!window.confirm("Сбросить всю базу знаний? Все статьи и векторы будут удалены без возможности восстановления.")) return;
     setResetting(true);
     try {
-      await window.apiFetch("DELETE", "/api/kb");
+      await window.apiFetch("DELETE", "/api/kb" + svcQuery(service));
       setArticles([]);
     } catch {
     } finally {
@@ -600,11 +1763,14 @@ function KBSection() {
   if (articles === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-[#f1f1f5]">База знаний</h1>
-          <div className="text-xs text-[#6b7280] mt-0.5">{articles.length} чанков · используется ИИ для поиска</div>
+          <div className="text-xs text-[#6b7280] mt-0.5">
+            {articles.length} чанков · используется ИИ для поиска ·
+            {" "}<span className="text-[#f59e0b]">загрузка заменяет базу целиком</span>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {uploading && <span className="text-xs text-[#6b7280] animate-pulse">Обработка ИИ...</span>}
@@ -623,6 +1789,8 @@ function KBSection() {
           <input ref={fileRef} type="file" accept=".txt,.md" className="hidden" onChange={handleUpload} />
         </div>
       </div>
+      <ServiceBanner service={service}
+                     hint={service ? `коллекция Qdrant: ${service.qdrantCollection}` : ""} />
 
       {uploadErr && (
         <div className="text-sm text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-4 py-2">
@@ -690,16 +1858,17 @@ function KBSection() {
   );
 }
 
-function AutomationSection({ showToast }) {
+function AutomationSection({ showToast, service }) {
   const [s, setS] = useStateT(null);
 
   useEffectT(() => {
-    window.apiFetch("GET", "/api/settings/automation").then(setS).catch(() => {});
-  }, []);
+    setS(null);
+    window.apiFetch("GET", "/api/settings/automation" + svcQuery(service)).then(setS).catch(() => {});
+  }, [service?.id]);
 
   async function save() {
     try {
-      await window.apiFetch("PUT", "/api/settings/automation", s);
+      await window.apiFetch("PUT", "/api/settings/automation" + svcQuery(service), s);
       showToast("Настройки автоматизации сохранены");
     } catch { showToast("Ошибка сохранения"); }
   }
@@ -712,7 +1881,7 @@ function AutomationSection({ showToast }) {
     const next = { ...s, [key]: !s[key] };
     setS(next);
     try {
-      await window.apiFetch("PUT", "/api/settings/automation", next);
+      await window.apiFetch("PUT", "/api/settings/automation" + svcQuery(service), next);
       showToast("Настройки автоматизации сохранены");
     } catch { showToast("Ошибка сохранения"); }
   }
@@ -721,11 +1890,12 @@ function AutomationSection({ showToast }) {
   if (!s) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Автоматизация</h1>
-        <div className="text-xs text-[#6b7280] mt-0.5">Автоматические действия при диалогах</div>
+        <div className="text-xs text-[#6b7280] mt-0.5">Автоматические действия при диалогах. Все параметры настраиваются отдельно для каждого ВПН-сервиса</div>
       </div>
+      <ServiceBanner service={service} />
 
       {/* Operator handoff */}
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
@@ -760,14 +1930,14 @@ function AutomationSection({ showToast }) {
           </div>
           {s.auto_handoff_enabled && (
             <div className="mt-3">
-              <label className="block text-xs text-[#6b7280] mb-2">Инструкция для ИИ при автопередаче</label>
+              <label className="block text-xs text-[#6b7280] mb-2">Промпт авто-передачи (гейт)</label>
               <textarea
                 value={s.handoff_instruction_text ?? ""}
                 onChange={e => set("handoff_instruction_text", e.target.value)}
                 rows={5}
                 className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
               />
-              <div className="text-xs text-[#6b7280] mt-1.5">Дописывается к системному промпту, когда включён авто-вызов. Обязательно требуйте маркер [HANDOFF] в начале ответа — по нему система понимает, что ИИ передаёт диалог. Следите, чтобы остальной промпт не запрещал служебные маркеры. Пустое поле = стандартный текст. Сохраняется кнопкой «Сохранить»</div>
+              <div className="text-xs text-[#6b7280] mt-1.5">Отдельный промпт модуля-маршрутизатора (гейта): он решает, передать диалог оператору или продолжать. К основному промпту НЕ приклеивается — хранится отдельно и подставляется в гейт. Гейт должен возвращать одно слово: HANDOFF или CONTINUE (тег [HANDOFF] внутри писать не нужно). Счётчик шагов и историю диалога дописывает сам сценарий. Не используйте одиночные символы {'{'} и {'}'}. Пустое поле = стандартный текст. Сохраняется кнопкой «Сохранить»</div>
             </div>
           )}
         </div>
@@ -906,7 +2076,7 @@ function SoundsSection({ showToast }) {
   ];
 
   return (
-    <div className="max-w-[600px] mx-auto p-6 space-y-5">
+    <div className="max-w-[600px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Звуки уведомлений</h1>
         <div className="text-xs text-[#6b7280] mt-0.5">Загрузите аудиофайлы для браузерных уведомлений</div>
@@ -938,7 +2108,7 @@ function SoundsSection({ showToast }) {
   );
 }
 
-function BroadcastSection({ showToast }) {
+function BroadcastSection({ showToast, service }) {
   const [text, setText] = useStateT("");
   const [confirm, setConfirm] = useStateT(false);
   const [result, setResult] = useStateT(null);
@@ -949,7 +2119,7 @@ function BroadcastSection({ showToast }) {
     setLoading(true);
     setResult(null);
     try {
-      const res = await window.apiFetch("POST", "/api/broadcast", { text });
+      const res = await window.apiFetch("POST", "/api/broadcast" + svcQuery(service), { text });
       setResult(res);
       if (res.failed === 0) showToast(`Отправлено ${res.sent} пользователям`);
       else showToast(`Отправлено ${res.sent}, ошибок ${res.failed}`);
@@ -961,11 +2131,14 @@ function BroadcastSection({ showToast }) {
   }
 
   return (
-    <div className="max-w-[700px] mx-auto p-6 space-y-5">
+    <div className="max-w-[700px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div>
         <h1 className="text-xl font-semibold text-[#f1f1f5]">Рассылка</h1>
-        <div className="text-xs text-[#6b7280] mt-0.5">Отправить сообщение всем пользователям из базы</div>
+        <div className="text-xs text-[#6b7280] mt-0.5">
+          Сообщение уйдёт клиентам выбранного ВПН-сервиса через его бота. Рассылки разных сервисов идут независимо
+        </div>
       </div>
+      <ServiceBanner service={service} />
 
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5 space-y-4">
         <div>
@@ -1002,8 +2175,8 @@ function BroadcastSection({ showToast }) {
       </div>
 
       {confirm && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setConfirm(false)}>
-          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm" onClick={e => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setConfirm(false)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
             <div className="font-semibold text-[#f1f1f5] mb-2">Отправить рассылку?</div>
             <div className="text-sm text-[#6b7280] mb-4 leading-relaxed">
               Сообщение получат все пользователи, которые когда-либо писали боту. Отменить нельзя.
@@ -1018,7 +2191,7 @@ function BroadcastSection({ showToast }) {
               </button>
             </div>
           </div>
-        </div>
+        </ModalOverlay>
       )}
     </div>
   );
@@ -1058,8 +2231,8 @@ function TemplateModal({ template, groups, onSave, onClose }) {
     onSave({ ...form, id: template?.id });
   }
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-lg" onClick={e => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-lg">
         <div className="font-semibold text-[#f1f1f5] mb-4">{template ? "Редактировать шаблон" : "Добавить шаблон"}</div>
         <form onSubmit={submit} className="space-y-4">
           <div>
@@ -1091,11 +2264,213 @@ function TemplateModal({ template, groups, onSave, onClose }) {
           </div>
         </form>
       </div>
+    </ModalOverlay>
+  );
+}
+
+// ── Секция «Папки»: свои разделы списка тикетов ──────────────────────────────
+// Папка — ярлык поверх статуса: тикет остаётся в «В работе» или «Ожидании» и
+// дополнительно лежит в папке, куда его положил оператор. Папки пер-сервисные.
+
+const FOLDER_EMOJI = ["📁", "🔥", "⭐", "💳", "🐞", "🔒", "📌", "🚚", "🎯", "🧊", "📞", "🧾"];
+
+function FoldersSection({ showToast, service }) {
+  const [folders, setFolders] = useStateT(null);
+  const [modal, setModal] = useStateT(null);      // {} — новая, объект — правка
+  const [confirmDel, setConfirmDel] = useStateT(null);
+  const [busy, setBusy] = useStateT(false);
+
+  async function reload() {
+    try {
+      setFolders(await window.apiFetch("GET", "/api/folders" + svcQuery(service)));
+    } catch { setFolders([]); }
+  }
+  useEffectT(() => { setFolders(null); if (service) reload(); }, [service?.id]);
+
+  async function save(form) {
+    try {
+      if (form.id) {
+        await window.apiFetch("PUT", `/api/folders/${form.id}`, form);
+        showToast("Папка обновлена");
+      } else {
+        await window.apiFetch("POST", "/api/folders" + svcQuery(service), form);
+        showToast("Папка создана");
+      }
+      setModal(null);
+      reload();
+    } catch (e) { showToast(e?.detail || "Ошибка сохранения"); }
+  }
+
+  async function remove(f) {
+    try {
+      await window.apiFetch("DELETE", `/api/folders/${f.id}`);
+      showToast("Папка удалена");
+      reload();
+    } catch (e) { showToast(e?.detail || "Ошибка удаления"); }
+    setConfirmDel(null);
+  }
+
+  // Порядок правится стрелками: меняем sort_order соседей местами.
+  async function move(index, delta) {
+    const next = index + delta;
+    if (next < 0 || next >= folders.length) return;
+    const a = folders[index], b = folders[next];
+    setBusy(true);
+    try {
+      await window.apiFetch("PUT", `/api/folders/${a.id}`,
+        { name: a.name, emoji: a.emoji, color: a.color, sort_order: b.sortOrder });
+      await window.apiFetch("PUT", `/api/folders/${b.id}`,
+        { name: b.name, emoji: b.emoji, color: b.color, sort_order: a.sortOrder });
+      await reload();
+    } catch { showToast("Не удалось изменить порядок"); }
+    setBusy(false);
+  }
+
+  if (folders === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+
+  return (
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold text-[#f1f1f5]">Папки</h1>
+          <div className="text-xs text-[#6b7280] mt-0.5">
+            Свои разделы в списке тикетов — рядом со статусными
+          </div>
+        </div>
+        <button onClick={() => setModal({})}
+          className="shrink-0 px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5">
+          <Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />
+          Добавить папку
+        </button>
+      </div>
+
+      <ServiceBanner service={service} hint="папки свои у каждого ВПН-а" />
+
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden divide-y divide-[#2a2a3a]/40">
+        {folders.length === 0 && (
+          <div className="px-5 py-10 text-center text-xs text-[#6b7280]">
+            Папок нет. Тикеты раскладываются по ним вручную — из меню действий над тикетом.
+          </div>
+        )}
+        {folders.map((f, i) => (
+          <div key={f.id} className="px-4 py-3 flex items-center gap-3 hover:bg-[#1a1a24]/40 transition">
+            <span className="w-9 h-9 shrink-0 rounded-[11px] flex items-center justify-center text-lg"
+                  style={{ background: f.color + "22", border: `1px solid ${f.color}55` }}>
+              {f.emoji}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm text-[#f1f1f5] truncate">{f.name}</div>
+              <div className="text-[11px] text-[#6b7280]">
+                {f.openCount > 0 ? `${f.openCount} открытых тикетов` : "пусто"}
+              </div>
+            </div>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <button onClick={() => move(i, -1)} disabled={busy || i === 0} aria-label="Выше"
+                className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded disabled:opacity-25">↑</button>
+              <button onClick={() => move(i, 1)} disabled={busy || i === folders.length - 1} aria-label="Ниже"
+                className="p-1.5 text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] rounded disabled:opacity-25">↓</button>
+              <button onClick={() => setModal(f)} aria-label="Изменить"
+                className="p-1.5 text-[#6b7280] hover:text-[#7BA8F9] hover:bg-[#4F8EF7]/10 rounded transition"><Icon name="edit" className="w-4 h-4" /></button>
+              <button onClick={() => setConfirmDel(f)} aria-label="Удалить"
+                className="p-1.5 text-[#6b7280] hover:text-[#ef4444] hover:bg-[#ef4444]/10 rounded transition"><Icon name="trash" className="w-4 h-4" /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {modal && <FolderModal editing={modal.id ? modal : null}
+                             onSave={save} onClose={() => setModal(null)} />}
+
+      {confirmDel && (
+        <ModalOverlay onClose={() => setConfirmDel(null)}>
+          <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-6 w-full max-w-sm">
+            <div className="font-semibold text-[#f1f1f5] mb-1">Удалить папку «{confirmDel.name}»?</div>
+            <div className="text-sm text-[#6b7280] mb-5">
+              Тикеты не пропадут — они просто перестанут быть разложенными.
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirmDel(null)} className="px-3 py-1.5 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+              <button onClick={() => remove(confirmDel)} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30 hover:bg-[#ef4444]/30">Удалить</button>
+            </div>
+          </div>
+        </ModalOverlay>
+      )}
     </div>
   );
 }
 
-function TemplatesSection({ showToast }) {
+function FolderModal({ editing, onSave, onClose }) {
+  const [name, setName] = useStateT(editing?.name || "");
+  const [emoji, setEmoji] = useStateT(editing?.emoji || FOLDER_EMOJI[0]);
+  const [color, setColor] = useStateT(editing?.color || SERVICE_COLORS[0]);
+
+  function submit(e) {
+    e?.preventDefault();
+    if (!name.trim()) return;
+    onSave({ id: editing?.id, name: name.trim(), emoji: emoji.trim() || "📁", color });
+  }
+
+  return (
+    <ModalOverlay onClose={onClose}>
+      <form onSubmit={submit} className="bg-[#13131a] border border-[#2a2a3a] rounded-xl w-full max-w-md overflow-hidden">
+        <div className="px-5 py-4 border-b border-[#2a2a3a] flex items-center justify-between">
+          <div className="font-semibold text-[#f1f1f5]">{editing ? "Редактировать папку" : "Новая папка"}</div>
+          <button type="button" onClick={onClose} className="p-1 text-[#6b7280] hover:text-[#f1f1f5] rounded"><Icon name="x" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="flex items-center gap-3">
+            <span className="w-11 h-11 shrink-0 rounded-xl flex items-center justify-center text-xl"
+                  style={{ background: color + "22", border: `1px solid ${color}55` }}>
+              {emoji || "📁"}
+            </span>
+            <div className="flex-1 min-w-0">
+              <label className="block text-xs text-[#6b7280] mb-1.5">Название</label>
+              <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Оплаты"
+                className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">
+              Эмодзи <span className="text-[#3a3a4a]">— или впишите своё</span>
+            </label>
+            <div className="flex items-center gap-2">
+              <input value={emoji} onChange={(e) => setEmoji(e.target.value)} maxLength={4}
+                className="w-16 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-2 py-2 text-base text-center text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50" />
+              <div className="flex flex-wrap gap-1 flex-1">
+                {FOLDER_EMOJI.map((e) => (
+                  <button key={e} type="button" onClick={() => setEmoji(e)}
+                    className={"w-8 h-8 rounded-lg text-base transition " +
+                      (emoji === e ? "bg-[#1a1a24] ring-1 ring-[#4F8EF7]/50" : "hover:bg-[#1a1a24]")}>
+                    {e}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Цвет</label>
+            <div className="flex flex-wrap gap-2">
+              {SERVICE_COLORS.map((c) => (
+                <button key={c} type="button" onClick={() => setColor(c)}
+                  className={"w-7 h-7 rounded-lg transition " + (color === c ? "ring-2 ring-offset-2 ring-offset-[#13131a] ring-white/60" : "")}
+                  style={{ background: c }}></button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="px-5 py-4 border-t border-[#2a2a3a] flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Отмена</button>
+          <button type="submit" disabled={!name.trim()}
+            className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold disabled:opacity-40">
+            {editing ? "Сохранить" : "Создать"}
+          </button>
+        </div>
+      </form>
+    </ModalOverlay>
+  );
+}
+
+function TemplatesSection({ showToast, service }) {
   const [templates, setTemplates] = useStateT(null);
   const [modal, setModal] = useStateT(null);
   const [deleting, setDeleting] = useStateT(null);
@@ -1107,8 +2482,9 @@ function TemplatesSection({ showToast }) {
   const [inlineSaving, setInlineSaving] = useStateT(false);
 
   useEffectT(() => {
-    window.apiFetch("GET", "/api/templates").then(setTemplates).catch(() => setTemplates([]));
-  }, []);
+    setTemplates(null);
+    window.apiFetch("GET", "/api/templates" + svcQuery(service)).then(setTemplates).catch(() => setTemplates([]));
+  }, [service?.id]);
 
   const groups = useMemoT(() => {
     if (!templates) return [];
@@ -1132,7 +2508,7 @@ function TemplatesSection({ showToast }) {
   async function saveTemplate(data) {
     try {
       const method = data.id ? "PUT" : "POST";
-      const url = data.id ? `/api/templates/${data.id}` : "/api/templates";
+      const url = (data.id ? `/api/templates/${data.id}` : "/api/templates") + svcQuery(service);
       const saved = await window.apiFetch(method, url, data);
       setTemplates(prev => data.id
         ? prev.map(t => t.id === data.id ? saved : t)
@@ -1145,7 +2521,7 @@ function TemplatesSection({ showToast }) {
   async function deleteTemplate(id) {
     setDeleting(id);
     try {
-      await window.apiFetch("DELETE", `/api/templates/${id}`);
+      await window.apiFetch("DELETE", `/api/templates/${id}` + svcQuery(service));
       setTemplates(prev => prev.filter(t => t.id !== id));
       showToast("Шаблон удалён");
     } catch { showToast("Ошибка удаления"); }
@@ -1156,7 +2532,7 @@ function TemplatesSection({ showToast }) {
     const trimmed = (newName || "").trim();
     if (!trimmed || trimmed === oldName) { setRenamingGroup(null); return; }
     try {
-      await window.apiFetch("PATCH", "/api/templates/group", { old_name: oldName, new_name: trimmed });
+      await window.apiFetch("PATCH", "/api/templates/group" + svcQuery(service), { old_name: oldName, new_name: trimmed });
       setTemplates(prev => prev.map(t => t.group_name === oldName ? { ...t, group_name: trimmed } : t));
       if (selectedGroup === oldName) setSelectedGroup(trimmed);
       showToast("Группа переименована");
@@ -1168,7 +2544,7 @@ function TemplatesSection({ showToast }) {
     const items = grouped[name] || [];
     if (!items.length) return;
     try {
-      await Promise.all(items.map(t => window.apiFetch("DELETE", `/api/templates/${t.id}`)));
+      await Promise.all(items.map(t => window.apiFetch("DELETE", `/api/templates/${t.id}` + svcQuery(service))));
       setTemplates(prev => prev.filter(t => t.group_name !== name));
       if (selectedGroup === name) setSelectedGroup(null);
       showToast(`Группа «${name}» удалена`);
@@ -1179,7 +2555,7 @@ function TemplatesSection({ showToast }) {
     if (!inlineForm.title.trim() || !inlineForm.text.trim()) return;
     setInlineSaving(true);
     try {
-      const saved = await window.apiFetch("POST", "/api/templates", {
+      const saved = await window.apiFetch("POST", "/api/templates" + svcQuery(service), {
         group_name: group, title: inlineForm.title.trim(), text: inlineForm.text.trim(),
       });
       setTemplates(prev => [...prev, saved].sort((a, b) => a.group_name.localeCompare(b.group_name) || a.title.localeCompare(b.title)));
@@ -1193,7 +2569,7 @@ function TemplatesSection({ showToast }) {
   if (templates === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
-    <div className="max-w-[1100px] mx-auto p-6 space-y-5">
+    <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-[#f1f1f5]">Шаблоны сообщений</h1>

@@ -1,0 +1,1063 @@
+{
+  "name": "Main Input",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// Константы воркфлоу. Settings → Variables ($vars) — платная фича n8n, в self-hosted community её нет, поэтому значения живут здесь: правятся в одном месте на воркфлоу, ниже на них ссылаются как $('Константы').first().json.TG_TOKEN\nconst C = {\n  TG_TOKEN: 'ТОКЕН_БОТА_ОТ_BOTFATHER',\n  PANEL_URL: 'https://адрес-панели',\n  N8N_API_KEY: 'та же строка, что в .env панели',\n};\n\n// Входящий элемент отдаём дальше как есть: ноды ниже читают свои поля из $json, и подмена содержимого их бы сломала.\nreturn $input.all().map((item) => ({ json: { ...item.json, ...C } }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2432, 2064],
+      "id": "c0n5tan7-a1a9-4e51-9c01-000000000002",
+      "name": "Константы",
+      "notesInFlow": true,
+      "notes": "Токен бота, адрес панели и ключ API — вместо платного Settings → Variables."
+    },
+    {
+      "parameters": {
+        "updates": ["message", "business_message", "callback_query"],
+        "additionalFields": { "download": false }
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [-2496, 2160],
+      "id": "a300a4c6-6185-43c6-b74b-ea46bcf9f890",
+      "name": "Telegram Trigger1",
+      "webhookId": "da282147-b73c-49cb-8700-3d7cab8cdb67",
+      "credentials": { "telegramApi": { "id": "drGmrRpP856vKvMY", "name": "Telegram account" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}api/n8n/dialog/resolve",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify((() => { const m = $('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message; return { chat_id: String(m.chat.id), business_id: m.business_connection_id || '', user_name: m.chat.first_name, user_username: m.chat.username }; })()) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-2048, 2064],
+      "id": "b1d0f0aa-0000-4000-9000-000000000001",
+      "name": "Диалог: resolve",
+      "notesInFlow": true,
+      "notes": "Панель отвечает, в какой тикет писать: dialog_id, ai_enabled, слаг сервиса и коллекция Qdrant. Одного источника правды достаточно — расходиться нечему.",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Telegram Trigger1').item.json.callback_query }}",
+                    "rightValue": "",
+                    "operator": { "type": "object", "operation": "exists", "singleValue": true },
+                    "id": "5be52a7e-116b-43ad-b898-9299a0e64ae0"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "callback_query"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "id": "1ecb4703-9f5c-4ae7-b61e-de6c1a52e2a5",
+                    "leftValue": "={{ $('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message }}",
+                    "rightValue": "",
+                    "operator": { "type": "object", "operation": "exists", "singleValue": true }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "message"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [-2272, 2160],
+      "id": "24936ff9-5268-4559-9bc7-c2f0baf64f2a",
+      "name": "Switch4"
+    },
+    {
+      "parameters": {
+        "queue": "vpn_bot.incoming",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify({ type: \"callback\", business_id: (($('Telegram Trigger1').item.json.callback_query || {}).message || {}).business_connection_id || '', chat_id: String($('Telegram Trigger1').item.json.callback_query.from.id), callback_data: $('Telegram Trigger1').item.json.callback_query.data }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.rabbitmq",
+      "typeVersion": 1,
+      "position": [-2048, 2256],
+      "id": "a825c432-09b2-4759-825e-b68dd277768c",
+      "name": "Callback → панель",
+      "credentials": { "rabbitmq": { "id": "j2NDgekuNqvR5Z6Q", "name": "RabbitMQ account" } }
+    },
+    {
+      "parameters": {
+        "resource": "callback",
+        "queryId": "={{ $('Telegram Trigger1').item.json.callback_query.id }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [-1824, 2256],
+      "id": "963bf092-9db2-4696-b1e9-d3c0ed394f07",
+      "name": "Answer Query a callback1",
+      "webhookId": "d9100fec-9b88-4cec-bddf-f44773acc245",
+      "credentials": { "telegramApi": { "id": "drGmrRpP856vKvMY", "name": "Telegram account" } }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "leftValue": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).sticker }}",
+                    "rightValue": "",
+                    "operator": { "type": "object", "operation": "exists", "singleValue": true },
+                    "id": "8f761088-9ab4-4260-bed2-e89186c1d07b"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "sticker"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "id": "5ef13e73-450a-4c69-8bfc-5a05397a605d",
+                    "leftValue": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).photo }}",
+                    "rightValue": "",
+                    "operator": { "type": "array", "operation": "exists", "singleValue": true }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "photo"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "id": "2eea8441-e9e4-489d-85ee-4842f61a85b2",
+                    "leftValue": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).voice }}",
+                    "rightValue": "",
+                    "operator": { "type": "object", "operation": "exists", "singleValue": true }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "voice"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "id": "0b4d0d9e-5894-4d75-9b65-25acf473fdba",
+                    "leftValue": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).video }}",
+                    "rightValue": "",
+                    "operator": { "type": "object", "operation": "exists", "singleValue": true }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "video"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "id": "8cc35b9b-f0df-4851-a7d0-9aa0d4490205",
+                    "leftValue": "",
+                    "rightValue": "",
+                    "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "text"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [-1152, 2016],
+      "id": "403b1c51-b2dd-4ff8-b25b-9c2850547c90",
+      "name": "Switch2"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).sticker.thumb.file_id }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-704, 1680],
+      "id": "9e4eae1c-6aa8-4234-bf71-16bafba63128",
+      "name": "Стикер: getFile"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
+        "options": { "response": { "response": { "responseFormat": "file" } } }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-480, 1680],
+      "id": "427655df-7e68-4aed-bf18-f7eb8c20a985",
+      "name": "Стикер: скачать"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).photo.at(-1).file_id }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-928, 1872],
+      "id": "94410cef-8e03-40e7-9f71-75fba298479c",
+      "name": "Фото: getFile"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-704, 1872],
+      "id": "1af6bfe0-7b85-4aab-b9b0-0afdb1ca42b6",
+      "name": "Фото: скачать"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).voice.file_id }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-928, 2064],
+      "id": "1f4b075d-8a24-4bd7-ad7d-7d27b8297411",
+      "name": "Голос: getFile"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-704, 2064],
+      "id": "dfab1885-aefe-4f31-b096-0d73ccd12d90",
+      "name": "Голос: скачать"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/getFile?file_id={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).video.file_id }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-480, 2256],
+      "id": "26a8983d-74bd-4999-8c3a-5944c07980e4",
+      "name": "Видео: getFile"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}api/n8n/upload",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            { "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-480, 1872],
+      "id": "c1e1e141-a3d5-4608-9afc-6a68b29382dd",
+      "name": "Фото → панель"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}api/n8n/upload",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            { "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-480, 2064],
+      "id": "4e8c54e0-431a-455f-ae41-d24b2544dcd5",
+      "name": "Голос → панель"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "", "type": "string" },
+            { "id": "79de50d1-902e-4f61-880d-cb735dd83cdf", "name": "file_id", "value": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).sticker.file_id }}", "type": "string" },
+            { "id": "0eeb5121-c3a3-4120-bed0-a882ae9ef32d", "name": "dialog_id", "value": "={{ $('Диалог: resolve').first().json.dialog_id }}", "type": "string" },
+            { "id": "e2ed7b8b-21e7-4081-af0b-feec20eb3b8b", "name": "file_type", "value": "sticker", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-256, 1680],
+      "id": "c25aea72-dfe4-4786-8002-e1e552374476",
+      "name": "Edit Fields5"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).caption }}", "type": "string" },
+            { "id": "20eaa7bd-6977-4bed-a2ed-606f3b2edafd", "name": "file_id", "value": "={{ $json.url }}", "type": "string" },
+            { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $('Диалог: resolve').first().json.dialog_id }}", "type": "string" },
+            { "id": "e86e8b7b-110f-4431-801e-e3cb30efe38c", "name": "file_type", "value": "photo", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-256, 1872],
+      "id": "b5aa0a50-f3a6-4114-9511-2d776dce26c2",
+      "name": "Edit Fields6"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "=", "type": "string" },
+            { "id": "20eaa7bd-6977-4bed-a2ed-606f3b2edafd", "name": "file_id", "value": "={{ $json.url }}", "type": "string" },
+            { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $('Диалог: resolve').first().json.dialog_id }}", "type": "string" },
+            { "id": "1c621010-38bf-4b9e-a49d-9498242dccee", "name": "file_type", "value": "voice", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-256, 2064],
+      "id": "9cb128b0-b25d-48b4-b848-be543bc3c94a",
+      "name": "Edit Fields7"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "=", "type": "string" },
+            { "id": "20eaa7bd-6977-4bed-a2ed-606f3b2edafd", "name": "file_id", "value": "={{ $json.url }}", "type": "string" },
+            { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $('Диалог: resolve').first().json.dialog_id }}", "type": "string" },
+            { "id": "1c621010-38bf-4b9e-a49d-9498242dccee", "name": "file_type", "value": "video", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-256, 2256],
+      "id": "9793bcff-2e15-4676-b91c-5aff9ed43d32",
+      "name": "Edit Fields9"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "484656b9-2200-417f-a10d-5aec5a18168f", "name": "message", "value": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).text }}", "type": "string" },
+            { "id": "20eaa7bd-6977-4bed-a2ed-606f3b2edafd", "name": "file_id", "value": "=", "type": "string" },
+            { "id": "22c6497e-f103-4e71-83b3-0023ae6dfae2", "name": "dialog_id", "value": "={{ $json.id }}", "type": "string" },
+            { "id": "1c621010-38bf-4b9e-a49d-9498242dccee", "name": "file_type", "value": "text", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-256, 2448],
+      "id": "76b805a9-32ca-4cad-a2c1-bbd7d28943c6",
+      "name": "Edit Fields8"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "conditions": [
+            {
+              "id": "89266625-2240-4114-945b-df7495e86706",
+              "leftValue": "={{ $('Диалог: resolve').first().json.ai_enabled }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [192, 2064],
+      "id": "2e92a77a-0054-4a0b-907d-589f98669bf6",
+      "name": "Если ИИ включена для чата1"
+    },
+    {
+      "parameters": {
+        "queue": "vpn_bot.incoming",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify({\n  \"type\": \"user_message\",\n  \"service\": $('Диалог: resolve').first().json.service_slug,\n  \"business_id\": ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id,\n  \"dialog_id\": $json.dialog_id.toString(),\n  \"chat_id\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id.toString(),\n  \"user_username\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.username,\n  \"user_name\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.first_name,\n  \"message\": $json.message,\n  \"ai_enabled\": $('Диалог: resolve').first().json.ai_enabled,\n  \"file_id\": $json.file_id,\n  \"file_type\": $json.file_type\n}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.rabbitmq",
+      "typeVersion": 1,
+      "position": [416, 1872],
+      "id": "c8b145d8-c538-4e20-a973-94535a13d27c",
+      "name": "Сообщение → панель",
+      "credentials": { "rabbitmq": { "id": "j2NDgekuNqvR5Z6Q", "name": "RabbitMQ account" } }
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Константы').first().json.PANEL_URL }}/api/dialogs/{{ $('Диалог: resolve').first().json.dialog_id }}/has_photo",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [640, 1872],
+      "id": "6f6c13f2-ea11-4c92-834e-0a1d5fdfffe3",
+      "name": "Аватар: нужен?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "conditions": [
+            {
+              "id": "2aaf2b0d-aa35-402c-852b-70ac469b4b69",
+              "leftValue": "={{ $json.has_photo }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [864, 1872],
+      "id": "8ed7417f-e912-4aba-910f-30bdab4b4a3f",
+      "name": "If4"
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "chatId": "={{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}"
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1088, 1872],
+      "id": "ecc79252-1fe1-4f23-acc8-66c5c8ce8d13",
+      "name": "Get a chat1",
+      "webhookId": "3f873c18-b447-4969-b038-8e1d3151b964",
+      "credentials": { "telegramApi": { "id": "drGmrRpP856vKvMY", "name": "Telegram account" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "conditions": [
+            {
+              "id": "14d951e1-d559-4b0c-9f18-132897bfa2a8",
+              "leftValue": "={{ $json.result.photo.small_file_id }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [1312, 1872],
+      "id": "d5f15973-68d3-4557-8787-e5d9d486980b",
+      "name": "Filter1"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{ $json.result.photo.small_file_id }}",
+        "download": false
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1536, 1872],
+      "id": "22562685-516b-4c73-a453-695ebae95f3f",
+      "name": "Get a file1",
+      "webhookId": "945c71fd-a211-4b14-a01e-fbbd05aef3ee",
+      "credentials": { "telegramApi": { "id": "drGmrRpP856vKvMY", "name": "Telegram account" } }
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-256, 2352],
+      "id": "b1d0f0aa-0000-4000-9000-000000000002",
+      "name": "Видео: скачать"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}api/n8n/upload",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [{ "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" }]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-32, 2352],
+      "id": "b1d0f0aa-0000-4000-9000-000000000003",
+      "name": "Видео → панель",
+      "notesInFlow": true,
+      "notes": "Ссылка на Bot API содержит токен бота, а её открывает браузер оператора. Поэтому файл кладём в своё хранилище, как это давно сделано у фото и голоса."
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1648, 1968],
+      "id": "b1d0f0aa-0000-4000-9000-000000000004",
+      "name": "Аватар: скачать"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}api/n8n/upload",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [{ "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" }]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1872, 1968],
+      "id": "b1d0f0aa-0000-4000-9000-000000000005",
+      "name": "Аватар: загрузить"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6050c05c-a8f8-476e-a663-cc749984b475",
+              "name": "photo_url",
+              "value": "={{ $json.url }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1760, 1872],
+      "id": "9a671471-796f-438b-a6e7-734d6dbd5b71",
+      "name": "Валидация1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Константы').first().json.PANEL_URL }}/api/dialogs/{{ $('Диалог: resolve').first().json.dialog_id }}/set_photo",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-API-Key", "value": "={{ $('Константы').first().json.N8N_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [{ "name": "url", "value": "={{ $json.photo_url }}" }]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1984, 1872],
+      "id": "c9e52f1c-a438-4ac0-ab1e-787a7dc8cfa0",
+      "name": "Аватар → панель"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.file_type }}",
+                    "rightValue": "voice",
+                    "operator": { "type": "string", "operation": "equals" },
+                    "id": "ae43ad55-7e39-4424-a0f7-949a9535abc5"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "voice"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "id": "f49b5c16-85ab-4179-b129-d4ca33aabcab",
+                    "leftValue": "={{ $json.file_type }}",
+                    "rightValue": "photo",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "photo"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "id": "e926d6f8-b10b-4675-94fe-c3a2f2be67d7",
+                    "leftValue": "",
+                    "rightValue": "",
+                    "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "text"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [416, 2240],
+      "id": "b521fa35-2d09-4593-8db9-ab3ea904325f",
+      "name": "Switch3"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.file_id }}",
+        "options": { "response": { "response": { "responseFormat": "file" } } }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [640, 2064],
+      "id": "1085ba31-9a1f-4dcb-90a8-9e82cc52f4cd",
+      "name": "HTTP Request14"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.file_id }}",
+        "options": { "response": { "response": { "responseFormat": "file" } } }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [640, 2448],
+      "id": "63c63b8d-bae5-4d5f-a983-7b835f68aeff",
+      "name": "HTTP Request13"
+    },
+    {
+      "parameters": { "resource": "audio", "operation": "transcribe", "options": {} },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [864, 2064],
+      "id": "addb3b10-b4f7-4975-9d0a-edf5e30b49c4",
+      "name": "Transcribe a recording1",
+      "credentials": { "openAiApi": { "id": "0tL4zzqsCd2g3p0a", "name": "OpenAI account" } }
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": { "__rl": true, "value": "gpt-4.1-mini", "mode": "id" },
+        "text": "Ты — AI-модуль анализа изображений для техподдержки.\n\nОпиши, что изображено на фото или скриншоте, без диагностики и советов.\n\nПравила:\n* Не предлагай решения.\n* Не определяй причину проблемы.\n* Не делай выводов, которых нет на изображении.\n\nЧто определить: тип изображения, устройства и их состояние, текст и коды ошибок, кнопки и индикаторы, интерфейс, бренды и модели.\n\nЕсли есть текст — перепиши его точно. Если качество плохое — скажи, что часть деталей не распознать.\n\nФормат:\nТип изображения:\n...\nОписание:\n...\nТекст на изображении:\n...\nДополнительные детали:\n...\n",
+        "inputType": "base64",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [864, 2448],
+      "id": "2eb2acb6-b0a2-4934-8a56-f5bef299e7c0",
+      "name": "Analyze image1",
+      "credentials": { "openAiApi": { "id": "0tL4zzqsCd2g3p0a", "name": "OpenAI account" } }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "e5972333-e938-4529-8576-cfa68ae6fd88", "name": "analyzed_file_type", "value": "={{ $('Switch3').item.json.file_type }}", "type": "string" },
+            { "id": "18ec7e32-a8ae-4200-b28b-85b52b5407b5", "name": "analyzed", "value": "=TRANSCRIBED AUDIO TEXT: {{ $json.text }}\nCAPTION: {{ $('Switch3').item.json.message }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1088, 2064],
+      "id": "0e95f258-595e-46aa-bf9a-ac51545924cb",
+      "name": "Тип аудио1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "e5972333-e938-4529-8576-cfa68ae6fd88", "name": "analyzed_file_type", "value": "={{ $('Switch3').item.json.file_type }}", "type": "string" },
+            { "id": "18ec7e32-a8ae-4200-b28b-85b52b5407b5", "name": "analyzed", "value": "=ANALISED IMAGE TEXT: {{ $json['0'].content[0].text }}\nCAPTION: {{ $('Switch3').item.json.message }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1088, 2448],
+      "id": "6303e204-50a4-4ced-96d0-d5efdc533542",
+      "name": "Тип фото1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "18ec7e32-a8ae-4200-b28b-85b52b5407b5", "name": "analyzed", "value": "={{ $json.message }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1088, 2256],
+      "id": "9c5af3e2-5f9f-4d99-8a28-cff05a01f8bb",
+      "name": "Тип текст1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "35af2a3d-ad38-428b-a8b5-0b48fe425087", "name": "prompt", "value": "={{ $json.analyzed }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1312, 2256],
+      "id": "54b194f8-fc19-4b42-a4aa-81a9d2f827cc",
+      "name": "Приведение к 1 формату1"
+    },
+    {
+      "parameters": {
+        "operation": "push",
+        "list": "=mes:{{ $('Диалог: resolve').first().json.service_slug }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
+        "messageData": "={{ JSON.stringify({ id: ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).message_id, text: $json.prompt }) }}",
+        "tail": true
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [1536, 2256],
+      "id": "81194b61-49bc-4aa5-b67a-5f5a9963cc63",
+      "name": "Запись в буфер",
+      "credentials": { "redis": { "id": "o5Ic7j5k2wyExQMt", "name": "Redis account 2" } }
+    },
+    {
+      "parameters": {
+        "operation": "incr",
+        "key": "=key:{{ $('Диалог: resolve').first().json.service_slug }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
+        "expire": true
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [1760, 2256],
+      "id": "00c7cc1a-790a-446f-b1fe-68d0d49e0848",
+      "name": "Ключ состояния",
+      "credentials": { "redis": { "id": "o5Ic7j5k2wyExQMt", "name": "Redis account 2" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst value = Object.values(data)[0];\nreturn [{ json: { keyBefore: value } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1984, 2256],
+      "id": "25d9ec37-9a50-45d3-9c75-ccb3d4d5b515",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2208, 2256],
+      "id": "0e3a4e79-fc97-4811-917f-f747910fec86",
+      "name": "Wait",
+      "webhookId": "d32b5d02-1c1b-41b1-8b34-0a5f653f0875"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "keyafter",
+        "key": "=key:{{ $('Диалог: resolve').first().json.service_slug }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [2432, 2256],
+      "id": "e87497d4-c2cc-45ef-8d55-8accd2b20414",
+      "name": "Redis5",
+      "credentials": { "redis": { "id": "o5Ic7j5k2wyExQMt", "name": "Redis account 2" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 3 },
+          "conditions": [
+            {
+              "id": "68c4f741-6479-4f86-8004-23a5ff15ba4d",
+              "leftValue": "={{ $json.keyafter }}",
+              "rightValue": "={{ $('Code in JavaScript1').item.json.keyBefore }}",
+              "operator": { "type": "number", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [2656, 2256],
+      "id": "c13ab7a7-ecb3-4f43-89a5-bef8712dd5df",
+      "name": "If2"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "messages",
+        "key": "=mes:{{ $('Диалог: resolve').first().json.service_slug }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [2880, 2256],
+      "id": "925c404f-8f12-45fd-a1ce-f6da23c20502",
+      "name": "Redis3",
+      "credentials": { "redis": { "id": "o5Ic7j5k2wyExQMt", "name": "Redis account 2" } }
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "key": "=mes:{{ $('Диалог: resolve').first().json.service_slug }}:{{ ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id }}"
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [3104, 2256],
+      "id": "36d45637-6994-4a5e-81af-6dc83ca5e33e",
+      "name": "Redis6",
+      "credentials": { "redis": { "id": "o5Ic7j5k2wyExQMt", "name": "Redis account 2" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $('Redis3').first().json.messages || [];\nconst list = Array.isArray(raw) ? raw : [raw];\n\nconst parsed = list.map(e => {\n  try {\n    const o = JSON.parse(e);\n    return { id: Number(o.id) || 0, text: String(o.text || '') };\n  } catch {\n    return { id: 0, text: String(e) };\n  }\n});\n\nparsed.sort((a, b) => a.id - b.id);\n\nconst message = parsed.map(o => o.text.trim()).filter(Boolean).join('\\n');\nif (!message) return [];\nreturn [{ json: { message } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3328, 2256],
+      "id": "a1de017d-4b70-42b3-938d-812b1d87d74b",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "TOif4yjVykVle8P1",
+          "mode": "list",
+          "cachedResultName": "AI (handoff)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ai_enabled": true,
+            "service": "={{ $('Диалог: resolve').first().json.service_slug }}",
+            "qdrant_collection": "={{ $('Диалог: resolve').first().json.qdrant_collection }}",
+            "chat_id": "={{ String(($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id) }}",
+            "dialog_id": "={{ $('Диалог: resolve').first().json.dialog_id }}",
+            "message": "={{ $json.message }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": true,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [3552, 2256],
+      "id": "15d41a26-2675-4600-8d9c-5395a451051c",
+      "name": "Call 'Main AI agent'1"
+    }
+  ],
+  "connections": {
+    "Telegram Trigger1": { "main": [[{ "node": "Константы", "type": "main", "index": 0 }]] },
+    "Константы": { "main": [[{ "node": "Switch4", "type": "main", "index": 0 }]] },
+    "Switch4": {
+      "main": [
+        [{ "node": "Callback → панель", "type": "main", "index": 0 }],
+        [{ "node": "Диалог: resolve", "type": "main", "index": 0 }]
+      ]
+    },
+    "Callback → панель": { "main": [[{ "node": "Answer Query a callback1", "type": "main", "index": 0 }]] },
+    "Диалог: resolve": { "main": [[{ "node": "Switch2", "type": "main", "index": 0 }]] },
+    "Switch2": {
+      "main": [
+        [{ "node": "Стикер: getFile", "type": "main", "index": 0 }],
+        [{ "node": "Фото: getFile", "type": "main", "index": 0 }],
+        [{ "node": "Голос: getFile", "type": "main", "index": 0 }],
+        [{ "node": "Видео: getFile", "type": "main", "index": 0 }],
+        [{ "node": "Edit Fields8", "type": "main", "index": 0 }]
+      ]
+    },
+    "Стикер: getFile": { "main": [[{ "node": "Стикер: скачать", "type": "main", "index": 0 }]] },
+    "Стикер: скачать": { "main": [[{ "node": "Edit Fields5", "type": "main", "index": 0 }]] },
+    "Фото: getFile": { "main": [[{ "node": "Фото: скачать", "type": "main", "index": 0 }]] },
+    "Фото: скачать": { "main": [[{ "node": "Фото → панель", "type": "main", "index": 0 }]] },
+    "Фото → панель": { "main": [[{ "node": "Edit Fields6", "type": "main", "index": 0 }]] },
+    "Голос: getFile": { "main": [[{ "node": "Голос: скачать", "type": "main", "index": 0 }]] },
+    "Голос: скачать": { "main": [[{ "node": "Голос → панель", "type": "main", "index": 0 }]] },
+    "Голос → панель": { "main": [[{ "node": "Edit Fields7", "type": "main", "index": 0 }]] },
+    "Видео: getFile": { "main": [[{ "node": "Видео: скачать", "type": "main", "index": 0 }]] },
+    "Видео: скачать": { "main": [[{ "node": "Видео → панель", "type": "main", "index": 0 }]] },
+    "Видео → панель": { "main": [[{ "node": "Edit Fields9", "type": "main", "index": 0 }]] },
+    "Edit Fields5": { "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]] },
+    "Edit Fields6": { "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]] },
+    "Edit Fields7": { "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]] },
+    "Edit Fields8": { "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]] },
+    "Edit Fields9": { "main": [[{ "node": "Если ИИ включена для чата1", "type": "main", "index": 0 }]] },
+    "Если ИИ включена для чата1": {
+      "main": [
+        [
+          { "node": "Сообщение → панель", "type": "main", "index": 0 },
+          { "node": "Switch3", "type": "main", "index": 0 }
+        ],
+        [{ "node": "Сообщение → панель", "type": "main", "index": 0 }]
+      ]
+    },
+    "Сообщение → панель": { "main": [[{ "node": "Аватар: нужен?", "type": "main", "index": 0 }]] },
+    "Аватар: нужен?": { "main": [[{ "node": "If4", "type": "main", "index": 0 }]] },
+    "If4": { "main": [[], [{ "node": "Get a chat1", "type": "main", "index": 0 }]] },
+    "Get a chat1": { "main": [[{ "node": "Filter1", "type": "main", "index": 0 }]] },
+    "Filter1": { "main": [[{ "node": "Get a file1", "type": "main", "index": 0 }]] },
+    "Get a file1": { "main": [[{ "node": "Аватар: скачать", "type": "main", "index": 0 }]] },
+    "Аватар: скачать": { "main": [[{ "node": "Аватар: загрузить", "type": "main", "index": 0 }]] },
+    "Аватар: загрузить": { "main": [[{ "node": "Валидация1", "type": "main", "index": 0 }]] },
+    "Валидация1": { "main": [[{ "node": "Аватар → панель", "type": "main", "index": 0 }]] },
+    "Switch3": {
+      "main": [
+        [{ "node": "HTTP Request14", "type": "main", "index": 0 }],
+        [{ "node": "HTTP Request13", "type": "main", "index": 0 }],
+        [{ "node": "Тип текст1", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP Request14": { "main": [[{ "node": "Transcribe a recording1", "type": "main", "index": 0 }]] },
+    "HTTP Request13": { "main": [[{ "node": "Analyze image1", "type": "main", "index": 0 }]] },
+    "Transcribe a recording1": { "main": [[{ "node": "Тип аудио1", "type": "main", "index": 0 }]] },
+    "Analyze image1": { "main": [[{ "node": "Тип фото1", "type": "main", "index": 0 }]] },
+    "Тип аудио1": { "main": [[{ "node": "Приведение к 1 формату1", "type": "main", "index": 0 }]] },
+    "Тип фото1": { "main": [[{ "node": "Приведение к 1 формату1", "type": "main", "index": 0 }]] },
+    "Тип текст1": { "main": [[{ "node": "Приведение к 1 формату1", "type": "main", "index": 0 }]] },
+    "Приведение к 1 формату1": { "main": [[{ "node": "Запись в буфер", "type": "main", "index": 0 }]] },
+    "Запись в буфер": { "main": [[{ "node": "Ключ состояния", "type": "main", "index": 0 }]] },
+    "Ключ состояния": { "main": [[{ "node": "Code in JavaScript1", "type": "main", "index": 0 }]] },
+    "Code in JavaScript1": { "main": [[{ "node": "Wait", "type": "main", "index": 0 }]] },
+    "Wait": { "main": [[{ "node": "Redis5", "type": "main", "index": 0 }]] },
+    "Redis5": { "main": [[{ "node": "If2", "type": "main", "index": 0 }]] },
+    "If2": { "main": [[{ "node": "Redis3", "type": "main", "index": 0 }]] },
+    "Redis3": { "main": [[{ "node": "Redis6", "type": "main", "index": 0 }]] },
+    "Redis6": { "main": [[{ "node": "Code in JavaScript2", "type": "main", "index": 0 }]] },
+    "Code in JavaScript2": { "main": [[{ "node": "Call 'Main AI agent'1", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "meta": { "templateCredsSetupCompleted": true }
+}

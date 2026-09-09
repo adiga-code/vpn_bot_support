@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import date, timedelta
 from typing import Optional
 
@@ -8,8 +9,26 @@ from app.config import Settings
 
 _AVATAR_COLORS = ["#4F8EF7", "#A855F7", "#22c55e", "#eab308", "#ef4444", "#06b6d4", "#f97316"]
 
+# settings.service_id = 0 — глобальная настройка (звуки, флаги миграций).
+# Ноль, а не NULL: колонка входит в PRIMARY KEY, а тот не допускает NULL.
+GLOBAL_SERVICE_ID = 0
+
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,30}$")
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def validate_slug(slug: str) -> str:
+    """Slug сервиса попадает в ключи Redis, имена коллекций Qdrant и DDL —
+    пускаем только безопасный алфавит."""
+    slug = (slug or "").strip().lower()
+    if not _SLUG_RE.match(slug):
+        raise ValueError(
+            "Слаг сервиса: латиница в нижнем регистре, цифры, дефис и подчёркивание, "
+            "до 31 символа, первый символ — буква или цифра"
+        )
+    return slug
+
 
 def avatar_color(dialog_id: str) -> str:
     return _AVATAR_COLORS[hash(dialog_id) % len(_AVATAR_COLORS)]
@@ -156,37 +175,10 @@ class DatabaseManager:
             )
         """)
 
-        # ── n8n shared tables ────────────────────────────────────────────────
-        # n8n connects to the same PostgreSQL and uses these tables.
-        # Names are prefixed with n8n_ to avoid collisions with helpdesk tables.
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS n8n_dialogs (
-                id         BIGSERIAL PRIMARY KEY,
-                user_id    BIGINT NOT NULL,
-                username   TEXT,
-                ai_status  BOOLEAN NOT NULL DEFAULT TRUE,
-                status     TEXT NOT NULL DEFAULT 'new',
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS n8n_dialogs_user_idx ON n8n_dialogs (user_id)"
-        )
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS n8n_messages (
-                id         BIGSERIAL PRIMARY KEY,
-                user_id    BIGINT NOT NULL,
-                dialog_id  BIGINT NOT NULL REFERENCES n8n_dialogs(id) ON DELETE CASCADE,
-                message    TEXT,
-                type       TEXT NOT NULL DEFAULT 'user',
-                file_id    TEXT,
-                file_type  TEXT,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS n8n_messages_dialog_idx ON n8n_messages (dialog_id)"
-        )
+        # Своих таблиц у n8n больше нет: диалог он получает от панели через
+        # POST /api/n8n/dialog/resolve, а сообщения панель пишет сама в
+        # messages. Пока состояние диалога дублировалось в n8n_dialogs, любое
+        # расхождение двух баз рождало второй тикет на того же клиента.
 
         # ── Forward migrations ────────────────────────────────────────────────
         # Add new columns without dropping anything; safe to re-run on every
@@ -217,6 +209,9 @@ class DatabaseManager:
             ("dialogs", "sla_started_at",       "TIMESTAMPTZ"),
             ("dialogs", "queued_at",            "TIMESTAMPTZ"),
             ("dialogs", "return_requested_at",  "TIMESTAMPTZ"),
+            # Запрос второго оператора на передачу тикета: кто просит и когда.
+            ("dialogs", "claim_requested_by",   "TEXT"),
+            ("dialogs", "claim_requested_at",   "TIMESTAMPTZ"),
             # messages
             ("messages", "kind",            "TEXT"),
             ("messages", "text",            "TEXT"),
@@ -236,6 +231,9 @@ class DatabaseManager:
             ("operators", "notif_prefs",   "TEXT"),
             ("operators", "password_hash", "TEXT"),
             ("operators", "offline_since", "TIMESTAMPTZ"),
+            # «Был в сети»: отдельно от offline_since, который гасится при
+            # переподключении, потому что обслуживает грейс-таймер маршрутизации.
+            ("operators", "last_seen_at",  "TIMESTAMPTZ"),
         ]
         for table, col, typedef in new_cols:
             await conn.execute(
@@ -282,93 +280,601 @@ class DatabaseManager:
             """)
             await conn.execute(
                 "INSERT INTO settings (key, value) VALUES ('status_model_v2', '1') "
-                "ON CONFLICT (key) DO NOTHING"
+                "ON CONFLICT DO NOTHING"
             )
+
+        await self._migrate_services(conn)
+
+    async def _migrate_services(self, conn):
+        """Слой мультитенантности: каждый ВПН — строка в services, со своими
+        диалогами, базой знаний, шаблонами и настройками. Доступ оператора к
+        сервису — флаг в operator_services; админ видит все активные сервисы
+        без флагов."""
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS services (
+                id                SERIAL PRIMARY KEY,
+                slug              TEXT UNIQUE NOT NULL,
+                name              TEXT NOT NULL,
+                color             TEXT NOT NULL DEFAULT '#4F8EF7',
+                emoji             TEXT,
+                qdrant_collection TEXT NOT NULL,
+                dialog_id_prefix  TEXT NOT NULL DEFAULT '',
+                n8n_webhook_url   TEXT NOT NULL DEFAULT '',
+                is_active         BOOLEAN NOT NULL DEFAULT TRUE,
+                sort_order        INTEGER NOT NULL DEFAULT 0,
+                created_at        TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        # business_connection_id — то, что Telegram присылает с каждым
+        # сообщением из подключённого к боту аккаунта поддержки. По нему панель
+        # понимает, какому ВПН-у принадлежит тикет, поэтому в n8n больше не
+        # нужен слаг в переменной.
+        await conn.execute(
+            "ALTER TABLE services ADD COLUMN IF NOT EXISTS "
+            "business_connection_id TEXT NOT NULL DEFAULT ''"
+        )
+        # Индекс частичный: пустая строка у сервисов без business-аккаунта
+        # встречается сколько угодно раз, а занятый id — ровно один раз, иначе
+        # сообщения одного аккаунта уехали бы в два ВПН-а.
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS services_business_connection_id_key
+            ON services (business_connection_id) WHERE business_connection_id <> ''
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS operator_services (
+                operator_id INTEGER NOT NULL REFERENCES operators(id) ON DELETE CASCADE,
+                service_id  INTEGER NOT NULL REFERENCES services(id)  ON DELETE CASCADE,
+                PRIMARY KEY (operator_id, service_id)
+            )
+        """)
+
+        # message_templates.service_id остаётся NULL-able: NULL = общий шаблон.
+        for table in ("dialogs", "kb_articles", "message_templates"):
+            await conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS service_id INTEGER "
+                f"REFERENCES services(id) ON DELETE CASCADE"
+            )
+        await conn.execute(
+            f"ALTER TABLE settings ADD COLUMN IF NOT EXISTS service_id INTEGER "
+            f"NOT NULL DEFAULT {GLOBAL_SERVICE_ID}"
+        )
+        # PK settings: key → (key, service_id), чтобы одинаковые ключи жили
+        # рядом у разных сервисов.
+        pk_cols = await conn.fetchval("""
+            SELECT COUNT(*) FROM information_schema.key_column_usage
+            WHERE table_schema='public' AND table_name='settings'
+              AND constraint_name='settings_pkey'
+        """)
+        if pk_cols == 1:
+            await conn.execute("ALTER TABLE settings DROP CONSTRAINT settings_pkey")
+            await conn.execute("ALTER TABLE settings ADD PRIMARY KEY (key, service_id)")
+
+        slug = validate_slug(self.settings.DEFAULT_SERVICE_SLUG)
+
+        # ── Одноразовый бэкфилл ───────────────────────────────────────────────
+        flag = await conn.fetchval(
+            "SELECT value FROM settings WHERE key='multi_tenant_v1' AND service_id=$1",
+            GLOBAL_SERVICE_ID,
+        )
+        if not flag:
+            # Коллекция Qdrant у мигрированного сервиса остаётся прежней ('kb'),
+            # а префикс dialog_id — пустым: существующие векторы и первичные
+            # ключи диалогов не трогаем, переиндексация не нужна.
+            default_id = await conn.fetchval(
+                """INSERT INTO services (slug, name, qdrant_collection, dialog_id_prefix, sort_order)
+                   VALUES ($1, $2, 'kb', '', 0)
+                   ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+                   RETURNING id""",
+                slug, self.settings.DEFAULT_SERVICE_NAME,
+            )
+            for table in ("dialogs", "kb_articles", "message_templates"):
+                await conn.execute(
+                    f"UPDATE {table} SET service_id=$1 WHERE service_id IS NULL", default_id
+                )
+            # Контентные настройки становятся пер-сервисными целиком; глобальными
+            # остаются только звуки и флаги миграций.
+            await conn.execute(
+                "UPDATE settings SET service_id=$1 "
+                "WHERE service_id=$2 AND key IN ('ai_settings','automation','schedule')",
+                default_id, GLOBAL_SERVICE_ID,
+            )
+            # Без флагов операторы разом потеряли бы все свои тикеты.
+            await conn.execute(
+                "INSERT INTO operator_services (operator_id, service_id) "
+                "SELECT id, $1 FROM operators ON CONFLICT DO NOTHING",
+                default_id,
+            )
+            await conn.execute(
+                "INSERT INTO settings (key, value, service_id) "
+                "VALUES ('multi_tenant_v1', '1', $1) ON CONFLICT DO NOTHING",
+                GLOBAL_SERVICE_ID,
+            )
+            print(f"[migrate] multi-tenant: сервис по умолчанию '{slug}' (id={default_id})")
+
+        # Диалог и статья БЗ всегда принадлежат сервису (после бэкфилла NULL-ов нет).
+        await conn.execute("ALTER TABLE dialogs     ALTER COLUMN service_id SET NOT NULL")
+        await conn.execute("ALTER TABLE kb_articles ALTER COLUMN service_id SET NOT NULL")
+
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS dialogs_service_status_idx ON dialogs (service_id, status)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS dialogs_service_chat_idx ON dialogs (service_id, chat_id)"
+        )
+        # Главный инвариант: у клиента в сервисе не бывает двух незакрытых
+        # тикетов. Держим его индексом, а не проверками в коде — тогда его не
+        # обойдёт ни гонка двух сообщений, ни чужой dialog_id со стороны.
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS dialogs_one_open_idx "
+            "ON dialogs (service_id, chat_id) WHERE status <> 'closed'"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS kb_articles_service_idx ON kb_articles (service_id)"
+        )
+
+        await self._migrate_monitoring(conn)
+        await self._migrate_customer(conn)
+        await self._migrate_folders(conn)
+
+    async def _migrate_folders(self, conn):
+        """Папки-ярлыки: второй, независимый срез списка тикетов поверх статусов.
+        Тикет остаётся в своём статусном разделе («В работе», «Ожидание») и
+        дополнительно лежит в папке, куда его положил оператор.
+
+        Папка принадлежит ВПН-сервису: у каждого свои поводы раскладывать
+        тикеты, а одноимённые папки двух сервисов в одном ряду читались бы как
+        одна."""
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ticket_folders (
+                id         SERIAL PRIMARY KEY,
+                service_id INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+                name       TEXT NOT NULL,
+                emoji      TEXT NOT NULL DEFAULT '📁',
+                color      TEXT NOT NULL DEFAULT '#4F8EF7',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS ticket_folders_service_idx "
+            "ON ticket_folders (service_id, sort_order, id)"
+        )
+        # SET NULL, а не CASCADE: удаление папки не должно уносить тикеты.
+        await conn.execute(
+            "ALTER TABLE dialogs ADD COLUMN IF NOT EXISTS folder_id INTEGER "
+            "REFERENCES ticket_folders(id) ON DELETE SET NULL"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS dialogs_folder_idx ON dialogs (folder_id)"
+        )
+
+    async def _migrate_monitoring(self, conn):
+        """Мониторинг серверов был глобальным (SERVERS в .env) — переносим его в
+        пер-сервисную настройку `monitoring` первого сервиса, чтобы установка с
+        настроенными серверами не откатилась на мок. Отдельный флаг: базы,
+        мигрировавшие на мультитенантность раньше, тоже должны это получить."""
+        flag = await conn.fetchval(
+            "SELECT value FROM settings WHERE key='monitoring_v1' AND service_id=$1",
+            GLOBAL_SERVICE_ID,
+        )
+        if flag:
+            return
+        try:
+            servers = json.loads(self.settings.SERVERS or "[]")
+        except Exception:
+            servers = []
+        monitor_type = (self.settings.SERVERS_MONITOR_TYPE or "stub").lower()
+        # "stub" — прежнее имя мока в конфиге; провайдер называется "mock".
+        provider = "mock" if not servers or monitor_type == "stub" else monitor_type
+        config = {"servers": servers} if servers else {}
+        if provider == "http":
+            config["health_path"] = self.settings.SERVERS_HEALTH_PATH
+        row = await conn.fetchrow("SELECT id FROM services ORDER BY sort_order, id LIMIT 1")
+        if row:
+            monitoring = {
+                "interval": int(self.settings.SERVERS_CHECK_INTERVAL or 300),
+                "servers": {"provider": provider, "config": config},
+                "bots": {"provider": "mock_bot", "config": {}},
+            }
+            await conn.execute(
+                "INSERT INTO settings (key, value, service_id) VALUES ('monitoring', $1, $2) "
+                "ON CONFLICT (key, service_id) DO NOTHING",
+                json.dumps(monitoring, ensure_ascii=False), row["id"],
+            )
+            print(f"[migrate] monitoring: провайдер серверов '{provider}' у сервиса id={row['id']}")
+        await conn.execute(
+            "INSERT INTO settings (key, value, service_id) VALUES ('monitoring_v1','1',$1) "
+            "ON CONFLICT DO NOTHING",
+            GLOBAL_SERVICE_ID,
+        )
+
+    async def _migrate_customer(self, conn):
+        """Прежний биллинг настраивался глобально (BILLING_API_URL в .env) и умел
+        три действия. Он поглощён пер-сервисной настройкой `customer`: переносим
+        адрес и токен в первый сервис, чтобы установка с настроенным биллингом не
+        откатилась на мок."""
+        flag = await conn.fetchval(
+            "SELECT value FROM settings WHERE key='customer_v1' AND service_id=$1",
+            GLOBAL_SERVICE_ID,
+        )
+        if flag:
+            return
+        url = (self.settings.BILLING_API_URL or "").strip()
+        row = await conn.fetchrow("SELECT id FROM services ORDER BY sort_order, id LIMIT 1")
+        if url and row:
+            customer = {
+                "provider": "http",
+                "config": {"base_url": url, "token": self.settings.BILLING_API_TOKEN or "",
+                           # Прежний биллинг умел только эти три действия —
+                           # остальные кнопки не показываем, пока админ не
+                           # проверит, что его API их поддерживает.
+                           "paths": {
+                               "renew": "POST /subscriptions/renew",
+                               "buy_traffic": "POST /subscriptions/buy_traffic",
+                               "reset_key": "POST /keys/reset",
+                           }},
+                "cacheTtl": 60,
+            }
+            await conn.execute(
+                "INSERT INTO settings (key, value, service_id) VALUES ('customer', $1, $2) "
+                "ON CONFLICT (key, service_id) DO NOTHING",
+                json.dumps(customer, ensure_ascii=False), row["id"],
+            )
+            print(f"[migrate] customer: биллинг перенесён в сервис id={row['id']}")
+        await conn.execute(
+            "INSERT INTO settings (key, value, service_id) VALUES ('customer_v1','1',$1) "
+            "ON CONFLICT DO NOTHING",
+            GLOBAL_SERVICE_ID,
+        )
+
+    # ── Services ──────────────────────────────────────────────────────────────
+
+    async def get_services(self, only_active: bool = True) -> list[dict]:
+        rows = await self.pool.fetch(
+            "SELECT * FROM services WHERE ($1 = FALSE OR is_active) ORDER BY sort_order, id",
+            only_active,
+        )
+        return [dict(r) for r in rows]
+
+    async def get_service(self, service_id: int) -> Optional[dict]:
+        row = await self.pool.fetchrow("SELECT * FROM services WHERE id=$1", service_id)
+        return dict(row) if row else None
+
+    async def get_service_by_slug(self, slug: str) -> Optional[dict]:
+        row = await self.pool.fetchrow("SELECT * FROM services WHERE slug=$1", slug)
+        return dict(row) if row else None
+
+    async def get_service_by_business_id(self, business_id: str) -> Optional[dict]:
+        """Сервис по business_connection_id аккаунта поддержки. Пустую строку
+        не ищем: она стоит у всех сервисов без business-аккаунта."""
+        if not business_id:
+            return None
+        row = await self.pool.fetchrow(
+            "SELECT * FROM services WHERE business_connection_id=$1", str(business_id)
+        )
+        return dict(row) if row else None
+
+    async def create_service(
+        self, slug: str, name: str, color: str = "#4F8EF7", emoji: str = None,
+        n8n_webhook_url: str = "", business_connection_id: str = "",
+    ) -> dict:
+        """Новый сервис получает собственную коллекцию Qdrant и префикс
+        dialog_id — так диалоги двух независимых n8n не столкнутся первичными
+        ключами, а базы знаний не смешаются."""
+        slug = validate_slug(slug)
+        sort_order = await self.pool.fetchval(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM services"
+        )
+        row = await self.pool.fetchrow(
+            """INSERT INTO services (slug, name, color, emoji, qdrant_collection,
+                                     dialog_id_prefix, n8n_webhook_url, sort_order,
+                                     business_connection_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *""",
+            slug, name, color, emoji, f"kb_{slug}", f"{slug}_", n8n_webhook_url or "", sort_order,
+            (business_connection_id or "").strip(),
+        )
+        return dict(row)
+
+    async def update_service(
+        self, service_id: int, name: str, color: str, emoji: str = None,
+        n8n_webhook_url: str = "", is_active: bool = True,
+        business_connection_id: str = "",
+    ) -> Optional[dict]:
+        """slug, коллекция Qdrant и префикс dialog_id неизменяемы: они уже
+        зашиты в воркфлоу n8n, в ключи Redis и в первичные ключи диалогов.
+        business_connection_id, наоборот, меняется: аккаунт поддержки
+        переподключают к боту, и Telegram выдаёт новый id.
+
+        Пустые вебхук и business_id означают «оставить прежние», а не
+        «стереть»: наружу они отдаются только маской, поэтому форма правки
+        присылает их пустыми, когда менять не собираются — ровно как токен."""
+        row = await self.pool.fetchrow(
+            """UPDATE services SET name=$1, color=$2, emoji=$3,
+                   n8n_webhook_url        = COALESCE(NULLIF($4, ''), n8n_webhook_url),
+                   is_active              = $5,
+                   business_connection_id = COALESCE(NULLIF($6, ''), business_connection_id)
+               WHERE id=$7 RETURNING *""",
+            name, color, emoji, (n8n_webhook_url or "").strip(), is_active,
+            (business_connection_id or "").strip(), service_id,
+        )
+        return dict(row) if row else None
+
+    async def delete_service(self, service_id: int) -> bool:
+        result = await self.pool.execute("DELETE FROM services WHERE id=$1", service_id)
+        await self.pool.execute("DELETE FROM settings WHERE service_id=$1", service_id)
+        return result == "DELETE 1"
+
+    async def get_operator_service_ids(self, operator: dict) -> list[int]:
+        """Сервисы, доступные оператору. Админ видит все активные без флагов."""
+        if operator.get("role") == "admin":
+            rows = await self.pool.fetch(
+                "SELECT id FROM services WHERE is_active ORDER BY sort_order, id"
+            )
+        else:
+            rows = await self.pool.fetch(
+                """SELECT s.id FROM services s
+                   JOIN operator_services os ON os.service_id = s.id
+                   WHERE os.operator_id = $1 AND s.is_active
+                   ORDER BY s.sort_order, s.id""",
+                operator["id"],
+            )
+        return [r["id"] for r in rows]
+
+    async def get_operator_flag_ids(self, op_id: int) -> list[int]:
+        """Именно проставленные флаги — без раскрытия админской привилегии
+        (админу их тоже показываем и даём редактировать)."""
+        rows = await self.pool.fetch(
+            "SELECT service_id FROM operator_services WHERE operator_id=$1", op_id
+        )
+        return [r["service_id"] for r in rows]
+
+    async def set_operator_services(self, op_id: int, service_ids: list[int]) -> list[int]:
+        """Переписать флаги доступа. Возвращает снятые сервисы — по ним нужно
+        вернуть тикеты оператора в очередь."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                before = {r["service_id"] for r in await conn.fetch(
+                    "SELECT service_id FROM operator_services WHERE operator_id=$1", op_id
+                )}
+                await conn.execute("DELETE FROM operator_services WHERE operator_id=$1", op_id)
+                if service_ids:
+                    await conn.executemany(
+                        "INSERT INTO operator_services (operator_id, service_id) VALUES ($1,$2) "
+                        "ON CONFLICT DO NOTHING",
+                        [(op_id, sid) for sid in service_ids],
+                    )
+                return sorted(before - set(service_ids))
+
+    async def get_service_counts(self, service_ids: list[int]) -> dict[int, int]:
+        """Счётчик на пилюле сервиса: «новые + непрочитанные» — открытые тикеты,
+        которые ждут внимания (в очереди либо с непрочитанными сообщениями)."""
+        if not service_ids:
+            return {}
+        rows = await self.pool.fetch(
+            """SELECT service_id, COUNT(*) AS cnt FROM dialogs
+               WHERE service_id = ANY($1::int[]) AND status <> 'closed'
+                 AND (unread_count > 0 OR status = 'queue')
+               GROUP BY service_id""",
+            service_ids,
+        )
+        counts = {sid: 0 for sid in service_ids}
+        counts.update({r["service_id"]: int(r["cnt"]) for r in rows})
+        return counts
+
+    # ── Папки тикетов ─────────────────────────────────────────────────────────
+
+    async def get_folders(self, service_ids: list[int]) -> list[dict]:
+        if not service_ids:
+            return []
+        rows = await self.pool.fetch(
+            """SELECT f.*, COUNT(d.dialog_id) FILTER (WHERE d.status <> 'closed') AS open_count
+               FROM ticket_folders f
+                    LEFT JOIN dialogs d ON d.folder_id = f.id
+               WHERE f.service_id = ANY($1::int[])
+               GROUP BY f.id
+               ORDER BY f.sort_order, f.id""",
+            service_ids,
+        )
+        return [dict(r) for r in rows]
+
+    async def get_folder(self, folder_id: int) -> Optional[dict]:
+        row = await self.pool.fetchrow("SELECT * FROM ticket_folders WHERE id=$1", folder_id)
+        return dict(row) if row else None
+
+    async def create_folder(self, service_id: int, name: str, emoji: str,
+                            color: str) -> dict:
+        sort_order = await self.pool.fetchval(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM ticket_folders WHERE service_id=$1",
+            service_id,
+        )
+        row = await self.pool.fetchrow(
+            """INSERT INTO ticket_folders (service_id, name, emoji, color, sort_order)
+               VALUES ($1,$2,$3,$4,$5) RETURNING *""",
+            service_id, name, emoji, color, sort_order,
+        )
+        return dict(row)
+
+    async def update_folder(self, folder_id: int, name: str, emoji: str, color: str,
+                            sort_order: int = None) -> Optional[dict]:
+        row = await self.pool.fetchrow(
+            """UPDATE ticket_folders
+               SET name=$1, emoji=$2, color=$3, sort_order=COALESCE($4, sort_order)
+               WHERE id=$5 RETURNING *""",
+            name, emoji, color, sort_order, folder_id,
+        )
+        return dict(row) if row else None
+
+    async def delete_folder(self, folder_id: int) -> bool:
+        result = await self.pool.execute("DELETE FROM ticket_folders WHERE id=$1", folder_id)
+        return result == "DELETE 1"
+
+    async def set_dialog_folder(self, dialog_id: str, folder_id: int | None):
+        await self.pool.execute(
+            "UPDATE dialogs SET folder_id=$1 WHERE dialog_id=$2", folder_id, dialog_id
+        )
 
     # ── Dialogs ───────────────────────────────────────────────────────────────
 
-    async def upsert_dialog(
-        self, dialog_id: str, chat_id: str,
+    async def resolve_open_dialog(
+        self, service: dict, chat_id: str,
         ai_enabled: bool = True, user_info: dict = None,
+        bump_unread: bool = False,
     ) -> dict:
-        ui = user_info or {}
-        existing = await self.pool.fetchrow(
-            "SELECT status FROM dialogs WHERE dialog_id = $1", dialog_id
-        )
-        is_new = existing is None
-        was_closed = existing is not None and existing["status"] == "closed"
-        row = await self.pool.fetchrow(
-            """
-            INSERT INTO dialogs (
-                dialog_id, chat_id, ai_enabled,
-                user_name, user_username, user_plan, user_sub_status,
-                user_next_payment, user_traffic_used, user_traffic_total,
-                last_payment_amount, last_payment_date, user_photo_url, unread_count,
-                status, queued_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, 1,
-                      CASE WHEN $3 THEN 'ai' ELSE 'queue' END,
-                      CASE WHEN $3 THEN NULL ELSE NOW() END)
-            ON CONFLICT (dialog_id) DO UPDATE SET
-                ai_enabled          = CASE WHEN dialogs.status='closed' THEN $3 ELSE dialogs.ai_enabled END,
-                status              = CASE WHEN dialogs.status='closed'
-                                           THEN (CASE WHEN $3 THEN 'ai' ELSE 'queue' END)
-                                           ELSE dialogs.status END,
-                queued_at           = CASE WHEN dialogs.status='closed'
-                                           THEN (CASE WHEN $3 THEN NULL ELSE NOW() END)
-                                           ELSE dialogs.queued_at END,
-                waiting_reason      = CASE WHEN dialogs.status='closed' THEN NULL ELSE dialogs.waiting_reason END,
-                return_requested_at = CASE WHEN dialogs.status='closed' THEN NULL ELSE dialogs.return_requested_at END,
-                sla_seconds_total   = CASE WHEN dialogs.status='closed' THEN 0 ELSE dialogs.sla_seconds_total END,
-                sla_started_at      = CASE WHEN dialogs.status='closed' THEN NULL ELSE dialogs.sla_started_at END,
-                closed_at           = CASE WHEN dialogs.status='closed' THEN NULL ELSE dialogs.closed_at END,
-                assigned_operator   = CASE WHEN dialogs.status='closed' THEN NULL ELSE dialogs.assigned_operator END,
-                operator_called     = CASE WHEN dialogs.status='closed' THEN FALSE ELSE dialogs.operator_called END,
-                user_name           = COALESCE(EXCLUDED.user_name,          dialogs.user_name),
-                user_username       = COALESCE(EXCLUDED.user_username,      dialogs.user_username),
-                user_plan           = COALESCE(EXCLUDED.user_plan,          dialogs.user_plan),
-                user_sub_status     = COALESCE(EXCLUDED.user_sub_status,    dialogs.user_sub_status),
-                user_next_payment   = COALESCE(EXCLUDED.user_next_payment,  dialogs.user_next_payment),
-                user_traffic_used   = COALESCE(EXCLUDED.user_traffic_used,  dialogs.user_traffic_used),
-                user_traffic_total  = COALESCE(EXCLUDED.user_traffic_total, dialogs.user_traffic_total),
-                last_payment_amount = COALESCE(EXCLUDED.last_payment_amount,dialogs.last_payment_amount),
-                last_payment_date   = COALESCE(EXCLUDED.last_payment_date,  dialogs.last_payment_date),
-                user_photo_url      = COALESCE(EXCLUDED.user_photo_url,     dialogs.user_photo_url),
-                unread_count        = dialogs.unread_count + 1,
-                updated_at          = NOW()
-            RETURNING *
-            """,
-            dialog_id, chat_id, ai_enabled,
-            ui.get("user_name"), ui.get("user_username"),
-            ui.get("user_plan", "Basic"), ui.get("user_sub_status", "active"),
-            ui.get("user_next_payment"),
-            float(ui.get("user_traffic_used") or 0),
-            float(ui.get("user_traffic_total") or 100),
-            ui.get("user_last_payment_amount"), ui.get("user_last_payment_date"),
-            ui.get("user_photo_url"),
-        )
-        return {**dict(row), "is_new_dialog": is_new or was_closed}
+        """Открытый тикет клиента; нет такого — заводится новый. Идемпотентно.
 
-    async def get_all_dialogs(self) -> list[dict]:
-        rows = await self.pool.fetch("SELECT * FROM dialogs ORDER BY updated_at DESC")
+        Личность диалога — пара (сервис, chat_id), а не номер, пришедший
+        снаружи: только так повторный вызов не может породить второй тикет.
+        Ключ `dialog_id` остаётся человекочитаемым — «<префикс><chat_id>-<N>»,
+        где N — порядковый номер обращения клиента; закрытые тикеты остаются в
+        истории под своими номерами.
+
+        `bump_unread` поднимает счётчик непрочитанных: его ставит только тот,
+        кто действительно кладёт сообщение в тикет (потребитель очереди).
+        n8n дёргает резолв на то же самое сообщение чуть раньше, и без флага
+        счётчик рос бы вдвое.
+
+        Возвращает строку диалога с флагом `is_new_dialog`.
+        """
+        ui = user_info or {}
+        service_id = service["id"]
+        prefix = service.get("dialog_id_prefix") or ""
+
+        for _ in range(3):
+            row = await self.pool.fetchrow(
+                """
+                UPDATE dialogs SET
+                    user_name           = COALESCE($3,  user_name),
+                    user_username       = COALESCE($4,  user_username),
+                    user_plan           = COALESCE($5,  user_plan),
+                    user_sub_status     = COALESCE($6,  user_sub_status),
+                    user_next_payment   = COALESCE($7,  user_next_payment),
+                    user_traffic_used   = COALESCE($8,  user_traffic_used),
+                    user_traffic_total  = COALESCE($9,  user_traffic_total),
+                    last_payment_amount = COALESCE($10, last_payment_amount),
+                    last_payment_date   = COALESCE($11, last_payment_date),
+                    user_photo_url      = COALESCE($12, user_photo_url),
+                    unread_count        = unread_count + $13::int,
+                    updated_at          = NOW()
+                WHERE service_id = $1 AND chat_id = $2 AND status <> 'closed'
+                RETURNING *
+                """,
+                service_id, chat_id,
+                ui.get("user_name"), ui.get("user_username"),
+                ui.get("user_plan"), ui.get("user_sub_status"),
+                ui.get("user_next_payment"),
+                ui.get("user_traffic_used"), ui.get("user_traffic_total"),
+                ui.get("user_last_payment_amount"), ui.get("user_last_payment_date"),
+                ui.get("user_photo_url"), 1 if bump_unread else 0,
+            )
+            if row:
+                return {**dict(row), "is_new_dialog": False}
+
+            seq = 1 + await self.pool.fetchval(
+                "SELECT COUNT(*) FROM dialogs WHERE service_id=$1 AND chat_id=$2",
+                service_id, chat_id,
+            )
+            dialog_id = f"{prefix}{chat_id}-{seq}"
+            row = await self.pool.fetchrow(
+                """
+                INSERT INTO dialogs (
+                    dialog_id, chat_id, service_id, ai_enabled,
+                    user_name, user_username, user_plan, user_sub_status,
+                    user_next_payment, user_traffic_used, user_traffic_total,
+                    last_payment_amount, last_payment_date, user_photo_url,
+                    unread_count, status, queued_at
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, $15,
+                          CASE WHEN $4 THEN 'ai' ELSE 'queue' END,
+                          CASE WHEN $4 THEN NULL ELSE NOW() END)
+                ON CONFLICT DO NOTHING
+                RETURNING *
+                """,
+                dialog_id, chat_id, service_id, ai_enabled,
+                ui.get("user_name"), ui.get("user_username"),
+                ui.get("user_plan", "Basic"), ui.get("user_sub_status", "active"),
+                ui.get("user_next_payment"),
+                float(ui.get("user_traffic_used") or 0),
+                float(ui.get("user_traffic_total") or 100),
+                ui.get("user_last_payment_amount"), ui.get("user_last_payment_date"),
+                ui.get("user_photo_url"), 1 if bump_unread else 0,
+            )
+            if row:
+                return {**dict(row), "is_new_dialog": True}
+            # ON CONFLICT сработал: параллельный запрос успел создать тикет
+            # (dialogs_one_open_idx) — читаем его на следующем круге.
+
+        raise RuntimeError(
+            f"не удалось получить диалог для chat_id={chat_id} в сервисе {service_id}"
+        )
+
+    # Диалог всегда читается вместе с данными своего сервиса: слаг нужен для
+    # синхронизации с n8n и ключей Redis, имя и цвет — фронту, чтобы в режиме
+    # «Все сервисы» было видно, чей это тикет.
+    _DIALOG_SELECT = """
+        SELECT d.*, s.slug AS service_slug, s.name AS service_name,
+               s.color AS service_color, s.emoji AS service_emoji,
+               s.qdrant_collection, s.n8n_webhook_url,
+               s.business_connection_id,
+               f.name AS folder_name, f.emoji AS folder_emoji, f.color AS folder_color
+        FROM dialogs d JOIN services s ON s.id = d.service_id
+                  LEFT JOIN ticket_folders f ON f.id = d.folder_id
+    """
+
+    async def get_all_dialogs(self, service_ids: list[int]) -> list[dict]:
+        rows = await self.pool.fetch(
+            f"{self._DIALOG_SELECT} WHERE d.service_id = ANY($1::int[]) ORDER BY d.updated_at DESC",
+            service_ids,
+        )
         return [dict(r) for r in rows]
 
     async def get_dialog(self, dialog_id: str) -> Optional[dict]:
-        row = await self.pool.fetchrow("SELECT * FROM dialogs WHERE dialog_id = $1", dialog_id)
-        return dict(row) if row else None
-
-    async def get_active_dialog_by_chat_id(self, chat_id: str, exclude_dialog_id: str = "") -> Optional[dict]:
         row = await self.pool.fetchrow(
-            "SELECT * FROM dialogs WHERE chat_id=$1 AND status != 'closed' AND dialog_id != $2 LIMIT 1",
-            chat_id, exclude_dialog_id,
+            f"{self._DIALOG_SELECT} WHERE d.dialog_id = $1", dialog_id
         )
         return dict(row) if row else None
 
-    async def get_dialog_history(self, chat_id: str, exclude_dialog_id: str = "") -> list[dict]:
+    # chat_id — это Telegram user_id, он уникален у пользователя, но НЕ между
+    # сервисами: один человек может писать в боты двух ВПН-ов. Поэтому поиск
+    # активного диалога и истории всегда идёт по паре (сервис, chat_id).
+
+    async def get_active_dialog_by_chat_id(
+        self, service_id: int, chat_id: str, exclude_dialog_id: str = "",
+    ) -> Optional[dict]:
+        row = await self.pool.fetchrow(
+            f"{self._DIALOG_SELECT} WHERE d.service_id=$1 AND d.chat_id=$2 "
+            f"AND d.status != 'closed' AND d.dialog_id != $3 LIMIT 1",
+            service_id, chat_id, exclude_dialog_id,
+        )
+        return dict(row) if row else None
+
+    async def get_customer_activity(self, service_id: int, chat_id: str,
+                                    limit: int = 100) -> list[dict]:
+        """Что операторы делали с АККАУНТОМ клиента из панели — по всем его
+        тикетам, а не только текущему. Отдельной таблицы не нужно: такие
+        действия оставляют системный след вида «Оператор: что сделал»
+        (см. эндпоинт customer/{action}), он и есть журнал.
+
+        Двоеточие в LIKE — и есть отбор: маршрутные записи («Диалог назначен
+        оператору X», «Тикет передан оператору Y») его не содержат, и в ленту
+        действий над аккаунтом им не место — они уже видны в переписке и в
+        разделе «Обращения»."""
+        rows = await self.pool.fetch(
+            """SELECT m.id, m.text, m.created_at, m.dialog_id
+               FROM messages m JOIN dialogs d ON d.dialog_id = m.dialog_id
+               WHERE d.service_id = $1 AND d.chat_id = $2 AND m.kind = 'system'
+                 AND m.text LIKE '%: %'
+               ORDER BY m.created_at DESC LIMIT $3""",
+            service_id, str(chat_id), int(limit),
+        )
+        return [dict(r) for r in rows]
+
+    async def get_dialog_history(
+        self, service_id: int, chat_id: str, exclude_dialog_id: str = "",
+    ) -> list[dict]:
         rows = await self.pool.fetch(
             """SELECT dialog_id, last_message_text, summary, status, updated_at, rating
-               FROM dialogs WHERE chat_id=$1 AND status='closed' AND dialog_id!=$2
+               FROM dialogs WHERE service_id=$1 AND chat_id=$2 AND status='closed' AND dialog_id!=$3
                ORDER BY updated_at DESC LIMIT 10""",
-            chat_id, exclude_dialog_id,
+            service_id, chat_id, exclude_dialog_id,
         )
         return [dict(r) for r in rows]
 
@@ -384,27 +890,12 @@ class DatabaseManager:
             ai_enabled, dialog_id,
         )
 
-    async def sync_n8n_dialog_status(self, chat_id: str, status: str):
-        try:
-            await self.pool.execute(
-                "UPDATE n8n_dialogs SET status=$1 WHERE id=(SELECT MAX(id) FROM n8n_dialogs WHERE user_id=$2)",
-                status, int(chat_id),
-            )
-        except Exception as e:
-            print(f"[sync_n8n] status update error: {e}")
-
-    async def sync_n8n_dialog_ai_status(self, chat_id: str, ai_enabled: bool):
-        try:
-            await self.pool.execute(
-                "UPDATE n8n_dialogs SET ai_status=$1 WHERE user_id=$2",
-                ai_enabled, int(chat_id),
-            )
-        except Exception as e:
-            print(f"[sync_n8n] ai_status update error: {e}")
-
     async def set_assigned_operator(self, dialog_id: str, operator_name):
+        """Смена владельца снимает чужой запрос на передачу: он уже исполнен
+        либо потерял смысл."""
         await self.pool.execute(
-            "UPDATE dialogs SET assigned_operator=$1, updated_at=NOW() WHERE dialog_id=$2",
+            "UPDATE dialogs SET assigned_operator=$1, claim_requested_by=NULL, "
+            "claim_requested_at=NULL, updated_at=NOW() WHERE dialog_id=$2",
             operator_name, dialog_id,
         )
 
@@ -438,6 +929,12 @@ class DatabaseManager:
             "UPDATE messages SET delivery_status=$1, delivery_error=$2 WHERE id=$3",
             status, error, message_id,
         )
+
+    async def get_message(self, message_id: int) -> Optional[dict]:
+        """Одно сообщение по id — нужно резервной отправке, чтобы повторить
+        именно тот текст и то вложение, которые не дошли."""
+        row = await self.pool.fetchrow("SELECT * FROM messages WHERE id=$1", int(message_id))
+        return dict(row) if row else None
 
     async def get_messages(self, dialog_id: str) -> list[dict]:
         rows = await self.pool.fetch(
@@ -507,7 +1004,12 @@ class DatabaseManager:
         return result == "DELETE 1"
 
     async def set_operator_online(self, op_id: int, online: bool):
-        await self.pool.execute("UPDATE operators SET online=$1 WHERE id=$2", online, op_id)
+        """last_seen_at ставится на обоих переходах: у ушедшего это момент
+        разрыва последней вкладки, у пришедшего — момент, когда он снова был
+        в сети (пока он online, метка всё равно не показывается)."""
+        await self.pool.execute(
+            "UPDATE operators SET online=$1, last_seen_at=NOW() WHERE id=$2", online, op_id
+        )
 
     async def set_operator_paused(self, op_id: int, paused: bool):
         await self.pool.execute("UPDATE operators SET paused=$1 WHERE id=$2", paused, op_id)
@@ -520,45 +1022,56 @@ class DatabaseManager:
 
     # ── Settings ──────────────────────────────────────────────────────────────
 
-    async def get_setting(self, key: str) -> Optional[str]:
-        row = await self.pool.fetchrow("SELECT value FROM settings WHERE key=$1", key)
+    # service_id=None → глобальная настройка (звуки, флаги миграций).
+    # Контентные настройки (ai_settings / automation / schedule) всегда
+    # запрашиваются с конкретным service_id.
+
+    async def get_setting(self, key: str, service_id: int = None) -> Optional[str]:
+        row = await self.pool.fetchrow(
+            "SELECT value FROM settings WHERE key=$1 AND service_id=$2",
+            key, service_id or GLOBAL_SERVICE_ID,
+        )
         return row["value"] if row else None
 
-    async def set_setting(self, key: str, value: str):
+    async def set_setting(self, key: str, value: str, service_id: int = None):
         await self.pool.execute(
-            "INSERT INTO settings (key,value) VALUES ($1,$2) "
-            "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()",
-            key, value,
+            "INSERT INTO settings (key,value,service_id) VALUES ($1,$2,$3) "
+            "ON CONFLICT (key, service_id) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()",
+            key, value, service_id or GLOBAL_SERVICE_ID,
         )
 
-    async def get_setting_json(self, key: str, default=None):
-        val = await self.get_setting(key)
+    async def get_setting_json(self, key: str, default=None, service_id: int = None):
+        val = await self.get_setting(key, service_id)
         return json.loads(val) if val else default
 
-    async def set_setting_json(self, key: str, value):
-        await self.set_setting(key, json.dumps(value, ensure_ascii=False))
+    async def set_setting_json(self, key: str, value, service_id: int = None):
+        await self.set_setting(key, json.dumps(value, ensure_ascii=False), service_id)
 
     # ── Stats ─────────────────────────────────────────────────────────────────
 
-    async def get_stats(self, days: int = 14) -> dict:
+    async def get_stats(self, days: int = 14, service_ids: list[int] = None) -> dict:
+        sids = service_ids or []
         today_total = await self.pool.fetchval(
-            "SELECT COUNT(*) FROM dialogs WHERE created_at::date = CURRENT_DATE"
+            "SELECT COUNT(*) FROM dialogs "
+            "WHERE service_id = ANY($1::int[]) AND created_at::date = CURRENT_DATE", sids
         ) or 0
         today_closed = await self.pool.fetchval(
-            "SELECT COUNT(*) FROM dialogs WHERE status='closed' AND updated_at::date = CURRENT_DATE"
+            "SELECT COUNT(*) FROM dialogs WHERE service_id = ANY($1::int[]) "
+            "AND status='closed' AND updated_at::date = CURRENT_DATE", sids
         ) or 0
         ai_resolved = await self.pool.fetchval(
-            "SELECT COUNT(*) FROM dialogs "
-            "WHERE status='closed' AND operator_called=FALSE AND updated_at::date = CURRENT_DATE"
+            "SELECT COUNT(*) FROM dialogs WHERE service_id = ANY($1::int[]) "
+            "AND status='closed' AND operator_called=FALSE AND updated_at::date = CURRENT_DATE", sids
         ) or 0
         ai_pct = int(ai_resolved / today_closed * 100) if today_closed else 0
 
         # Daily counts for last N days (missing days filled with 0)
         daily_rows = await self.pool.fetch(
             """SELECT created_at::date as d, COUNT(*) as cnt
-               FROM dialogs WHERE created_at >= NOW() - ($1 || ' days')::interval
+               FROM dialogs WHERE service_id = ANY($2::int[])
+                 AND created_at >= NOW() - ($1 || ' days')::interval
                GROUP BY d ORDER BY d""",
-            str(days),
+            str(days), sids,
         )
         daily_map = {str(r["d"]): r["cnt"] for r in daily_rows}
         today = date.today()
@@ -570,8 +1083,10 @@ class DatabaseManager:
         # Hourly distribution over the last 14 days
         hourly_rows = await self.pool.fetch(
             """SELECT EXTRACT(HOUR FROM created_at)::int as h, COUNT(*) as cnt
-               FROM dialogs WHERE created_at >= NOW() - '14 days'::interval
-               GROUP BY h ORDER BY h"""
+               FROM dialogs WHERE service_id = ANY($1::int[])
+                 AND created_at >= NOW() - '14 days'::interval
+               GROUP BY h ORDER BY h""",
+            sids,
         )
         hourly_map = {r["h"]: r["cnt"] for r in hourly_rows}
         hourly = [int(hourly_map.get(h, 0)) for h in range(24)]
@@ -581,7 +1096,8 @@ class DatabaseManager:
         operators = []
         for op in op_rows:
             closed = await self.pool.fetchval(
-                "SELECT COUNT(*) FROM dialogs WHERE status='closed' AND updated_at::date = CURRENT_DATE"
+                "SELECT COUNT(*) FROM dialogs WHERE service_id = ANY($1::int[]) "
+                "AND status='closed' AND updated_at::date = CURRENT_DATE", sids
             ) or 0
             operators.append({
                 "id": op["id"], "name": op["name"], "tg": op["tg"],
@@ -597,21 +1113,25 @@ class DatabaseManager:
             "daily": daily,
             "hourly": hourly,
             "operators": operators,
-            "top_questions": await self._get_top_questions(),
+            "top_questions": await self._get_top_questions(sids),
         }
 
-    async def _get_top_questions(self) -> list[dict]:
+    async def _get_top_questions(self, service_ids: list[int]) -> list[dict]:
         rows = await self.pool.fetch(
-            """SELECT category AS q, COUNT(*) AS count
-               FROM messages
-               WHERE kind='user' AND category IS NOT NULL
-                 AND created_at >= NOW() - '30 days'::interval
-               GROUP BY category ORDER BY count DESC LIMIT 10"""
+            """SELECT m.category AS q, COUNT(*) AS count
+               FROM messages m
+               JOIN dialogs d ON d.dialog_id = m.dialog_id
+               WHERE d.service_id = ANY($1::int[])
+                 AND m.kind='user' AND m.category IS NOT NULL
+                 AND m.created_at >= NOW() - '30 days'::interval
+               GROUP BY m.category ORDER BY count DESC LIMIT 10""",
+            service_ids,
         )
         return [{"q": r["q"], "count": r["count"]} for r in rows]
 
-    async def get_time_stats(self, days: int = 30) -> dict:
+    async def get_time_stats(self, days: int = 30, service_ids: list[int] = None) -> dict:
         interval = timedelta(days=days)
+        sids = service_ids or []
 
         team_first = await self.pool.fetchval("""
             SELECT AVG(EXTRACT(EPOCH FROM (m.created_at - d.created_at)))
@@ -622,11 +1142,13 @@ class DatabaseManager:
                 ORDER BY created_at ASC LIMIT 1
             ) m ON true
             WHERE d.created_at >= NOW() - $1::interval
-        """, interval)
+              AND d.service_id = ANY($2::int[])
+        """, interval, sids)
 
         team_next = await self.pool.fetchval("""
             SELECT AVG(EXTRACT(EPOCH FROM (m_op.created_at - m_usr.created_at)))
             FROM messages m_op
+            JOIN dialogs d ON d.dialog_id = m_op.dialog_id
             JOIN LATERAL (
                 SELECT created_at FROM messages
                 WHERE dialog_id = m_op.dialog_id AND kind = 'user'
@@ -635,14 +1157,16 @@ class DatabaseManager:
             ) m_usr ON true
             WHERE m_op.kind = 'operator'
               AND m_op.created_at >= NOW() - $1::interval
-        """, interval)
+              AND d.service_id = ANY($2::int[])
+        """, interval, sids)
 
         team_close = await self.pool.fetchval("""
             SELECT AVG(EXTRACT(EPOCH FROM (closed_at - created_at)))
             FROM dialogs
             WHERE status = 'closed' AND closed_at IS NOT NULL
               AND created_at >= NOW() - $1::interval
-        """, interval)
+              AND service_id = ANY($2::int[])
+        """, interval, sids)
 
         op_first_rows = await self.pool.fetch("""
             SELECT m.operator_name,
@@ -656,13 +1180,15 @@ class DatabaseManager:
             ) m ON true
             WHERE d.created_at >= NOW() - $1::interval
               AND m.operator_name IS NOT NULL
+              AND d.service_id = ANY($2::int[])
             GROUP BY m.operator_name
-        """, interval)
+        """, interval, sids)
 
         op_next_rows = await self.pool.fetch("""
             SELECT m_op.operator_name,
                    AVG(EXTRACT(EPOCH FROM (m_op.created_at - m_usr.created_at))) AS avg_sec
             FROM messages m_op
+            JOIN dialogs d ON d.dialog_id = m_op.dialog_id
             JOIN LATERAL (
                 SELECT created_at FROM messages
                 WHERE dialog_id = m_op.dialog_id AND kind = 'user'
@@ -672,8 +1198,9 @@ class DatabaseManager:
             WHERE m_op.kind = 'operator'
               AND m_op.created_at >= NOW() - $1::interval
               AND m_op.operator_name IS NOT NULL
+              AND d.service_id = ANY($2::int[])
             GROUP BY m_op.operator_name
-        """, interval)
+        """, interval, sids)
 
         op_first_map = {r["operator_name"]: {"avg": float(r["avg_sec"]), "cnt": int(r["cnt"])}
                         for r in op_first_rows}
@@ -701,56 +1228,72 @@ class DatabaseManager:
 
     # ── Knowledge Base ────────────────────────────────────────────────────────
 
-    async def save_kb_article(self, id: str, title: str, category: str, keywords: str, content: str):
+    async def save_kb_article(
+        self, id: str, title: str, category: str, keywords: str, content: str, service_id: int,
+    ):
         await self.pool.execute(
-            """INSERT INTO kb_articles (id, title, category, keywords, content)
-               VALUES ($1,$2,$3,$4,$5)
+            """INSERT INTO kb_articles (id, title, category, keywords, content, service_id)
+               VALUES ($1,$2,$3,$4,$5,$6)
                ON CONFLICT (id) DO UPDATE SET
                  title=EXCLUDED.title, category=EXCLUDED.category,
-                 keywords=EXCLUDED.keywords, content=EXCLUDED.content""",
-            id, title, category, keywords, content,
+                 keywords=EXCLUDED.keywords, content=EXCLUDED.content,
+                 service_id=EXCLUDED.service_id""",
+            id, title, category, keywords, content, service_id,
         )
 
-    async def get_kb_articles(self) -> list[dict]:
-        rows = await self.pool.fetch("SELECT * FROM kb_articles ORDER BY created_at DESC")
+    async def get_kb_articles(self, service_id: int) -> list[dict]:
+        rows = await self.pool.fetch(
+            "SELECT * FROM kb_articles WHERE service_id=$1 ORDER BY created_at DESC", service_id,
+        )
         return [dict(r) for r in rows]
 
-    async def delete_kb_article(self, article_id: str) -> bool:
-        result = await self.pool.execute("DELETE FROM kb_articles WHERE id=$1", article_id)
+    async def delete_kb_article(self, article_id: str, service_id: int) -> bool:
+        result = await self.pool.execute(
+            "DELETE FROM kb_articles WHERE id=$1 AND service_id=$2", article_id, service_id,
+        )
         return result == "DELETE 1"
 
-    async def reset_kb(self):
-        await self.pool.execute("TRUNCATE TABLE kb_articles")
+    async def reset_kb(self, service_id: int):
+        await self.pool.execute("DELETE FROM kb_articles WHERE service_id=$1", service_id)
 
-    async def get_templates(self) -> list[dict]:
+    # service_id IS NULL у шаблона = общий для всех сервисов.
+    async def get_templates(self, service_id: int) -> list[dict]:
         rows = await self.pool.fetch(
-            "SELECT * FROM message_templates ORDER BY group_name, title"
+            "SELECT * FROM message_templates WHERE service_id=$1 OR service_id IS NULL "
+            "ORDER BY group_name, title",
+            service_id,
         )
         return [dict(r) for r in rows]
 
-    async def save_template(self, id: int | None, group_name: str, title: str, text: str) -> dict | None:
+    async def save_template(
+        self, id: int | None, group_name: str, title: str, text: str, service_id: int,
+    ) -> dict | None:
         if id:
             row = await self.pool.fetchrow(
-                "UPDATE message_templates SET group_name=$1, title=$2, text=$3 WHERE id=$4 RETURNING *",
-                group_name, title, text, id,
+                "UPDATE message_templates SET group_name=$1, title=$2, text=$3 "
+                "WHERE id=$4 AND (service_id=$5 OR service_id IS NULL) RETURNING *",
+                group_name, title, text, id, service_id,
             )
         else:
             row = await self.pool.fetchrow(
-                "INSERT INTO message_templates (group_name, title, text) VALUES ($1,$2,$3) RETURNING *",
-                group_name, title, text,
+                "INSERT INTO message_templates (group_name, title, text, service_id) "
+                "VALUES ($1,$2,$3,$4) RETURNING *",
+                group_name, title, text, service_id,
             )
         return dict(row) if row else None
 
-    async def delete_template(self, template_id: int) -> bool:
+    async def delete_template(self, template_id: int, service_id: int) -> bool:
         result = await self.pool.execute(
-            "DELETE FROM message_templates WHERE id=$1", template_id
+            "DELETE FROM message_templates WHERE id=$1 AND (service_id=$2 OR service_id IS NULL)",
+            template_id, service_id,
         )
         return result == "DELETE 1"
 
-    async def rename_template_group(self, old_name: str, new_name: str):
+    async def rename_template_group(self, old_name: str, new_name: str, service_id: int):
         await self.pool.execute(
-            "UPDATE message_templates SET group_name=$1 WHERE group_name=$2",
-            new_name, old_name,
+            "UPDATE message_templates SET group_name=$1 "
+            "WHERE group_name=$2 AND (service_id=$3 OR service_id IS NULL)",
+            new_name, old_name, service_id,
         )
 
     async def get_user_message_count(self, dialog_id: str) -> int:
@@ -763,29 +1306,41 @@ class DatabaseManager:
             "UPDATE dialogs SET rating=$1 WHERE dialog_id=$2", rating, dialog_id
         )
 
-    async def get_all_chat_ids(self) -> list:
+    async def get_all_chat_ids(self, service_id: int) -> list:
         rows = await self.pool.fetch(
-            "SELECT DISTINCT chat_id FROM dialogs WHERE chat_id IS NOT NULL"
+            "SELECT DISTINCT chat_id FROM dialogs WHERE service_id=$1 AND chat_id IS NOT NULL",
+            service_id,
         )
         return [r["chat_id"] for r in rows]
 
     # Slot definition: only in_progress tickets occupy an operator slot.
-    # Single source of truth for per-operator slot usage — every capacity
-    # check below must join against this fragment.
+    # Слоты считаются по паре (оператор, сервис): лимит max_tickets_per_operator
+    # настраивается отдельно у каждого ВПН-а, поэтому и загрузка меряется внутри
+    # сервиса. Single source of truth — каждая проверка ёмкости джойнится сюда.
     _SLOT_COUNT_SQL = """
-        SELECT assigned_operator, COUNT(*) AS cnt
+        SELECT assigned_operator, service_id, COUNT(*) AS cnt
         FROM dialogs
         WHERE status = 'in_progress' AND assigned_operator IS NOT NULL
-        GROUP BY assigned_operator
+        GROUP BY assigned_operator, service_id
+    """
+
+    # $1 — max_tickets сервиса, $2 — сам сервис. Доступ к сервису: явный флаг в
+    # operator_services либо роль admin (админ обслуживает все сервисы).
+    _HAS_SERVICE_ACCESS_SQL = """
+        (o.role = 'admin' OR EXISTS (
+            SELECT 1 FROM operator_services os
+            WHERE os.operator_id = o.id AND os.service_id = $2))
     """
 
     _FREE_OPERATOR_SQL = f"""
         SELECT o.name
         FROM operators o
-        LEFT JOIN ({_SLOT_COUNT_SQL}) active ON active.assigned_operator = o.name
+        LEFT JOIN ({_SLOT_COUNT_SQL}) active
+               ON active.assigned_operator = o.name AND active.service_id = $2
         WHERE o.online = TRUE
           AND COALESCE(o.paused, FALSE) = FALSE
           AND COALESCE(active.cnt, 0) < $1
+          AND {_HAS_SERVICE_ACCESS_SQL}
         ORDER BY COALESCE(active.cnt, 0) ASC
         LIMIT 1
     """
@@ -801,14 +1356,15 @@ class DatabaseManager:
         updated_at = NOW()
     """
 
-    async def assign_dialog(self, dialog_id: str, max_tickets: int) -> str | None:
-        """Hand the dialog to the least-loaded online operator with a free slot,
-        atomically setting the full in_progress state (SLA start included).
-        Uses an advisory lock so concurrent claims don't exceed max_tickets."""
+    async def assign_dialog(self, dialog_id: str, max_tickets: int, service_id: int) -> str | None:
+        """Hand the dialog to the least-loaded online operator with a free slot
+        WHO HAS ACCESS TO THE DIALOG'S SERVICE, atomically setting the full
+        in_progress state (SLA start included). Uses an advisory lock so
+        concurrent claims don't exceed max_tickets."""
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT pg_advisory_xact_lock($1)", self._ASSIGN_LOCK)
-                row = await conn.fetchrow(self._FREE_OPERATOR_SQL, max_tickets)
+                row = await conn.fetchrow(self._FREE_OPERATOR_SQL, max_tickets, service_id)
                 if not row:
                     return None
                 op_name = row["name"]
@@ -819,34 +1375,35 @@ class DatabaseManager:
                 )
                 return op_name
 
-    async def claim_next_queued(self, max_tickets: int) -> dict | None:
-        """Atomically bind the oldest queued dialog (status='queue' only — never
-        AI-handled ones) to the least-loaded online operator with capacity.
-        Returns {'dialog': dict, 'op_name': str} or None."""
+    async def claim_next_queued(self, max_tickets: int, service_id: int) -> dict | None:
+        """Atomically bind the oldest queued dialog OF THIS SERVICE (status='queue'
+        only — never AI-handled ones) to the least-loaded online operator with
+        capacity and access. Returns {'dialog': dict, 'op_name': str} or None."""
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT pg_advisory_xact_lock($1)", self._ASSIGN_LOCK)
-                op_row = await conn.fetchrow(self._FREE_OPERATOR_SQL, max_tickets)
+                op_row = await conn.fetchrow(self._FREE_OPERATOR_SQL, max_tickets, service_id)
                 if not op_row:
                     return None
                 dialog_row = await conn.fetchrow(f"""
                     UPDATE dialogs SET assigned_operator = $1, {self._CLAIM_STATE_SQL}
                     WHERE dialog_id = (
                         SELECT dialog_id FROM dialogs
-                        WHERE status = 'queue'
+                        WHERE status = 'queue' AND service_id = $2
                         ORDER BY COALESCE(queued_at, created_at) ASC LIMIT 1
                     )
                     RETURNING *
-                """, op_row["name"])
+                """, op_row["name"], service_id)
                 if not dialog_row:
                     return None
                 return {"dialog": dict(dialog_row), "op_name": op_row["name"]}
 
-    async def claim_pending_return(self, max_tickets: int) -> dict | None:
-        """Return the oldest waiting dialog whose client already replied
-        (return_requested_at set) to ITS OWN operator, provided that operator is
-        online and has a free slot. Ignores 'paused' — it's the operator's own
-        ticket coming back. Returns {'dialog': dict, 'op_name': str} or None."""
+    async def claim_pending_return(self, max_tickets: int, service_id: int) -> dict | None:
+        """Return the oldest waiting dialog of this service whose client already
+        replied (return_requested_at set) to ITS OWN operator, provided that
+        operator is online, still has access to the service and has a free slot.
+        Ignores 'paused' — it's the operator's own ticket coming back.
+        Returns {'dialog': dict, 'op_name': str} or None."""
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT pg_advisory_xact_lock($1)", self._ASSIGN_LOCK)
@@ -858,15 +1415,18 @@ class DatabaseManager:
                         JOIN operators o ON o.name = d.assigned_operator
                         LEFT JOIN ({self._SLOT_COUNT_SQL}) active
                                ON active.assigned_operator = o.name
+                              AND active.service_id = d.service_id
                         WHERE d.status = 'waiting'
+                          AND d.service_id = $2
                           AND d.return_requested_at IS NOT NULL
                           AND o.online = TRUE
                           AND COALESCE(active.cnt, 0) < $1
+                          AND {self._HAS_SERVICE_ACCESS_SQL}
                         ORDER BY d.return_requested_at ASC
                         LIMIT 1
                     )
                     RETURNING *
-                """, max_tickets)
+                """, max_tickets, service_id)
                 if not dialog_row:
                     return None
                 return {"dialog": dict(dialog_row), "op_name": dialog_row["assigned_operator"]}
@@ -885,6 +1445,7 @@ class DatabaseManager:
             UPDATE dialogs SET
                 status='queue', assigned_operator=NULL, queued_at=NOW(),
                 waiting_reason=NULL, return_requested_at=NULL, closed_at=NULL,
+                claim_requested_by=NULL, claim_requested_at=NULL,
                 {self._SLA_PAUSE_SQL},
                 updated_at=NOW()
             WHERE dialog_id=$1
@@ -904,7 +1465,9 @@ class DatabaseManager:
         """→ in_progress bound to op_name, bypassing slot limits (manual take /
         transfer / own-ticket return decided by the caller). Starts SLA."""
         await self.pool.execute(f"""
-            UPDATE dialogs SET assigned_operator = $1, {self._CLAIM_STATE_SQL}
+            UPDATE dialogs SET assigned_operator = $1,
+                                  claim_requested_by=NULL, claim_requested_at=NULL,
+                                  {self._CLAIM_STATE_SQL}
             WHERE dialog_id = $2
         """, op_name, dialog_id)
 
@@ -914,6 +1477,7 @@ class DatabaseManager:
             UPDATE dialogs SET
                 status='ai', assigned_operator=NULL, operator_called=FALSE,
                 queued_at=NULL, waiting_reason=NULL, return_requested_at=NULL,
+                claim_requested_by=NULL, claim_requested_at=NULL,
                 {self._SLA_PAUSE_SQL},
                 updated_at=NOW()
             WHERE dialog_id=$1
@@ -925,10 +1489,21 @@ class DatabaseManager:
             UPDATE dialogs SET
                 status='closed', closed_at=NOW(), operator_called=FALSE,
                 waiting_reason=NULL, queued_at=NULL, return_requested_at=NULL,
+                claim_requested_by=NULL, claim_requested_at=NULL,
                 {self._SLA_PAUSE_SQL},
                 updated_at=NOW()
             WHERE dialog_id=$1
         """, dialog_id)
+
+    async def set_claim_request(self, dialog_id: str, op_name: str | None):
+        """Запрос на передачу тикета: имя просящего либо None, чтобы снять."""
+        await self.pool.execute(
+            """UPDATE dialogs
+               SET claim_requested_by=$1,
+                   claim_requested_at=CASE WHEN $1::text IS NULL THEN NULL ELSE NOW() END
+               WHERE dialog_id=$2""",
+            op_name, dialog_id,
+        )
 
     async def set_return_requested(self, dialog_id: str):
         """Mark a waiting ticket as 'client replied, wants to come back'."""
@@ -945,12 +1520,30 @@ class DatabaseManager:
         )
         return [dict(r) for r in rows]
 
-    async def get_operator_dialogs_by_status(self, op_name: str, status: str) -> list[dict]:
+    async def get_operator_dialogs_by_status(
+        self, op_name: str, status: str, service_id: int = None,
+    ) -> list[dict]:
         rows = await self.pool.fetch(
-            "SELECT * FROM dialogs WHERE assigned_operator=$1 AND status=$2",
-            op_name, status,
+            "SELECT * FROM dialogs WHERE assigned_operator=$1 AND status=$2 "
+            "AND ($3::int IS NULL OR service_id = $3)",
+            op_name, status, service_id,
         )
         return [dict(r) for r in rows]
+
+    async def get_service_ids_with_pending(self) -> list[int]:
+        """Сервисы, где есть что раздавать, — от самого залежавшегося тикета.
+        Раздача идёт по сервисам (у каждого свой лимит слотов и свой круг
+        операторов), а такой порядок не даёт одному ВПН-у голодать."""
+        rows = await self.pool.fetch("""
+            SELECT service_id,
+                   MIN(COALESCE(queued_at, return_requested_at, created_at)) AS oldest
+            FROM dialogs
+            WHERE status = 'queue'
+               OR (status = 'waiting' AND return_requested_at IS NOT NULL)
+            GROUP BY service_id
+            ORDER BY oldest ASC
+        """)
+        return [r["service_id"] for r in rows]
 
     async def reset_operator_presence(self):
         """Startup: nobody is connected yet, so any online=TRUE row is a phantom
@@ -959,7 +1552,8 @@ class DatabaseManager:
         their tickets unless they reconnect in time."""
         await self.pool.execute(
             """UPDATE operators
-               SET online=FALSE, offline_since=COALESCE(offline_since, NOW())
+               SET online=FALSE, offline_since=COALESCE(offline_since, NOW()),
+                   last_seen_at=COALESCE(last_seen_at, NOW())
                WHERE COALESCE(online, FALSE) = TRUE"""
         )
 
