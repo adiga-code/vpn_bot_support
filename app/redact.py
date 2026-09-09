@@ -65,6 +65,18 @@ _FILE_EXT = {
 }
 
 
+# Строки uvicorn про саму панель: лог доступа и адрес, на котором она
+# поднялась. Прятать в них нечего — там входящий клиент и свой порт, — а вот
+# без них не понять ни откуда пришёл запрос, ни куда стучаться самому.
+# Различаем по форме строки, а не по значению адреса: апстрим вполне может
+# жить на приватном IP («Cannot connect to host 10.8.0.5:8080»), и он
+# прятаться обязан.
+_OWN_LOG_RE = (
+    re.compile(r'^INFO:\s+\S+:\d+ - "'),          # 127.0.0.1:54321 - "POST /api/…"
+    re.compile(r"^INFO:\s+Uvicorn running on "),  # адрес и порт самой панели
+)
+
+
 def _keep(host: str) -> bool:
     host = host.split(":")[0].lower()
     return host in _KEEP or host.rsplit(".", 1)[-1] in _FILE_EXT
@@ -74,12 +86,21 @@ def redact(text) -> str:
     """Текст без адресов, токенов и кук.
 
     Принимает что угодно (в логи летят и исключения, и объекты) — приводит к
-    строке сама.
+    строке сама. Разбор построчный: в `sys.stdout.write` прилетают целые куски
+    вывода, а «свои» строки uvicorn надо пропускать поштучно.
     """
     if text is None:
         return ""
     out = text if isinstance(text, str) else str(text)
     if not out:
+        return out
+    if "\n" in out:
+        return "\n".join(_redact_line(line) for line in out.split("\n"))
+    return _redact_line(out)
+
+
+def _redact_line(out: str) -> str:
+    if any(p.search(out) for p in _OWN_LOG_RE):
         return out
     out = _HEADER_SECRET_RE.sub(lambda m: f"{m.group(1)}={HIDDEN}", out)
     out = _BOT_TOKEN_RE.sub(HIDDEN, out)
