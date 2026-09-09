@@ -1175,6 +1175,13 @@ def build_app(
         base_url = (body.base_url or "").strip().rstrip("/")
         token = (body.token or "").strip()
         cookie = (body.cookie or "").strip()
+        # Адрес, который админ вписал в форму сам, прятать в ответе незачем —
+        # он его только что напечатал, а без хоста диагностика («не тот порт»,
+        # «имя не резолвится») превращается в гадание. А вот когда взят
+        # сохранённый адрес, показывать его нельзя: он наружу не отдаётся.
+        typed_by_hand = bool(base_url)
+        def _err(e) -> str:
+            return (str(e) if typed_by_hand else redact(e))[:200]
         # Адрес наружу отдаётся маской, поэтому форма правки шлёт его пустым,
         # когда менять не собираются — берём сохранённый оттуда же, откуда
         # берём сохранённый токен, иначе «Проверить» падало бы на исправном
@@ -1205,7 +1212,7 @@ def build_app(
             try:
                 info = await _remnawave_check_connection(base_url, token, cookie or None)
             except Exception as e:
-                return {"ok": False, "error": redact(e)[:200]}
+                return {"ok": False, "error": _err(e)}
             return {"ok": True, "botName": f"Remnawave v{info['version']}" if info["version"] else "Remnawave",
                     "scopes": [f"{info['nodesTotal']} нод"]}
 
@@ -1216,7 +1223,7 @@ def build_app(
         try:
             meta = await provider.meta()
         except Exception as e:
-            return {"ok": False, "error": redact(e)[:200]}
+            return {"ok": False, "error": _err(e)}
         return {"ok": True, "botId": meta.get("bot_id") or "",
                 "botName": meta.get("bot_name") or "",
                 "scopes": meta.get("scopes") or []}

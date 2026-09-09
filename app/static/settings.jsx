@@ -1129,9 +1129,11 @@ function ServiceModal({ editing, onSave, onClose, showToast }) {
               Remnawave
             </div>
             <div>
-              <label className="block text-xs text-[#6b7280] mb-1.5">Адрес панели</label>
+              <label className="block text-xs text-[#6b7280] mb-1.5">Адрес панели {editing && editing.hasRemnawaveBaseUrl && !rwUrl &&
+                <span className="text-[#22c55e]">— сохранён: {editing.remnawaveBaseUrlMask}, оставьте пустым, чтобы не менять</span>}
+              </label>
               <input value={rwUrl} onChange={(e) => { setRwUrl(e.target.value); setRwCheck(null); }}
-                placeholder="https://panel.example.com"
+                placeholder={editing && editing.hasRemnawaveBaseUrl ? editing.remnawaveBaseUrlMask : "https://panel.example.com"}
                 className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50 font-mono text-xs" />
             </div>
             <div>
@@ -1158,7 +1160,7 @@ function ServiceModal({ editing, onSave, onClose, showToast }) {
               </div>
             </div>
             <div>
-              <button type="button" onClick={testRwConnection} disabled={!rwUrl.trim() || rwCheck === "…"}
+              <button type="button" onClick={testRwConnection} disabled={(!rwUrl.trim() && !editing?.hasRemnawaveBaseUrl) || rwCheck === "…"}
                 className="px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40">
                 {rwCheck === "…" ? "Проверяем…" : "Проверить подключение"}
               </button>
