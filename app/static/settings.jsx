@@ -52,7 +52,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       hint: "имя, пароль, уведомления" },
     { id: "ai",         label: "ИИ-настройки",  icon: "sparkles",  adminOnly: true,  scope: "service",
       hint: "промпт, модель, автоответ" },
-    { id: "kb",         label: "База знаний",   icon: "book",      adminOnly: true,  scope: "service",
+    { id: "kb",         label: "База знаний",   icon: "book",      adminOnly: false, scope: "service",
       hint: "статьи для ответов ИИ" },
     { id: "automation", label: "Автоматизация", icon: "zap",       adminOnly: true,  scope: "service",
       hint: "эскалация, оценки, лимиты" },
@@ -65,9 +65,9 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       hint: "новое сообщение, вызов оператора" },
     { id: "broadcast",  label: "Рассылка",      icon: "megaphone", adminOnly: true,  scope: "service",
       hint: "сообщение клиентам сервиса" },
-    { id: "templates",  label: "Шаблоны",       icon: "template",  adminOnly: true,  scope: "service",
+    { id: "templates",  label: "Шаблоны",       icon: "template",  adminOnly: false, scope: "service",
       hint: "быстрые ответы по «/»" },
-    { id: "folders",    label: "Папки",         icon: "grid",      adminOnly: true,  scope: "service",
+    { id: "folders",    label: "Папки",         icon: "grid",      adminOnly: false, scope: "service",
       hint: "свои разделы в списке тикетов" },
   ];
   const sections = allSections.filter(s => !s.adminOnly || isAdmin);
@@ -106,7 +106,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       {section === "services"      && <ServicesSection showToast={showToast} onChanged={onServicesChanged} />}
       {section === "profile"       && <ProfileSection showToast={showToast} />}
       {section === "ai"            && <AISection showToast={showToast} service={svc} />}
-      {section === "kb"            && <KBSection service={svc} />}
+      {section === "kb"            && <KBSection service={svc} isAdmin={isAdmin} />}
       {section === "automation"    && <AutomationSection showToast={showToast} service={svc} />}
       {section === "customer"      && <CustomerSection showToast={showToast} service={svc} />}
       {section === "sounds"        && <SoundsSection showToast={showToast} />}
@@ -1688,7 +1688,10 @@ const CATEGORY_COLORS = {
   escalation:      "bg-[#A855F7]/15 text-[#C084FC] border-[#A855F7]/30",
 };
 
-function KBSection({ service }) {
+// Агенту база знаний доступна только на просмотр: список статей и их текст
+// видны всем, а загрузка, сброс и удаление — по-прежнему только у админа
+// (бэкенд на /api/kb/upload и DELETE /api/kb тоже это проверяет).
+function KBSection({ service, isAdmin = false }) {
   const [articles,   setArticles]   = useStateT(null);
   const [uploading,  setUploading]  = useStateT(false);
   const [uploadErr,  setUploadErr]  = useStateT(null);
@@ -1768,25 +1771,31 @@ function KBSection({ service }) {
         <div>
           <h1 className="text-xl font-semibold text-[#f1f1f5]">База знаний</h1>
           <div className="text-xs text-[#6b7280] mt-0.5">
-            {articles.length} чанков · используется ИИ для поиска ·
-            {" "}<span className="text-[#f59e0b]">загрузка заменяет базу целиком</span>
+            {articles.length} чанков · используется ИИ для поиска
+            {isAdmin
+              ? <> · <span className="text-[#f59e0b]">загрузка заменяет базу целиком</span></>
+              : <> · только просмотр</>}
           </div>
         </div>
         <div className="flex items-center gap-2">
           {uploading && <span className="text-xs text-[#6b7280] animate-pulse">Обработка ИИ...</span>}
-          {articles && articles.length > 0 && (
+          {isAdmin && articles && articles.length > 0 && (
             <button onClick={handleReset} disabled={resetting}
               className="px-3 py-2 rounded-lg bg-[#ef4444]/10 hover:bg-[#ef4444]/20 text-[#ef4444] text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 border border-[#ef4444]/20">
               <Icon name="trash-2" className="w-3.5 h-3.5" strokeWidth={2.5} />
               {resetting ? "Сброс..." : "Сбросить всё"}
             </button>
           )}
-          <button onClick={() => fileRef.current?.click()} disabled={uploading}
-            className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50">
-            <Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />
-            Загрузить документ
-          </button>
-          <input ref={fileRef} type="file" accept=".txt,.md" className="hidden" onChange={handleUpload} />
+          {isAdmin && (
+            <>
+              <button onClick={() => fileRef.current?.click()} disabled={uploading}
+                className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50">
+                <Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />
+                Загрузить документ
+              </button>
+              <input ref={fileRef} type="file" accept=".txt,.md" className="hidden" onChange={handleUpload} />
+            </>
+          )}
         </div>
       </div>
       <ServiceBanner service={service}
@@ -1804,7 +1813,11 @@ function KBSection({ service }) {
             <Icon name="book" className="w-6 h-6" />
           </div>
           <div className="text-sm text-[#f1f1f5] font-medium mb-1">База знаний пуста</div>
-          <div className="text-xs text-[#6b7280]">Загрузите .txt или .md файл — ИИ разобьёт его на чанки и проиндексирует</div>
+          <div className="text-xs text-[#6b7280]">
+            {isAdmin
+              ? "Загрузите .txt или .md файл — ИИ разобьёт его на чанки и проиндексирует"
+              : "Статьи загружает администратор"}
+          </div>
         </div>
       )}
 
@@ -1837,10 +1850,12 @@ function KBSection({ service }) {
                       )}
                     </div>
                   </button>
-                  <button onClick={() => handleDelete(a.id)} disabled={deleting === a.id}
-                    className="p-1.5 text-[#6b7280] hover:text-[#ef4444] hover:bg-[#ef4444]/10 rounded transition shrink-0 mt-0.5 disabled:opacity-40">
-                    <Icon name="trash" className="w-4 h-4" />
-                  </button>
+                  {isAdmin && (
+                    <button onClick={() => handleDelete(a.id)} disabled={deleting === a.id}
+                      className="p-1.5 text-[#6b7280] hover:text-[#ef4444] hover:bg-[#ef4444]/10 rounded transition shrink-0 mt-0.5 disabled:opacity-40">
+                      <Icon name="trash" className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
                 {isOpen && (
                   <div className="px-5 pb-4 pt-0">

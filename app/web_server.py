@@ -1404,7 +1404,8 @@ def build_app(
     # ── Папки тикетов ─────────────────────────────────────────────────────────
     # Папка — второй срез списка поверх статусов: тикет остаётся в «В работе»
     # или «Ожидании» и дополнительно лежит в папке, куда его положил оператор.
-    # Создаёт и правит папки админ, раскладывает по ним — любой оператор.
+    # Папки ведёт любой оператор: и создаёт/правит, и раскладывает по ним
+    # тикеты. Ограничение только по сервису — чужой ВПН не тронуть.
 
     def _fmt_folder(f: dict) -> dict:
         return {"id": f["id"], "serviceId": f["service_id"], "name": f["name"],
@@ -1434,8 +1435,6 @@ def build_app(
     @app.post("/api/folders")
     async def create_folder(body: FolderBody, service_id: Optional[int] = None,
                             operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
         if not body.name.strip():
             raise HTTPException(400, "Название обязательно")
         service = await require_service(service_id, operator)
@@ -1447,8 +1446,6 @@ def build_app(
     @app.put("/api/folders/{folder_id}")
     async def update_folder(folder_id: int, body: FolderBody,
                             operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
         folder = await require_folder(folder_id, operator)
         if not body.name.strip():
             raise HTTPException(400, "Название обязательно")
@@ -1462,8 +1459,6 @@ def build_app(
     async def delete_folder(folder_id: int, operator: dict = Depends(require_auth)):
         """Тикеты из удалённой папки не пропадают — просто перестают быть
         разложенными (folder_id → NULL по внешнему ключу)."""
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
         folder = await require_folder(folder_id, operator)
         await db.delete_folder(folder_id)
         await ws.broadcast({"type": "folders_changed", "service_id": folder["service_id"]})
@@ -1796,6 +1791,8 @@ def build_app(
         return {"sent": sent, "failed": failed, "total": len(chat_ids)}
 
     # ── Templates ─────────────────────────────────────────────────────────────
+    # Шаблоны ведёт любой оператор — быстрые ответы копятся у тех, кто ими
+    # пользуется. Ограничение только по сервису: правим шаблоны своего ВПН-а.
 
     @app.get("/api/templates")
     async def get_templates(service_id: Optional[int] = None,
@@ -1806,8 +1803,6 @@ def build_app(
     @app.post("/api/templates")
     async def create_template(body: TemplateBody, service_id: Optional[int] = None,
                               operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
         service = await require_service(service_id, operator)
         if not body.title.strip() or not body.text.strip():
             raise HTTPException(400, "Название и текст обязательны")
@@ -1820,8 +1815,6 @@ def build_app(
     async def update_template(template_id: int, body: TemplateBody,
                               service_id: Optional[int] = None,
                               operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
         service = await require_service(service_id, operator)
         row = await db.save_template(
             template_id, body.group_name.strip() or "Общие", body.title.strip(),
@@ -1834,8 +1827,6 @@ def build_app(
     @app.delete("/api/templates/{template_id}")
     async def delete_template_ep(template_id: int, service_id: Optional[int] = None,
                                  operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
         service = await require_service(service_id, operator)
         ok = await db.delete_template(template_id, service["id"])
         if not ok:
@@ -1845,8 +1836,6 @@ def build_app(
     @app.patch("/api/templates/group")
     async def rename_template_group(body: RenameGroupBody, service_id: Optional[int] = None,
                                     operator: dict = Depends(require_auth)):
-        if operator["role"] != "admin":
-            raise HTTPException(403, "Admin only")
         service = await require_service(service_id, operator)
         if not body.new_name.strip():
             raise HTTPException(400, "Название группы не может быть пустым")
