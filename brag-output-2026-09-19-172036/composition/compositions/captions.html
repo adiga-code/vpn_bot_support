@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+  <head><meta charset="UTF-8" /></head>
+  <body>
+    <template>
+      <style>
+        #root { position: absolute; inset: 0; }
+        #cp-slug { position: absolute; right: 80px; top: 50px;
+                   font-family: 'JetBrains Mono', ui-monospace, monospace;
+                   font-size: 19px; color: #868d99; letter-spacing: 0.04em; }
+        .cp-line { position: absolute; inset: 0; display: flex; align-items: center; padding-left: 80px; opacity: 0; }
+        .cp-inner { display: flex; align-items: center; gap: 22px; }
+        .cp-dot { width: 12px; height: 12px; border-radius: 999px; background: #4f8ef7;
+                  box-shadow: 0 0 18px rgba(79,142,247,0.65); flex: 0 0 auto; }
+        .cp-text { font-size: 36px; font-weight: 500; letter-spacing: -0.015em; color: #f1f1f5;
+                   white-space: nowrap; max-width: 1600px; }
+      </style>
+
+      <div id="root" data-composition-id="scr-captions" data-width="1920" data-height="120">
+        <div id="cp-slug">vpn_bot_support</div>
+        <div class="cp-line" id="cp1"><div class="cp-inner"><span class="cp-dot"></span><span class="cp-text">Вся поддержка VPN — в одной панели</span></div></div>
+        <div class="cp-line" id="cp2"><div class="cp-inner"><span class="cp-dot"></span><span class="cp-text">ИИ отвечает сам — по вашей базе знаний</span></div></div>
+        <div class="cp-line" id="cp3"><div class="cp-inner"><span class="cp-dot"></span><span class="cp-text">Остальное — готовым шаблоном</span></div></div>
+        <div class="cp-line" id="cp4"><div class="cp-inner"><span class="cp-dot"></span><span class="cp-text">Клиент виден целиком</span></div></div>
+        <div class="cp-line" id="cp5"><div class="cp-inner"><span class="cp-dot"></span><span class="cp-text">И меняется прямо отсюда</span></div></div>
+      </div>
+
+      <script>
+        (function () {
+          var tl = gsap.timeline({ paused: true });
+          // One readable line per capability. Each holds well past its reading
+          // floor (~0.3s per word) before it starts leaving.
+          var caps = [
+            { id: "#cp1", in: 0.35,  out: 2.95  },  // 6 words
+            { id: "#cp2", in: 6.05,  out: 8.25  },  // 6 words
+            { id: "#cp3", in: 11.25, out: 13.45 },  // 4 words
+            { id: "#cp4", in: 14.55, out: 17.05 },  // 3 words
+            { id: "#cp5", in: 19.15, out: 21.10 }   // 4 words
+          ];
+          for (var i = 0; i < caps.length; i++) {
+            tl.fromTo(caps[i].id, { opacity: 0, x: -10 },
+                      { opacity: 1, x: 0, duration: 0.32, ease: "power2.out" }, caps[i].in);
+            tl.to(caps[i].id, { opacity: 0, duration: 0.25, ease: "power2.in" }, caps[i].out);
+          }
+          window.__timelines["scr-captions"] = tl;
+        })();
+      </script>
+    </template>
+  </body>
+</html>
