@@ -721,7 +721,7 @@
     },
     {
       "parameters": {
-        "url": "={{ $json.file_id }}",
+        "url": "={{ $json.file_id.startsWith('http') ? $json.file_id : 'https://' + $json.file_id }}",
         "options": { "response": { "response": { "responseFormat": "file" } } }
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -732,7 +732,7 @@
     },
     {
       "parameters": {
-        "url": "={{ $json.file_id }}",
+        "url": "={{ $json.file_id.startsWith('http') ? $json.file_id : 'https://' + $json.file_id }}",
         "options": { "response": { "response": { "responseFormat": "file" } } }
       },
       "type": "n8n-nodes-base.httpRequest",

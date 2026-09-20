@@ -3,6 +3,24 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 
 
+def normalize_public_url(raw: str) -> str:
+    """Публичный адрес со схемой, каким бы его ни записали в .env.
+
+    Адрес без схемы («panel.example.com») браузер оператора считает
+    относительным путём и просит у панели /panel.example.com/api/files/...,
+    а n8n по такой ссылке вложение не скачает. Схему дописываем здесь, чтобы
+    опечатка в одной переменной окружения не ломала показ вложений.
+    """
+    url = (raw or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if "://" in url:
+        return url
+    # Локальный адрес по https не открыть — там обычно нет сертификата.
+    local = url.split(":")[0] in ("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal")
+    return f"{'http' if local else 'https'}://{url}"
+
+
 class Settings(BaseSettings):
     # ── Redis (история/KV для n8n) ────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379"
@@ -43,6 +61,7 @@ class Settings(BaseSettings):
     UPLOADS_DIR: str = "app/uploads"
     # Public base URL for absolute file links (scheme+host only, no path suffix)
     # e.g. BASE_URL=https://helpdesk.example.com
+    # A missing scheme is filled in with https:// — see normalize_public_url().
     # Required for n8n → Telegram file forwarding. Leave empty for dev/local use.
     BASE_URL: str = ""
     # Subpath prefix nginx proxies WITHOUT stripping, e.g. /files
@@ -105,3 +124,12 @@ class Settings(BaseSettings):
         p = Path(self.UPLOADS_DIR)
         p.mkdir(parents=True, exist_ok=True)
         return p
+
+    def public_base_url(self) -> str:
+        """BASE_URL со схемой и без хвостового слеша — для ссылок наружу."""
+        return normalize_public_url(self.BASE_URL)
+
+    def public_file_prefixes(self) -> list[str]:
+        """Адреса, ссылка на которые уже ведёт в наше хранилище."""
+        return [p for p in (self.public_base_url(),
+                            normalize_public_url(self.S3_PUBLIC_URL)) if p]

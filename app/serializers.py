@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 
 from app.database import avatar_color, make_initials
+from app.media import absolutize, looks_like_url
 
 NOTIF_PREFS_DEFAULT = {"new_dialog": True, "operator_called": True, "server_down": True, "sound_enabled": True}
 
@@ -58,7 +59,7 @@ def fmt_dialog(row: dict, tickets: list = None) -> dict:
         "updatedAt": row["updated_at"].isoformat() if row.get("updated_at") else "",
         "rating": row.get("rating"),
         "notes": row.get("user_notes") or "",
-        "photoUrl": row.get("user_photo_url") or None,
+        "photoUrl": absolutize(row.get("user_photo_url")) or None,
         # Папка-ярлык: срез поверх статуса, тикет остаётся и в своём разделе.
         "folderId": row.get("folder_id"),
         "folderName": row.get("folder_name"),
@@ -77,8 +78,11 @@ def fmt_message(row: dict) -> dict:
     file_id = row.get("file_id")
     file_url = row.get("file_url")
     # handle legacy records where n8n put the URL into file_id
-    if not file_url and file_id and str(file_id).startswith("http"):
+    if not file_url and file_id and looks_like_url(file_id):
         file_url, file_id = file_id, None
+    # Ссылка без схемы для браузера — путь на самой панели: <img> ушёл бы за
+    # /panel.example.com/api/files/... и получил 404.
+    file_url = absolutize(file_url)
     created = row.get("created_at")
     if created and created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)

@@ -8,7 +8,7 @@ from app.ai_client import ChatClient
 from app.classifier import classify_message
 from app.database import DatabaseManager
 from app.dialogs import parse_ai_enabled, resolve_service, user_info_from
-from app.media import internalize
+from app.media import internalize, looks_like_url
 from app.n8n_client import N8NClient
 from app.routing import RoutingEngine
 from app.serializers import fmt_dialog as _fmt_dialog, fmt_message as _fmt_message
@@ -128,8 +128,10 @@ class RabbitMQConsumer:
         file_id = data.get("file_id")
         file_type = data.get("file_type", "text")
         file_url = data.get("file_url")
-        # n8n sometimes puts the uploaded URL into file_id instead of file_url
-        if not file_url and file_id and str(file_id).startswith("http"):
+        # n8n sometimes puts the uploaded URL into file_id instead of file_url.
+        # Ссылку узнаём по виду, а не по «http» в начале: панель отдаёт адрес
+        # таким, каким записан BASE_URL, и схемы в нём может не быть.
+        if not file_url and file_id and looks_like_url(file_id):
             file_url, file_id = file_id, None
         # Ссылка наружу до базы не доезжает: в ней может стоять токен бота, а
         # её подставит в <img src> браузер оператора. Забираем файл к себе.
@@ -144,10 +146,12 @@ class RabbitMQConsumer:
         )
         dialog_id = dialog_row["dialog_id"]
 
+        # Подпись к фото или видео — такой же текст клиента, как и обычное
+        # сообщение: без неё оператор видит картинку без вопроса к ней.
         msg_row = await self.db.save_message(
             dialog_id,
             "user",
-            text if file_type == "text" else None,
+            text or None,
             file_id=file_id if file_type != "text" else None,
             file_type=file_type if file_type != "text" else None,
             file_url=file_url,

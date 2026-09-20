@@ -415,6 +415,41 @@ class DatabaseManager:
         await self._migrate_monitoring(conn)
         await self._migrate_customer(conn)
         await self._migrate_folders(conn)
+        await self._migrate_media_urls(conn)
+
+    async def _migrate_media_urls(self, conn):
+        """Ссылки на вложения, записанные без схемы.
+
+        Пока BASE_URL в .env стоял без «https://», панель возвращала n8n адрес
+        вида «panel.example.com/api/files/x.jpg». Такую строку воркфлоу клал в
+        file_id (на «http» она не начинается), а браузер оператора считал её
+        путём на самой панели и получал 404 — вложения в переписке выглядели
+        серыми заглушками «Фото» и «Голосовое».
+
+        Новые записи чинятся на входе, а эти лежат в базе — поэтому один раз
+        переносим адрес в file_url и дописываем схему. Условия отбирают только
+        строки вида host.tld/..., так что настоящий Telegram-овский file_id
+        (без точки и слеша) и уже полные ссылки остаются нетронутыми.
+        """
+        hostlike = r"^([a-z0-9-]+\.)+[a-z]{2,}(:[0-9]+)?/"
+        scheme = "http" if self.settings.public_base_url().startswith("http://") else "https"
+
+        moved = await conn.execute(
+            "UPDATE messages SET file_url = file_id, file_id = NULL "
+            "WHERE file_url IS NULL AND file_id ~* $1", hostlike,
+        )
+        fixed = await conn.execute(
+            f"UPDATE messages SET file_url = '{scheme}://' || file_url "
+            "WHERE file_url ~* $1", hostlike,
+        )
+        photos = await conn.execute(
+            f"UPDATE dialogs SET user_photo_url = '{scheme}://' || user_photo_url "
+            "WHERE user_photo_url ~* $1", hostlike,
+        )
+        counts = [int(r.split()[-1]) for r in (moved, fixed, photos)]
+        if any(counts):
+            print(f"[migrate] media: ссылок перенесено из file_id {counts[0]}, "
+                  f"схема дописана у {counts[1]} вложений и {counts[2]} аватаров")
 
     async def _migrate_folders(self, conn):
         """Папки-ярлыки: второй, независимый срез списка тикетов поверх статусов.
