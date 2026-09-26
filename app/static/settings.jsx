@@ -985,6 +985,117 @@ function FallbackBlock({ service, showToast }) {
   );
 }
 
+// ── История до подключения панели ────────────────────────────────────────────
+// Выгрузка всех личных переписок аккаунта поддержки в JSON (той же сессией,
+// что у резервной отправки) и загрузка такого файла: каждый чат становится
+// закрытым тикетом, а новое сообщение клиента откроет свежий тикет.
+function HistoryBlock({ service, showToast }) {
+  const [job, setJob] = useStateT({ state: "idle" });
+  const [importing, setImporting] = useStateT(false);
+  const [result, setResult] = useStateT(null);
+  const base = `/api/services/${service.id}/history`;
+
+  async function poll() {
+    try { setJob(await window.apiFetch("GET", base + "/export")); } catch {}
+  }
+
+  useEffectT(() => { poll(); }, [service.id]);
+  useEffectT(() => {
+    if (job.state !== "running") return;
+    const t = setInterval(poll, 2000);
+    return () => clearInterval(t);
+  }, [job.state, service.id]);
+
+  async function startExport() {
+    setResult(null);
+    try { setJob(await window.apiFetch("POST", base + "/export")); }
+    catch (e) { setJob({ state: "error", error: e?.detail || "Не удалось начать выгрузку" }); }
+  }
+
+  async function download() {
+    try {
+      const headers = {};
+      const token = localStorage.getItem("hd_token");
+      if (token) headers["Authorization"] = "Bearer " + token;
+      const res = await fetch(base + "/export/file", { headers });
+      if (!res.ok) throw new Error();
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = job.filename || "history.json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch { showToast("Не удалось скачать файл"); }
+  }
+
+  async function upload(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setImporting(true);
+    setResult(null);
+    try {
+      const r = await window.apiFetch("UPLOAD", base + "/import", file);
+      setResult(r);
+      showToast(`Импортировано чатов: ${r.imported}`);
+    } catch (err) {
+      setResult({ ok: false, error: err?.detail || "Не удалось импортировать" });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  const btn = "px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40";
+
+  return (
+    <div className="space-y-3">
+      <div className="text-[10px] text-[#6b7280] leading-relaxed">
+        Переписки, которые были до подключения панели. Выгрузка берёт все личные
+        чаты аккаунта (без ботов и групп, медиа — пометкой), загрузка кладёт каждый
+        чат в <b>закрытый</b> тикет. Повторная загрузка уже импортированные чаты пропускает.
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={startExport}
+          disabled={job.state === "running"}
+          className={btn}>
+          {job.state === "running" ? "Выгружаем…" : "Выгрузить историю"}
+        </button>
+        {job.state === "done" && (
+          <button type="button" onClick={download} className={btn}>Скачать JSON</button>
+        )}
+        <label className={btn + " cursor-pointer" + (importing ? " opacity-40 pointer-events-none" : "")}>
+          {importing ? "Загружаем…" : "Загрузить JSON"}
+          <input type="file" accept=".json,application/json" onChange={upload} className="hidden" />
+        </label>
+      </div>
+      {job.state === "running" && (
+        <div className="text-[11px] text-[#d1d1d8]">
+          Чатов {job.chats_done}/{job.chats_total || "…"}, сообщений {job.messages}
+        </div>
+      )}
+      {job.state === "done" && (
+        <div className="text-[11px] text-[#22c55e]">
+          Готово: чатов {job.chats_done}, сообщений {job.messages}
+        </div>
+      )}
+      {job.state === "error" && (
+        <div className="rounded-lg px-3 py-2 text-[11px] border bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]">
+          {job.error}
+        </div>
+      )}
+      {result && (
+        <div className={"rounded-lg px-3 py-2 text-[11px] border " + (result.ok
+          ? "bg-[#22c55e]/10 border-[#22c55e]/25 text-[#22c55e]"
+          : "bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]")}>
+          {result.ok
+            ? <>Импортировано чатов: <b>{result.imported}</b> ({result.messages} сообщений), пропущено: {result.skipped}</>
+            : result.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ServiceModal({ editing, onSave, onClose, showToast }) {
   const [name,  setName]  = useStateT(editing?.name  || "");
   const [slug,  setSlug]  = useStateT(editing?.slug  || "");
@@ -1207,6 +1318,12 @@ function ServiceModal({ editing, onSave, onClose, showToast }) {
                   и покажет результат в переписке.
                 </div>
                 <FallbackBlock service={editing} showToast={showToast} />
+                {editing && (
+                  <div className="mt-4 pt-3 border-t border-[#2a2a3a]">
+                    <div className="text-xs text-[#d1d1d8] mb-2">История до подключения панели</div>
+                    <HistoryBlock service={editing} showToast={showToast} />
+                  </div>
+                )}
               </div>
             )}
           </div>

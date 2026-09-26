@@ -720,12 +720,8 @@
           wsRef.current = ws;
           let pongPending = false;
 
-          ws.onopen = () => {
-            pongPending = false;
-            // The connect-time queue drain can reassign dialogs between the
-            // initial GET snapshot and this socket opening (a slow GET can
-            // even overwrite an already-received broadcast) — re-sync once,
-            // keeping locally loaded messages.
+          // Перечитать список тикетов, сохранив уже загруженные переписки.
+          function resyncDialogs() {
             const sid = currentServiceIdRef.current;
             apiGet(sid === null ? "/api/dialogs" : `/api/dialogs?service_id=${sid}`).then((fresh) => {
               setConversations((prev) => fresh.map((d) => {
@@ -733,6 +729,15 @@
                 return { ...d, messages: old?.messages || [], tickets: old?.tickets || [] };
               }));
             }).catch(() => {});
+          }
+
+          ws.onopen = () => {
+            pongPending = false;
+            // The connect-time queue drain can reassign dialogs between the
+            // initial GET snapshot and this socket opening (a slow GET can
+            // even overwrite an already-received broadcast) — re-sync once,
+            // keeping locally loaded messages.
+            resyncDialogs();
             pingInterval = setInterval(() => {
               if (pongPending) {
                 ws.close();
@@ -791,6 +796,9 @@
               // Админ завёл, переименовал или удалил папку — ряд разделов у всех
               // должен обновиться, не дожидаясь перезагрузки вкладки.
               loadFolders(foldersServiceIdRef.current);
+            } else if (data.type === "dialogs_reload") {
+              // Массовое изменение (импорт старых переписок) — одним запросом.
+              resyncDialogs();
             } else if (data.type === "services_changed") {
               // Список сервисов или флаги доступа изменились админом.
               loadServices();

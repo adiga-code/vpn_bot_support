@@ -36,6 +36,7 @@ from app.customer import (
     build_customer_provider,
     known_customer_providers,
 )
+from app.history_import import HistoryImporter
 from app.health import MONITORING_DEFAULTS, ServiceHealthMonitor, known_providers
 from app.providers.remnawave import check_connection as _remnawave_check_connection
 from app.ws_manager import WebSocketManager
@@ -292,6 +293,7 @@ def build_app(
     customers: CustomerService,
     health: ServiceHealthMonitor,
     fallback=None,
+    history_exporter=None,
 ) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
@@ -1400,6 +1402,62 @@ def build_app(
         await _require_fallback(service_id, operator)
         await fallback.save(service_id, {"enabled": False, "config": {}})
         return {"ok": True}
+
+    # ── История до подключения панели ─────────────────────────────────────────
+    # Выгрузка старых личных переписок аккаунта поддержки (той же сессией, что
+    # у резервной отправки) в JSON и загрузка такого файла обратно: каждый чат
+    # становится закрытым тикетом. Подробности — history_export/history_import.
+
+    history_importer = HistoryImporter(db)
+
+    @app.post("/api/services/{service_id}/history/export")
+    async def history_export_start(service_id: int, operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        if not history_exporter:
+            raise HTTPException(503, "Выгрузка истории не собрана в этой установке")
+        try:
+            return await history_exporter.start(service_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+
+    @app.get("/api/services/{service_id}/history/export")
+    async def history_export_status(service_id: int, operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        if not history_exporter:
+            return {"state": "idle"}
+        return history_exporter.status(service_id)
+
+    @app.get("/api/services/{service_id}/history/export/file")
+    async def history_export_file(service_id: int, operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        path = history_exporter.file_for(service_id) if history_exporter else None
+        if not path:
+            raise HTTPException(404, "Готовой выгрузки нет")
+        return FileResponse(path, media_type="application/json", filename=path.name)
+
+    @app.post("/api/services/{service_id}/history/import")
+    async def history_import(service_id: int, file: UploadFile = File(...),
+                             operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await db.get_service(service_id)
+        if not service:
+            raise HTTPException(404, "Сервис не найден")
+        try:
+            payload = json.loads(await file.read())
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(400, "Файл не читается как JSON")
+        try:
+            result = await history_importer.run(service, payload)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if result["imported"]:
+            # Тикетов может быть тысячи — не шлём по событию на каждый, а
+            # просим панели перечитать список разом.
+            await ws.broadcast({"type": "dialogs_reload"}, service_id)
+        return result
 
     # ── Папки тикетов ─────────────────────────────────────────────────────────
     # Папка — второй срез списка поверх статусов: тикет остаётся в «В работе»
