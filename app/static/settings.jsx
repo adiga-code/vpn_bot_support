@@ -788,6 +788,9 @@ function FallbackBlock({ service, showToast }) {
   // idle | code | 2fa
   const [step, setStep] = useStateT("idle");
   const [busy, setBusy] = useStateT(false);
+  // Куда Telegram отправил код: приложение, SMS, почта… — без подсказки
+  // «код отправлен» при пустом SMS выглядит поломкой.
+  const [delivery, setDelivery] = useStateT(null);  // {text, canResend}
   const [state, setState] = useStateT({
     enabled: !!service?.fallbackEnabled,
     account: service?.fallbackAccount || "",
@@ -809,10 +812,20 @@ function FallbackBlock({ service, showToast }) {
   async function sendCode() {
     setCheck(null);
     try {
-      await call("/send-code", { app_id: Number(appId), app_hash: appHash.trim(), phone: phone.trim() });
+      const r = await call("/send-code", { app_id: Number(appId), app_hash: appHash.trim(), phone: phone.trim() });
+      setDelivery({ text: r?.delivery || "Код отправлен", canResend: !!r?.canResend });
       setStep("code");
-      showToast("Код отправлен в Телеграм");
+      showToast("Код запрошен");
     } catch (e) { setCheck({ ok: false, error: e?.detail || "Не удалось отправить код" }); }
+  }
+
+  async function resendCode() {
+    setCheck(null);
+    try {
+      const r = await call("/resend-code", {});
+      setDelivery({ text: r?.delivery || "Код отправлен повторно", canResend: !!r?.canResend });
+      showToast("Код отправлен повторно");
+    } catch (e) { setCheck({ ok: false, error: e?.detail || "Не удалось отправить код повторно" }); }
   }
 
   async function signIn() {
@@ -933,6 +946,17 @@ function FallbackBlock({ service, showToast }) {
 
           {step !== "idle" && (
             <div className="space-y-3 border-l-2 border-[#4F8EF7]/40 pl-3">
+              {delivery && step === "code" && (
+                <div className="rounded-lg px-3 py-2 text-[11px] leading-relaxed border bg-[#4F8EF7]/10 border-[#4F8EF7]/25 text-[#9DBDFB]">
+                  {delivery.text}
+                  {delivery.canResend && (
+                    <button type="button" onClick={resendCode} disabled={busy}
+                      className="block mt-1.5 underline hover:text-white disabled:opacity-40">
+                      Не пришёл — отправить другим способом
+                    </button>
+                  )}
+                </div>
+              )}
               <div>
                 <label className="block text-xs text-[#6b7280] mb-1.5">Код из Телеграм</label>
                 <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="12345"
@@ -950,7 +974,7 @@ function FallbackBlock({ service, showToast }) {
                   className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold disabled:opacity-40">
                   {busy ? "Входим…" : "Войти"}
                 </button>
-                <button type="button" onClick={() => { setStep("idle"); setCode(""); setPassword(""); }}
+                <button type="button" onClick={() => { setStep("idle"); setCode(""); setPassword(""); setDelivery(null); }}
                   className="px-3 py-2 rounded-lg text-xs text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">
                   Отмена
                 </button>

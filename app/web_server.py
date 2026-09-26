@@ -1351,7 +1351,15 @@ def build_app(
             return await fallback.send_code(service_id, body.app_id, body.app_hash,
                                             body.phone.strip())
         except Exception as e:
-            raise HTTPException(400, redact(e)[:200])
+            raise HTTPException(400, redact(e)[:300])
+
+    @app.post("/api/services/{service_id}/fallback/resend-code")
+    async def fallback_resend_code(service_id: int, operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        try:
+            return await fallback.resend_code(service_id)
+        except Exception as e:
+            raise HTTPException(400, redact(e)[:300])
 
     @app.post("/api/services/{service_id}/fallback/sign-in")
     async def fallback_sign_in(service_id: int, body: FallbackCodeBody,
@@ -1360,7 +1368,7 @@ def build_app(
         try:
             return await fallback.sign_in(service_id, body.code.strip(), body.password)
         except Exception as e:
-            raise HTTPException(400, redact(e)[:200])
+            raise HTTPException(400, redact(e)[:300])
 
     @app.post("/api/services/{service_id}/fallback/session")
     async def fallback_set_session(service_id: int, body: FallbackSessionBody,

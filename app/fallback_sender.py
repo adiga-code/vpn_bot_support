@@ -74,6 +74,31 @@ def _human_error(e: Exception) -> str | None:
     return None
 
 
+def _describe_sent(sent) -> str:
+    """Куда Telegram отправил код входа: без этого «код отправлен» при
+    пустом SMS выглядит как поломка, а код лежит в приложении или на почте."""
+    kind = type(getattr(sent, "type", None)).__name__
+    if kind == "SentCodeTypeApp":
+        return ("Код отправлен в приложение Telegram: сообщение от официального "
+                "чата «Telegram» (с синей галочкой) в самом аккаунте поддержки "
+                "на телефоне или компьютере, где он открыт. SMS не будет")
+    if kind in ("SentCodeTypeSms", "SentCodeTypeFirebaseSms",
+                "SentCodeTypeSmsWord", "SentCodeTypeSmsPhrase"):
+        return "Код отправлен по SMS на телефон"
+    if kind in ("SentCodeTypeCall", "SentCodeTypeFlashCall", "SentCodeTypeMissedCall"):
+        return "Telegram позвонит на телефон: код — последние цифры номера или продиктуют"
+    if kind == "SentCodeTypeEmailCode":
+        pattern = getattr(sent.type, "email_pattern", "") or "почту аккаунта"
+        return f"Код отправлен на почту {pattern}"
+    if kind == "SentCodeTypeFragmentSms":
+        return "Код придёт через Fragment (номер куплен на fragment.com)"
+    if kind == "SentCodeTypeSetUpEmailRequired":
+        return ("Telegram требует сначала привязать почту к аккаунту: откройте "
+                "Telegram → Настройки → Конфиденциальность → Почта для входа, "
+                "затем запросите код снова")
+    return "Код отправлен"
+
+
 def _install_hint(error: Exception) -> str:
     return (f"Telethon не установлен ({error}). Добавьте telethon в requirements.txt "
             f"и пересоберите образ.")
@@ -287,7 +312,36 @@ class FallbackSenderService:
             "client": client, "phone": phone, "hash": sent.phone_code_hash,
             "app_id": int(app_id), "app_hash": str(app_hash), "at": time.monotonic(),
         }
-        return {"ok": True, "needsCode": True}
+        return {"ok": True, "needsCode": True, "delivery": _describe_sent(sent),
+                "canResend": getattr(sent, "next_type", None) is not None}
+
+    async def resend_code(self, service_id: int) -> dict:
+        """Код не пришёл — просим Telegram отправить его следующим способом
+        (обычно SMS или звонок). Повторный send_code_request того же клиента
+        Telethon сам превращает в ResendCodeRequest."""
+        item = self._pending.get(service_id)
+        if not item:
+            raise RuntimeError("Код устарел — запросите новый")
+        client = item["client"]
+        try:
+            sent = await asyncio.wait_for(client.send_code_request(item["phone"]),
+                                          _CONNECT_TIMEOUT)
+        except asyncio.TimeoutError:
+            raise _Timeout("повторная отправка кода")
+        except Exception as e:
+            print(f"[fallback] resend-code сервиса {service_id}: "
+                  f"{type(e).__name__}: {redact(e)}")
+            human = _human_error(e)
+            if type(e).__name__ == "SendCodeUnavailableError":
+                human = ("Другие способы доставки кода исчерпаны — ищите код в "
+                         "приложении Telegram или подождите и запросите заново")
+            if human:
+                raise RuntimeError(human) from e
+            raise
+        item["hash"] = sent.phone_code_hash
+        item["at"] = time.monotonic()
+        return {"ok": True, "delivery": _describe_sent(sent),
+                "canResend": getattr(sent, "next_type", None) is not None}
 
     async def sign_in(self, service_id: int, code: str, password: str = "") -> dict:
         """Шаг 2: код (и пароль 2FA, если он стоит). На успехе сохраняем строку

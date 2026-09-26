@@ -1506,6 +1506,7 @@ self-hosted community его нет, и `$vars` молча даёт `undefined`.
 | POST | `/api/services/test-connection` | Проверить адрес и токен через `GET /meta` до сохранения (админ) |
 | DELETE | `/api/services/{id}` | Удалить вместе с диалогами и коллекцией Qdrant (админ) |
 | POST | `/api/services/{id}/fallback/send-code` | Резервный аккаунт: выслать код на телефон (админ) |
+| POST | `/api/services/{id}/fallback/resend-code` | Код не пришёл — отправить следующим способом (SMS/звонок) (админ) |
 | POST | `/api/services/{id}/fallback/sign-in` | Код и, если нужно, пароль 2FA (админ) |
 | POST | `/api/services/{id}/fallback/session` | Готовая строка сессии вместо кода (админ) |
 | POST | `/api/services/{id}/fallback/test` | От какого аккаунта уйдут сообщения (админ) |
