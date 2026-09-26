@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ru">
+  <head><meta charset="UTF-8" /></head>
+  <body>
+    <template>
+      <style>
+        #root { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 30px 60px; }
+        #cu-card { width: 1440px; background: #13131a; border: 1px solid #2a2a3a; border-radius: 22px;
+                   padding: 38px 44px; position: relative; }
+        #cu-head { display: flex; align-items: center; gap: 22px; }
+        #cu-av { width: 76px; height: 76px; flex: 0 0 76px; border-radius: 999px;
+                 background: linear-gradient(135deg, #2a2a3a, #1a1a24); border: 1px solid #2a2a3a;
+                 display: flex; align-items: center; justify-content: center; font-size: 30px; font-weight: 600; }
+        #cu-name { font-size: 38px; font-weight: 600; letter-spacing: -0.02em; }
+        #cu-user { font-size: 25px; color: #7ba8f9; margin-top: 3px; }
+        #cu-id { font-size: 21px; color: #868d99; margin-top: 3px; }
+        #cu-tabs { display: flex; gap: 10px; margin-top: 26px; border-bottom: 1px solid #2a2a3a; padding-bottom: 0; }
+        .cu-tab { font-size: 24px; color: #868d99; padding: 12px 18px; border-bottom: 2px solid transparent; }
+        .cu-tab.on { color: #f1f1f5; font-weight: 500; border-bottom-color: #4f8ef7; }
+        .cu-tab .n { font-size: 19px; color: #868d99; margin-left: 7px; }
+        #cu-rows { margin-top: 6px; }
+        .cu-row { position: relative; display: flex; justify-content: space-between; align-items: center;
+                  padding: 17px 4px; border-bottom: 1px solid rgba(42,42,58,0.55); opacity: 0; }
+        #cu-flash { position: absolute; left: -12px; right: -12px; top: 0; bottom: 0; border-radius: 10px;
+                    background: rgba(61,220,132,0.09); opacity: 0; pointer-events: none; }
+        .cu-k { font-size: 27px; color: #868d99; }
+        .cu-v { font-size: 27px; color: #f1f1f5; }
+        #cu-until-wrap { position: relative; display: inline-block; }
+        #cu-until-new { position: absolute; right: 0; top: 0; white-space: nowrap; color: #3ddc84; opacity: 0; }
+        #cu-actions { display: flex; gap: 12px; margin-top: 24px; flex-wrap: nowrap; }
+        .cu-act { font-size: 22px; font-weight: 500; padding: 14px 20px; border-radius: 12px;
+                  background: #1a1a24; border: 1px solid #2a2a3a; color: #f1f1f5; white-space: nowrap; opacity: 0; }
+        .cu-act.danger { color: #ef4444; border-color: rgba(239,68,68,0.3); }
+        #cu-act1 { position: relative; }
+        #cu-form-slot { height: 96px; margin-top: 20px; }
+        #cu-form { height: 96px; background: #1a1a24;
+                   border: 1px solid rgba(79,142,247,0.35); border-radius: 16px; padding: 0 26px;
+                   display: flex; align-items: center; gap: 22px; opacity: 0; }
+        #cu-form-title { font-size: 25px; font-weight: 600; }
+        #cu-field { display: flex; align-items: center; gap: 14px; }
+        #cu-field-k { font-size: 23px; color: #868d99; }
+        #cu-field-v { width: 96px; height: 52px; border-radius: 10px; background: #1a1a24; border: 1px solid #2a2a3a;
+                      display: flex; align-items: center; justify-content: center; font-size: 24px; color: #f1f1f5; }
+        #cu-apply { margin-left: auto; font-size: 23px; font-weight: 600; padding: 14px 26px; border-radius: 12px;
+                    background: #4f8ef7; color: #0d0d12; }
+        #cu-cursor { position: absolute; left: 0; top: 0; width: 34px; height: 34px; opacity: 0; }
+        #cu-toast { position: absolute; right: 36px; top: 32px; background: #1a1a24;
+                    border: 1px solid rgba(61,220,132,0.4); border-radius: 12px; padding: 14px 20px;
+                    font-size: 23px; color: #3ddc84; opacity: 0; white-space: nowrap; }
+      </style>
+
+      <div id="root" data-composition-id="scr-customer" data-width="1920" data-height="960">
+        <div id="cu-card">
+          <div id="cu-head">
+            <div id="cu-av">А</div>
+            <div>
+              <div id="cu-name">Алексей К.</div>
+              <div id="cu-user">@alexey_k</div>
+              <div id="cu-id" class="mono">ID 5512841</div>
+            </div>
+          </div>
+
+          <div id="cu-tabs">
+            <div class="cu-tab on">Профиль</div>
+            <div class="cu-tab">Ключи<span class="n">2</span></div>
+            <div class="cu-tab">Рефералы<span class="n">4</span></div>
+            <div class="cu-tab">Обращения<span class="n">3</span></div>
+            <div class="cu-tab">Действия</div>
+          </div>
+
+          <div id="cu-rows">
+            <div class="cu-row" id="cu-r1"><span class="cu-k">Тариф</span><span class="cu-v mono">Pro · 500 ГБ</span></div>
+            <div class="cu-row" id="cu-r2">
+              <div id="cu-flash"></div>
+              <span class="cu-k">Активен до</span>
+              <span class="cu-v mono" id="cu-until-wrap">
+                <span id="cu-until-old">14.07.2026</span>
+                <span id="cu-until-new">14.10.2026</span>
+              </span>
+            </div>
+            <div class="cu-row" id="cu-r3"><span class="cu-k">Трафик</span><span class="cu-v mono">318 ГБ</span></div>
+            <div class="cu-row" id="cu-r4"><span class="cu-k">Устройств</span><span class="cu-v mono">3 / 5</span></div>
+            <div class="cu-row" id="cu-r5"><span class="cu-k">Сервер</span><span class="cu-v mono">Frankfurt-01 · DE</span></div>
+          </div>
+
+          <div id="cu-actions">
+            <div class="cu-act" id="cu-act1">Продлить подписку</div>
+            <div class="cu-act" id="cu-act2">Докупить трафик</div>
+            <div class="cu-act" id="cu-act3">Сменить локацию</div>
+            <div class="cu-act" id="cu-act4">Сбросить все устройства</div>
+            <div class="cu-act danger" id="cu-act5">Забанить</div>
+          </div>
+
+          <div id="cu-form-slot">
+            <div id="cu-form">
+              <div id="cu-form-title">Продлить подписку</div>
+              <div id="cu-field">
+                <span id="cu-field-k">Месяцев</span>
+                <div id="cu-field-v" class="mono">3</div>
+              </div>
+              <div id="cu-apply">Применить</div>
+            </div>
+          </div>
+
+          <div id="cu-toast">Продлить подписку · 3 мес.</div>
+
+          <svg id="cu-cursor" viewBox="0 0 24 24" fill="none">
+            <path d="M5 2.5L19 12.2L12.4 13.3L9.9 20.2L5 2.5Z" fill="#f1f1f5" stroke="#0d0d12" stroke-width="1.2" stroke-linejoin="round" />
+          </svg>
+        </div>
+      </div>
+
+      <script>
+        (function () {
+          var tl = gsap.timeline({ paused: true });
+          // scene starts at 13.70 — local t = global t − 13.70
+
+          // ── Act 1: the customer, whole ──────────────────────────────────
+          tl.fromTo("#cu-card", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.32, ease: "power2.out" }, 0.02);
+          tl.fromTo("#cu-head", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.34, ease: "power2.out" }, 0.52);
+          tl.fromTo("#cu-tabs", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.32, ease: "power2.out" }, 1.06);
+          // beat-grid: global 15.28 / 15.81 / 16.34 / 16.86 — profile rows arrive,
+          // then the whole set holds on screen for the rest of the scene.
+          var rows = ["#cu-r1", "#cu-r2", "#cu-r3", "#cu-r4", "#cu-r5"];
+          var at = [1.58, 1.85, 2.11, 2.64, 3.16];
+          for (var r = 0; r < rows.length; r++) {
+            tl.fromTo(rows[r], { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.3, ease: "power2.out" }, at[r]);
+          }
+
+          // ── Act 2: and it changes from right here ───────────────────────
+          // beat-locked: global 17.91s (strong cue 1.00) — the account actions
+          tl.fromTo(".cu-act", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.32, ease: "power3.out", stagger: 0.07 }, 4.21);
+          // the cursor travels to «Продлить подписку»
+          tl.fromTo("#cu-cursor", { opacity: 0, x: 700, y: 330 }, { opacity: 1, duration: 0.22 }, 4.62);
+          tl.to("#cu-cursor", { x: 160, y: 622, duration: 0.55, ease: "power2.inOut" }, 4.66);
+          // beat-grid: global 18.96s — click
+          tl.to("#cu-act1", { scale: 0.95, duration: 0.09, ease: "power2.in" }, 5.26);
+          tl.to("#cu-act1", { scale: 1, duration: 0.12, ease: "power2.out" }, 5.35);
+          tl.to("#cu-act1", { borderColor: "rgba(79,142,247,0.6)", duration: 0.2 }, 5.26);
+          tl.fromTo("#cu-form", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 5.38);
+          tl.to("#cu-cursor", { x: 1262, y: 736, duration: 0.36, ease: "power2.inOut" }, 5.45);
+          // beat-grid: global 19.49s — «Применить»
+          tl.to("#cu-apply", { scale: 0.95, duration: 0.09, ease: "power2.in" }, 5.79);
+          tl.to("#cu-apply", { scale: 1, duration: 0.12, ease: "power2.out" }, 5.88);
+          tl.to("#cu-cursor", { opacity: 0, duration: 0.25 }, 5.95);
+          // beat-grid: global 20.02s — the account actually changes
+          tl.to("#cu-form", { opacity: 0, y: 10, duration: 0.24, ease: "power2.in" }, 6.20);
+          tl.to("#cu-until-old", { opacity: 0, duration: 0.22 }, 6.32);
+          tl.to("#cu-until-new", { opacity: 1, duration: 0.22 }, 6.32);
+          tl.to("#cu-flash", { opacity: 1, duration: 0.12, ease: "power2.out" }, 6.32);
+          tl.to("#cu-flash", { opacity: 0, duration: 0.85, ease: "power2.out" }, 6.44);
+          tl.fromTo("#cu-toast", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 6.42);
+
+          window.__timelines["scr-customer"] = tl;
+        })();
+      </script>
+    </template>
+  </body>
+</html>

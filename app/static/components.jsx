@@ -96,6 +96,34 @@ function SlaTimer({ slaSeconds, slaStartedAt, className = "" }) {
   );
 }
 
+// «16:12 - 25.02.2026» — формат, в котором операторы читают время последнего
+// визита коллеги. Он же используется в ленте действий клиента.
+function fmtDateTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())} - ` +
+         `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}`;
+}
+
+// Присутствие оператора. Раньше здесь стояло «Офлайн», из которого не понять,
+// ждать человека или забирать тикет; теперь видно, когда он был в сети.
+function PresenceLabel({ online, paused, lastSeen, className = "" }) {
+  const state = online
+    ? (paused
+        ? { dot: "bg-[#eab308]", text: "text-[#eab308]", label: "На паузе" }
+        : { dot: "bg-[#22c55e]", text: "text-[#22c55e]", label: "Онлайн" })
+    : { dot: "bg-zinc-600", text: "text-[#6b7280]",
+        label: lastSeen ? `был в сети ${fmtDateTime(lastSeen)}` : "не заходил" };
+  return (
+    <span className={"inline-flex items-center gap-1.5 text-xs min-w-0 " + className}>
+      <span className={"w-1.5 h-1.5 rounded-full shrink-0 " + state.dot}></span>
+      <span className={state.text + " truncate"}>{state.label}</span>
+    </span>
+  );
+}
+
 function PlanBadge({ plan }) {
   const map = {
     Pro: "bg-gradient-to-r from-[#A855F7] to-[#4F8EF7] text-white",
@@ -160,6 +188,13 @@ function Icon({ name, className = "w-4 h-4", strokeWidth = 1.75 }) {
     megaphone: <><path d="M3 11v2" /><path d="M11.5 5.5L19 3v18l-7.5-2.5" /><path d="M11.5 5.5v13" /><path d="M3 11a2 2 0 0 0 0 4v-4z" /></>,
     template:  <><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" /><rect x="9" y="3" width="6" height="4" rx="1" /><path d="M9 12h6M9 16h4" /></>,
     link:      <><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></>,
+    grid:      <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
+    info:      <><circle cx="12" cy="12" r="9" /><path d="M12 16v-4M12 8h.01" /></>,
+    dots:      <><circle cx="12" cy="5" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="12" cy="19" r="1.6" /></>,
+    pause:     <><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></>,
+    logout:    <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></>,
+    lock:      <><rect x="4" y="10" width="16" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></>,
+    handRaise: <><path d="M12 11V4.5a1.5 1.5 0 0 1 3 0V12" /><path d="M9 12V6.5a1.5 1.5 0 0 0-3 0V14a7 7 0 0 0 7 7h1a6 6 0 0 0 6-6v-4.5a1.5 1.5 0 0 0-3 0" /></>,
   };
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -168,11 +203,382 @@ function Icon({ name, className = "w-4 h-4", strokeWidth = 1.75 }) {
   );
 }
 
+// ── Переключатель ВПН-сервисов ───────────────────────────────────────────────
+// Ряд пилюль под шапкой: слева «Все сервисы» с суммарным счётчиком, дальше по
+// пилюле на каждый ВПН — точка фирменного цвета, название и счётчик активных
+// обращений («новые + непрочитанные»). Нулевой счётчик не рисуется.
+// currentServiceId === null означает режим «Все сервисы».
+
+function ServicePill({ service, count, active, onClick, allMode = false }) {
+  return (
+    <button
+      onClick={onClick}
+      title={service?.name}
+      className={
+        "shrink-0 flex items-center gap-2 pl-2.5 pr-2 py-1.5 rounded-lg text-sm font-medium transition border " +
+        (active
+          ? "bg-[#1a1a24] text-[#f1f1f5] border-[#3a3a4a]"
+          : "text-[#9ca3af] hover:text-[#f1f1f5] hover:bg-[#1a1a24]/60 border-transparent")
+      }
+    >
+      {allMode ? (
+        <span className="whitespace-nowrap">Все сервисы</span>
+      ) : (
+        <>
+          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: service.color }}></span>
+          <span className="whitespace-nowrap">{service.emoji ? service.emoji + " " : ""}{service.name}</span>
+        </>
+      )}
+      {count > 0 && (
+        <span className={
+          "min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center " +
+          (allMode ? "bg-[#2a2a3a] text-[#9ca3af]" : "bg-[#ef4444] text-white")
+        }>
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function ServiceSwitcher({ services, currentServiceId, onSelect, activeService, aiPromptPreview }) {
+  // Один сервис — переключать нечего, ряд не занимает место.
+  if (!services || services.length < 2) return null;
+  const total = services.reduce((sum, s) => sum + (s.activeCount || 0), 0);
+  return (
+    <div className="shrink-0 bg-[#13131a] border-b border-[#2a2a3a] relative z-20">
+      <div className="flex items-center gap-1 px-3 py-2 overflow-x-auto scrollbar-thin">
+        <ServicePill allMode count={total} active={currentServiceId === null}
+                     onClick={() => onSelect(null)} />
+        <div className="w-px h-5 bg-[#2a2a3a] mx-1 shrink-0"></div>
+        {services.map((s) => (
+          <ServicePill key={s.id} service={s} count={s.activeCount || 0}
+                       active={currentServiceId === s.id} onClick={() => onSelect(s.id)} />
+        ))}
+      </div>
+      <div className="flex items-center gap-2 px-3 pb-2 overflow-x-auto scrollbar-thin text-[11px]">
+        {activeService ? (
+          <>
+            <ContextChip label="Активен" value={activeService.name} dot={activeService.color} strong />
+            <ContextChip label="База знаний" value={activeService.qdrantCollection} mono />
+            {aiPromptPreview && <ContextChip label="Промпт ИИ" value={aiPromptPreview} />}
+            <ContextChip label="Новых" value={String(activeService.activeCount || 0)} accent />
+          </>
+        ) : (
+          <ContextChip label="Все сервисы" value={`${services.length} шт · ${total} обращений`} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ContextChip({ label, value, dot, mono, strong, accent }) {
+  return (
+    <span className="shrink-0 inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#0d0d12] border border-[#2a2a3a]/70">
+      {dot && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dot }}></span>}
+      <span className="text-[#6b7280]">{label}:</span>
+      <span className={
+        "max-w-[220px] truncate " +
+        (accent ? "text-[#ef4444] font-semibold " : strong ? "text-[#f1f1f5] font-semibold " : "text-[#d1d1d8] ") +
+        (mono ? "font-mono" : "")
+      }>
+        {value}
+      </span>
+    </span>
+  );
+}
+
+// Точка цвета сервиса — метка в списке диалогов в режиме «Все сервисы».
+function ServiceDot({ color, name }) {
+  if (!color) return null;
+  return (
+    <span title={name} className="w-2 h-2 rounded-full shrink-0" style={{ background: color }}></span>
+  );
+}
+
+// ── Мобильная адаптация ──────────────────────────────────────────────────────
+// Раскладка ветвится по трём брейкпоинтам. Одна кодовая база: карточки, пузыри
+// и панели те же, меняется только их размещение.
+
+const VIEWPORT_MOBILE_MAX = 699.98;   // телефон
+const VIEWPORT_TABLET_MAX = 1099.98;  // планшет и узкое окно на десктопе
+
+function readViewport() {
+  if (typeof window === "undefined") return "desktop";
+  const w = window.innerWidth;
+  return w <= VIEWPORT_MOBILE_MAX ? "mobile" : w <= VIEWPORT_TABLET_MAX ? "tablet" : "desktop";
+}
+
+// matchMedia вместо ручного resize: событие приходит только при переходе через
+// границу, а не на каждый пиксель перетаскивания окна.
+function useViewport() {
+  const [mode, setMode] = useState(readViewport);
+  useEffect(() => {
+    const mq = [
+      window.matchMedia(`(max-width: ${VIEWPORT_MOBILE_MAX}px)`),
+      window.matchMedia(`(max-width: ${VIEWPORT_TABLET_MAX}px)`),
+    ];
+    const onChange = () => setMode(readViewport());
+    mq.forEach((m) => m.addEventListener("change", onChange));
+    onChange();
+    return () => mq.forEach((m) => m.removeEventListener("change", onChange));
+  }, []);
+  return {
+    mode,
+    isMobile:  mode === "mobile",
+    isTablet:  mode === "tablet",
+    isDesktop: mode === "desktop",
+    // Карточка клиента и меню действий уезжают в шторку и на планшете тоже.
+    isCompact: mode !== "desktop",
+  };
+}
+
+// Читаемый цвет поверх фирменного цвета сервиса.
+function contrastOn(hex) {
+  if (!hex || hex[0] !== "#" || hex.length < 7) return "#fff";
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? "#0d0d12" : "#fff";
+}
+
+// Подложка модального окна. Закрывает окно только если на ней прошли ОБА
+// события мыши — и нажатие, и отпускание. Прежний вариант ловил `click`, а он
+// всплывает до общего предка: выделение текста в поле, законченное за краем
+// формы, читалось как клик по подложке, и окно закрывалось с набранным.
+// Escape закрывает всегда — раньше это умела только шторка.
+function ModalOverlay({ onClose, zIndex = 50, className = "", children }) {
+  const downOnBackdrop = useRef(false);
+
+  useEffect(() => {
+    if (!onClose) return;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      style={{ zIndex }}
+      onMouseDown={(e) => { downOnBackdrop.current = e.target === e.currentTarget; }}
+      onMouseUp={(e) => {
+        if (downOnBackdrop.current && e.target === e.currentTarget && onClose) onClose();
+        downOnBackdrop.current = false;
+      }}
+      className={"fixed inset-0 backdrop-blur-sm flex items-center justify-center " +
+        (className || "bg-black/60 p-4")}
+    >
+      {children}
+    </div>
+  );
+}
+
+// Шторка снизу: затемнение, «грабер», закрытие по свайпу вниз, тапу вне и Esc.
+// Общая для карточки клиента, выбора сервиса и меню действий над тикетом.
+function BottomSheet({ open, onClose, title, subtitle, children, maxHeight = "88%" }) {
+  const [mounted, setMounted] = useState(open);
+  const [shown, setShown] = useState(false);
+  const [dragY, setDragY] = useState(0);
+  const dragging = useRef(false);
+  const startY = useRef(0);
+
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      setDragY(0);
+      const t = requestAnimationFrame(() => setShown(true));
+      return () => cancelAnimationFrame(t);
+    }
+    setShown(false);
+    // Размонтируем после анимации ухода, иначе шторка исчезает рывком.
+    const t = setTimeout(() => setMounted(false), 280);
+    return () => clearTimeout(t);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === "Escape") onClose && onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!mounted) return null;
+
+  const onTouchStart = (e) => {
+    dragging.current = true;
+    startY.current = e.touches[0].clientY;
+  };
+  const onTouchMove = (e) => {
+    if (!dragging.current) return;
+    setDragY(Math.max(0, e.touches[0].clientY - startY.current));
+  };
+  const onTouchEnd = () => {
+    dragging.current = false;
+    // Больше трети «грабера пути» — считаем жест закрытием.
+    if (dragY > 90) onClose && onClose();
+    setDragY(0);
+  };
+
+  const transform = shown
+    ? (dragY ? `translateY(${dragY}px)` : "none")
+    : "translateY(101%)";
+
+  return (
+    <>
+      <div
+        onClick={onClose}
+        className={"fixed inset-0 z-[60] bg-[#030306]/70 transition-opacity duration-200 " +
+          (shown ? "opacity-100" : "opacity-0 pointer-events-none")}
+      ></div>
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="fixed left-0 right-0 bottom-0 z-[61] bg-[#13131a] border-t border-[#2a2a3a] rounded-t-[22px] flex flex-col shadow-2xl"
+        style={{
+          transform,
+          transition: dragY ? "none" : "transform .28s cubic-bezier(.32,.72,0,1)",
+          maxHeight,
+          paddingBottom: "env(safe-area-inset-bottom)",
+        }}
+      >
+        <div onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
+             className="shrink-0 pt-2 pb-1.5 cursor-grab">
+          <div className="w-9 h-1 rounded-full bg-[#3a3a4a] mx-auto"></div>
+        </div>
+        {(title || subtitle) && (
+          <div className="shrink-0 px-[18px] pt-1.5 pb-3 flex items-baseline justify-between gap-2.5">
+            <h3 className="text-[17px] font-semibold text-[#f1f1f5] truncate">{title}</h3>
+            {subtitle && <span className="text-xs text-[#6b7280] shrink-0">{subtitle}</span>}
+          </div>
+        )}
+        <div className="overflow-y-auto scrollbar-thin pb-4">{children}</div>
+      </div>
+    </>
+  );
+}
+
+// Лента сервисов на мобильном: плитка 44×44 со счётчиком, подпись под ней,
+// первая плитка «Все» пунктиром. Данные те же, что у ServiceSwitcher.
+function ServiceTile({ service, count, active, onClick, allMode = false }) {
+  const color = service?.color || "#4F8EF7";
+  const letter = service ? (service.emoji || (service.name || "?").trim()[0].toUpperCase()) : "";
+  return (
+    <button onClick={onClick} title={allMode ? "Все сервисы" : service?.name}
+            className="shrink-0 w-[62px] flex flex-col items-center gap-1.5 py-0.5">
+      <span
+        className={"relative w-11 h-11 rounded-[14px] flex items-center justify-center font-bold text-[15px] " +
+          (allMode ? "bg-[#202030] border-[1.5px] border-dashed border-[#33334a] text-[#9095a3]" : "")}
+        style={allMode ? undefined : {
+          background: color,
+          color: contrastOn(color),
+          boxShadow: active ? `0 0 0 2px #13131a, 0 0 0 4px ${color}` : undefined,
+        }}
+      >
+        {allMode ? <Icon name="grid" className="w-[18px] h-[18px]" strokeWidth={1.9} /> : letter}
+        {count > 0 && (
+          <span className={"absolute -top-1 -right-1 min-w-[17px] h-[17px] px-1 rounded-full text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-[#13131a] " +
+            (allMode ? "bg-[#6b7280]" : "bg-[#ef4444]")}>
+            {count}
+          </span>
+        )}
+      </span>
+      <span className={"text-[10.5px] max-w-[60px] truncate " +
+        (active ? "text-[#f1f1f5] font-semibold" : "text-[#6b7280]")}>
+        {allMode ? "Все" : service.name}
+      </span>
+    </button>
+  );
+}
+
+function ServiceRail({ services, currentServiceId, onSelect }) {
+  if (!services || services.length < 2) return null;
+  const total = services.reduce((sum, s) => sum + (s.activeCount || 0), 0);
+  return (
+    <div className="shrink-0 flex gap-[3px] px-2 py-2.5 bg-[#13131a] border-b border-[#2a2a3a] overflow-x-auto no-scrollbar">
+      <ServiceTile allMode count={total} active={currentServiceId === null}
+                   onClick={() => onSelect(null)} />
+      {services.map((s) => (
+        <ServiceTile key={s.id} service={s} count={s.activeCount || 0}
+                     active={currentServiceId === s.id} onClick={() => onSelect(s.id)} />
+      ))}
+    </div>
+  );
+}
+
+// Шапка мобильного экрана: слева либо логотип, либо «назад».
+// leading — что показать слева, когда кнопка «назад» не нужна (например,
+// аватар клиента в двухколоночной раскладке планшета).
+function MobileAppBar({ title, subtitle, onBack, right, leading }) {
+  return (
+    <header className="shrink-0 min-h-[52px] flex items-center gap-2.5 px-2.5 py-1.5 bg-[#13131a] border-b border-[#2a2a3a]">
+      {onBack ? (
+        <button onClick={onBack} aria-label="Назад"
+                className="w-11 h-11 shrink-0 rounded-xl flex items-center justify-center text-[#f1f1f5] active:bg-[#1a1a24]">
+          <Icon name="arrowLeft" className="w-[22px] h-[22px]" />
+        </button>
+      ) : leading ? leading : (
+        <div className="w-[30px] h-[30px] shrink-0 rounded-[9px] bg-gradient-to-br from-[#4F8EF7] to-[#A855F7] flex items-center justify-center text-white text-[13px] font-bold">Х</div>
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="text-base font-semibold text-[#f1f1f5] truncate leading-tight">{title}</div>
+        {subtitle && <div className="text-[11px] text-[#6b7280] truncate">{subtitle}</div>}
+      </div>
+      {right}
+    </header>
+  );
+}
+
+// Круглая кнопка шапки с необязательным бейджем.
+function AppBarButton({ icon, label, badge, onClick, tone = "muted" }) {
+  return (
+    <button onClick={onClick} aria-label={label} title={label}
+            className={"relative w-11 h-11 shrink-0 rounded-xl flex items-center justify-center active:bg-[#1a1a24] " +
+              (tone === "accent" ? "text-[#7BA8F9]" : "text-[#9095a3]")}>
+      <Icon name={icon} className="w-5 h-5" />
+      {badge > 0 && (
+        <span className="absolute top-1.5 right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-[#ef4444] text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-[#13131a]">
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// Нижняя навигация. «Статистика» — только у админа, как и в TopBar.
+function MobileNav({ screen, setScreen, badge = 0, isAdmin = false }) {
+  const items = [
+    { id: "dialogs",  label: "Диалоги",    icon: "chat"     },
+    { id: "health",   label: "Состояние",  icon: "server"   },
+    { id: "stats",    label: "Статистика", icon: "chart"    },
+    { id: "settings", label: "Настройки",  icon: "settings" },
+  ].filter((i) => i.id !== "stats" || isAdmin);
+  return (
+    <nav aria-label="Основная навигация"
+         className="shrink-0 flex bg-[#13131a] border-t border-[#2a2a3a] px-1 pt-1.5"
+         style={{ paddingBottom: "calc(10px + env(safe-area-inset-bottom))" }}>
+      {items.map((it) => (
+        <button key={it.id} onClick={() => setScreen(it.id)}
+                className={"flex-1 min-h-[44px] py-1.5 flex flex-col items-center gap-0.5 relative " +
+                  (screen === it.id ? "text-[#4F8EF7]" : "text-[#6b7280]")}>
+          <Icon name={it.icon} className="w-[22px] h-[22px]" />
+          <span className="text-[10.5px] font-medium">{it.label}</span>
+          {it.id === "dialogs" && badge > 0 && (
+            <span className="absolute top-0.5 min-w-[16px] h-4 px-1 rounded-full bg-[#ef4444] text-white text-[9.5px] font-bold flex items-center justify-center ring-2 ring-[#13131a]"
+                  style={{ right: "calc(50% - 22px)" }}>
+              {badge}
+            </span>
+          )}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 function Toast({ msg, type = "ok" }) {
   if (!msg) return null;
   const dot = type === "warn" ? "bg-[#f59e0b]" : "bg-[#22c55e]";
   return (
-    <div className="fixed bottom-6 right-6 z-50 animate-[slideUp_.2s_ease-out]">
+    <div className="hd-toast animate-[slideUp_.2s_ease-out]">
       <div className="bg-[#1a1a24] border border-[#2a2a3a] rounded-lg px-4 py-3 shadow-2xl flex items-center gap-2.5 text-sm text-[#f1f1f5]">
         <span className={"w-1.5 h-1.5 rounded-full " + dot}></span>
         {msg}
@@ -181,4 +587,8 @@ function Toast({ msg, type = "ok" }) {
   );
 }
 
-Object.assign(window, { Avatar, StatusBadge, WaitingLabel, SlaTimer, fmtSla, PlanBadge, SubStatus, Icon, Toast });
+Object.assign(window, { Avatar, StatusBadge, WaitingLabel, SlaTimer, fmtSla, PlanBadge, SubStatus, Icon, Toast,
+                        ModalOverlay, fmtDateTime, PresenceLabel,
+                        ServiceSwitcher, ServicePill, ContextChip, ServiceDot,
+                        useViewport, contrastOn, BottomSheet, ServiceRail, ServiceTile,
+                        MobileAppBar, AppBarButton, MobileNav });

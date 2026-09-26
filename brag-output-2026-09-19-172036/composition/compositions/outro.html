@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ru">
+  <head><meta charset="UTF-8" /></head>
+  <body>
+    <template>
+      <style>
+        #root { position: absolute; inset: 0; background: #0d0d12;
+                display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 30px; }
+        #ot-tile { width: 140px; height: 140px; border-radius: 36px;
+                   background: linear-gradient(135deg, #4f8ef7, #a855f7);
+                   display: flex; align-items: center; justify-content: center;
+                   font-size: 70px; font-weight: 700; color: #fff; opacity: 0; }
+        #ot-name { font-size: 64px; font-weight: 600; letter-spacing: -0.03em; color: #f1f1f5; opacity: 0; }
+        #ot-tag { font-size: 34px; color: #868d99; letter-spacing: -0.01em; opacity: 0; }
+      </style>
+
+      <div id="root" data-composition-id="scr-outro" data-width="1920" data-height="960">
+        <div id="ot-tile">Х</div>
+        <div id="ot-name">VPN Хелпдеск</div>
+        <div id="ot-tag">Одна панель для поддержки VPN</div>
+      </div>
+
+      <script>
+        (function () {
+          var tl = gsap.timeline({ paused: true });
+          // scene starts at 21.07 — beat-grid: global 21.59 / 22.12 / 22.65
+          tl.fromTo("#ot-tile", { opacity: 0, scale: 0.84 }, { opacity: 1, scale: 1, duration: 0.42, ease: "back.out(1.5)" }, 0.52);
+          tl.fromTo("#ot-name", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.38, ease: "power2.out" }, 1.05);
+          tl.fromTo("#ot-tag", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.4, ease: "power2.out" }, 1.58);
+
+          // audio-reactive (subtle): the mark's halo rides the treble
+          var A = window.AUDIO_DATA, tile = document.getElementById("ot-tile");
+          if (A && A.totalFrames) {
+            var mk = function (i) {
+              return function () {
+                tile.style.boxShadow = "0 0 " + (26 + A.treble[i] * 64).toFixed(1) + "px rgba(79,142,247," + (0.18 + A.treble[i] * 0.3).toFixed(3) + ")";
+              };
+            };
+            var base = Math.round(21.07 * A.fps);
+            for (var f = 0; f < 120; f++) {
+              if (base + f < A.totalFrames) { tl.call(mk(base + f), [], f / A.fps); }
+            }
+          }
+          window.__timelines["scr-outro"] = tl;
+        })();
+      </script>
+    </template>
+  </body>
+</html>

@@ -3,6 +3,24 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 
 
+def normalize_public_url(raw: str) -> str:
+    """Публичный адрес со схемой, каким бы его ни записали в .env.
+
+    Адрес без схемы («panel.example.com») браузер оператора считает
+    относительным путём и просит у панели /panel.example.com/api/files/...,
+    а n8n по такой ссылке вложение не скачает. Схему дописываем здесь, чтобы
+    опечатка в одной переменной окружения не ломала показ вложений.
+    """
+    url = (raw or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if "://" in url:
+        return url
+    # Локальный адрес по https не открыть — там обычно нет сертификата.
+    local = url.split(":")[0] in ("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal")
+    return f"{'http' if local else 'https'}://{url}"
+
+
 class Settings(BaseSettings):
     # ── Redis (история/KV для n8n) ────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379"
@@ -12,13 +30,21 @@ class Settings(BaseSettings):
 
     # ── n8n webhook для исходящих событий ────────────────────────────────────
     # Если задан — исходящие события (manager_message / send_to_user /
-    # operator_notify / billing_action) отправляются POST-ом на этот Webhook
+    # operator_notify) отправляются POST-ом на этот Webhook
     # вместо очереди RabbitMQ vpn_bot.outgoing, например:
     #   N8N_WEBHOOK_URL=https://n8n.example.com/webhook/vpn-bot-outgoing
     # RabbitMQ остаётся резервным каналом: если вебхук недоступен после
     # ретраев, сообщение публикуется в очередь как раньше.
     # Запрос несёт заголовок X-API-Key: N8N_API_KEY (если N8N_API_KEY задан).
     N8N_WEBHOOK_URL: str = ""
+
+    # ── Сервис по умолчанию (мультитенантность) ───────────────────────────────
+    # При первом запуске создаётся один ВПН-сервис, и все существующие диалоги,
+    # статьи БЗ, шаблоны и настройки переносятся на него. Slug используется в
+    # ключах Redis, payload-е для n8n и имени коллекции Qdrant у новых сервисов;
+    # у этого, мигрированного, коллекция остаётся прежней — "kb".
+    DEFAULT_SERVICE_SLUG: str = "gruvpn"
+    DEFAULT_SERVICE_NAME: str = "GruVPN"
 
     # ── PostgreSQL ────────────────────────────────────────────────────────────
     POSTGRES_HOST: str = "postgres"
@@ -35,6 +61,7 @@ class Settings(BaseSettings):
     UPLOADS_DIR: str = "app/uploads"
     # Public base URL for absolute file links (scheme+host only, no path suffix)
     # e.g. BASE_URL=https://helpdesk.example.com
+    # A missing scheme is filled in with https:// — see normalize_public_url().
     # Required for n8n → Telegram file forwarding. Leave empty for dev/local use.
     BASE_URL: str = ""
     # Subpath prefix nginx proxies WITHOUT stripping, e.g. /files
@@ -69,15 +96,14 @@ class Settings(BaseSettings):
     CHAT_PROVIDER: str = "openai"
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
-    # Модель для чанкинга базы знаний, классификации сообщений и сводок диалогов.
-    # Пусто = дефолт провайдера (openai: gpt-4o-mini, gemini: gemini-2.0-flash).
-    CHAT_MODEL: str = ""
 
     # ── Qdrant ────────────────────────────────────────────────────────────────
     QDRANT_URL: str = "http://qdrant:6333"
 
-    # ── Billing API ───────────────────────────────────────────────────────────
-    # Leave empty to fall back to StubBillingProvider
+    # ── Прежний биллинг (устарело) ────────────────────────────────────────────
+    # Читается один раз при первом запуске и переносится в пер-сервисную
+    # настройку `customer` (см. app/customer.py и README). Новые установки
+    # задают источник в «Настройки → Клиенты», а не здесь.
     BILLING_API_URL: str = ""
     BILLING_API_TOKEN: str = ""
 
@@ -98,3 +124,12 @@ class Settings(BaseSettings):
         p = Path(self.UPLOADS_DIR)
         p.mkdir(parents=True, exist_ok=True)
         return p
+
+    def public_base_url(self) -> str:
+        """BASE_URL со схемой и без хвостового слеша — для ссылок наружу."""
+        return normalize_public_url(self.BASE_URL)
+
+    def public_file_prefixes(self) -> list[str]:
+        """Адреса, ссылка на которые уже ведёт в наше хранилище."""
+        return [p for p in (self.public_base_url(),
+                            normalize_public_url(self.S3_PUBLIC_URL)) if p]

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+  <head><meta charset="UTF-8" /></head>
+  <body>
+    <template>
+      <style>
+        #root { position: absolute; inset: 0; display: flex; flex-direction: column; }
+        #ch-head { height: 96px; flex: 0 0 96px; border-bottom: 1px solid #2a2a3a; background: #13131a;
+                   display: flex; align-items: center; gap: 20px; padding: 0 60px; }
+        #ch-av { width: 56px; height: 56px; border-radius: 999px; background: linear-gradient(135deg, #2a2a3a, #1a1a24);
+                 border: 1px solid #2a2a3a; display: flex; align-items: center; justify-content: center;
+                 font-size: 22px; font-weight: 600; }
+        #ch-name { font-size: 27px; font-weight: 600; letter-spacing: -0.015em; }
+        #ch-sub { font-size: 20px; color: #868d99; margin-top: 3px; }
+        #ch-body { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center;
+                   gap: 28px; padding: 0 60px; }
+        .ch-row { display: flex; }
+        .ch-col { max-width: 1180px; }
+        .ch-bub { font-size: 33px; line-height: 1.42; letter-spacing: -0.01em; padding: 22px 30px; }
+        .ch-bub.client { background: #1a1a24; border-radius: 26px 26px 26px 10px; }
+        .ch-bub.ai { position: relative; background: rgba(79,142,247,0.12); border: 1px solid rgba(79,142,247,0.25);
+                     border-radius: 26px 26px 26px 10px; }
+        #ch-badge { position: absolute; top: -15px; left: 22px; background: #4f8ef7; color: #0d0d12;
+                    font-size: 16px; font-weight: 700; letter-spacing: 0.02em; padding: 3px 12px; border-radius: 8px; }
+        .ch-meta { font-size: 19px; color: #868d99; margin-top: 10px; margin-left: 12px; }
+        #ch-ai { opacity: 0; }
+      </style>
+
+      <div id="root" data-composition-id="scr-chat" data-width="1920" data-height="960">
+        <div id="ch-head">
+          <div id="ch-av">А</div>
+          <div>
+            <div id="ch-name">Алексей К.</div>
+            <div id="ch-sub">@alexey_k · GruVPN · ИИ отвечает</div>
+          </div>
+        </div>
+        <div id="ch-body">
+          <div class="ch-row" id="ch-client">
+            <div class="ch-col">
+              <div class="ch-bub client">Не работает на мобильном интернете</div>
+              <div class="ch-meta">21:47</div>
+            </div>
+          </div>
+          <div class="ch-row" id="ch-ai">
+            <div class="ch-col">
+              <div class="ch-bub ai"><div id="ch-badge">ИИ</div>Это ограничение мобильной сети — включите WhiteList по инструкции.</div>
+              <div class="ch-meta">21:47</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <script>
+        (function () {
+          var tl = gsap.timeline({ paused: true });
+          tl.fromTo("#ch-head", { opacity: 0, y: -12 }, { opacity: 1, y: 0, duration: 0.28, ease: "power2.out" }, 0.02);
+          tl.fromTo("#ch-client", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.34, ease: "power2.out" }, 0.08);
+          // beat-grid: global 5.80s (scene starts at 5.28) — the AI answers on its own
+          tl.fromTo("#ch-ai", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.42, ease: "power3.out" }, 0.52);
+          tl.fromTo("#ch-badge", { opacity: 0, scale: 0.7 }, { opacity: 1, scale: 1, duration: 0.28, ease: "back.out(2)" }, 0.68);
+          window.__timelines["scr-chat"] = tl;
+        })();
+      </script>
+    </template>
+  </body>
+</html>

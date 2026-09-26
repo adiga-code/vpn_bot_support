@@ -1,0 +1,390 @@
+{
+  "name": "Main Output",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// Константы воркфлоу. Settings → Variables ($vars) — платная фича n8n, в self-hosted community её нет, поэтому значения живут здесь: правятся в одном месте на воркфлоу, ниже на них ссылаются как $('Константы').first().json.TG_TOKEN\nconst C = {\n  TG_TOKEN: 'ТОКЕН_БОТА_ОТ_BOTFATHER',\n  PANEL_URL: 'https://адрес-панели',\n  N8N_API_KEY: 'та же строка, что в .env панели',\n};\n\n// Входящий элемент отдаём дальше как есть: ноды ниже читают свои поля из $json, и подмена содержимого их бы сломала.\nreturn $input.all().map((item) => ({ json: { ...item.json, ...C } }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-288, 640],
+      "id": "c0n5tan7-a1a9-4e51-9c01-000000000003",
+      "name": "Константы",
+      "notesInFlow": true,
+      "notes": "Токен бота, адрес панели и ключ API — вместо платного Settings → Variables."
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "chat_id" },
+            { "name": "message" },
+            { "name": "file_id" },
+            { "name": "file_type" },
+            { "name": "message_id" },
+            { "name": "dialog_id" },
+            { "name": "business_id" }
+          ]
+        }
+      },
+      "id": "058cbed1-adca-4fe9-a42a-85dc504bdcc0",
+      "typeVersion": 1.1,
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [-400, 640]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.file_type }}",
+                    "rightValue": "photo",
+                    "operator": { "type": "string", "operation": "equals" },
+                    "id": "df68ff36-5258-4fdc-a2b7-0091e7170686"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "photo"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "id": "dd17f940-3634-4b51-9acb-d683c2149b5c",
+                    "leftValue": "={{ $json.file_type }}",
+                    "rightValue": "sticker",
+                    "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "sticker"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "id": "22e9adc7-9867-439b-bdda-a3691f1d1c8a",
+                    "leftValue": "={{ $json.file_type }}",
+                    "rightValue": "voice",
+                    "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "voice"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "conditions": [
+                  {
+                    "id": "e59f4e1b-c979-496e-a0d9-d3906e727248",
+                    "leftValue": "",
+                    "rightValue": "",
+                    "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "text"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [-176, 608],
+      "id": "6f9b8124-15b2-404f-a585-c15277015245",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ chat_id: String($json.chat_id), text: $json.message, parse_mode: \"HTML\" }, $json.business_id ? { business_connection_id: $json.business_id } : {})) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [48, 1120],
+      "id": "6da0828c-05c8-4dc9-871a-f2ade27fba71",
+      "name": "Send a text message",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": { "url": "={{ $json.file_id }}", "options": {} },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [48, 256],
+      "id": "e4057963-ed66-48a7-b036-f1e84b54effa",
+      "name": "Скачать фото"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/sendPhoto{{ $('When Executed by Another Workflow').item.json.business_id ? '?business_connection_id=' + $('When Executed by Another Workflow').item.json.business_id : '' }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $('When Executed by Another Workflow').item.json.chat_id }}"
+            },
+            {
+              "name": "caption",
+              "value": "={{ $('When Executed by Another Workflow').item.json.message }}"
+            },
+            { "parameterType": "formBinaryData", "name": "photo", "inputDataFieldName": "data" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [272, 256],
+      "id": "3085ad68-ef51-40f7-b357-a9d9e0995141",
+      "name": "Send a photo message",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/sendSticker",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ chat_id: String($('When Executed by Another Workflow').item.json.chat_id), sticker: $('When Executed by Another Workflow').item.json.file_id }, $('When Executed by Another Workflow').item.json.business_id ? { business_connection_id: $('When Executed by Another Workflow').item.json.business_id } : {})) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [48, 544],
+      "id": "52235d72-577b-4735-b4aa-4168f1a4e264",
+      "name": "Send a sticker",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/getFile?file_id={{ $json.file_id }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [48, 832],
+      "id": "e021fcb5-90c4-483c-b542-dc2d8f395cb5",
+      "name": "Голос: getFile"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot{{ $('Константы').first().json.TG_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [272, 832],
+      "id": "6f5312b4-3384-40da-8d15-b4edfb5d540c",
+      "name": "Голос: скачать"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $('Константы').first().json.TG_TOKEN }}/sendVoice{{ $('When Executed by Another Workflow').item.json.business_id ? '?business_connection_id=' + $('When Executed by Another Workflow').item.json.business_id : '' }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $('When Executed by Another Workflow').item.json.chat_id }}"
+            },
+            { "parameterType": "formBinaryData", "name": "voice", "inputDataFieldName": "data" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [496, 832],
+      "id": "dbd6affb-73a6-4892-a1b1-eea24f51a634",
+      "name": "Голос: sendVoice",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "queue": "vpn_bot.incoming",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify({type: \"delivery_confirmation\", business_id: $('When Executed by Another Workflow').item.json.business_id, message_id: $('When Executed by Another Workflow').item.json.message_id, dialog_id: $('When Executed by Another Workflow').item.json.dialog_id, status: \"delivered\"}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.rabbitmq",
+      "typeVersion": 1.1,
+      "position": [496, 160],
+      "id": "8c1a2b22-619c-4823-bb31-2b352b60dc89",
+      "name": "Фото: доставлено",
+      "credentials": { "rabbitmq": { "id": "j2NDgekuNqvR5Z6Q", "name": "RabbitMQ account" } }
+    },
+    {
+      "parameters": {
+        "queue": "vpn_bot.incoming",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify({type: \"delivery_confirmation\", business_id: $('When Executed by Another Workflow').item.json.business_id, message_id: $('When Executed by Another Workflow').item.json.message_id, dialog_id: $('When Executed by Another Workflow').item.json.dialog_id, status: \"failed\", error: $json.error?.message ?? $json.error ?? \"Ошибка отправки\"}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.rabbitmq",
+      "typeVersion": 1.1,
+      "position": [496, 448],
+      "id": "63dbfe48-2783-4746-b6e2-ffcc9438e38b",
+      "name": "Фото: ошибка",
+      "credentials": { "rabbitmq": { "id": "j2NDgekuNqvR5Z6Q", "name": "RabbitMQ account" } }
+    },
+    {
+      "parameters": {
+        "queue": "vpn_bot.incoming",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify({type: \"delivery_confirmation\", business_id: $('When Executed by Another Workflow').item.json.business_id, message_id: $('When Executed by Another Workflow').item.json.message_id, dialog_id: $('When Executed by Another Workflow').item.json.dialog_id, status: \"delivered\"}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.rabbitmq",
+      "typeVersion": 1.1,
+      "position": [272, 448],
+      "id": "78c90843-fdeb-4137-80ee-e8b5d85a3159",
+      "name": "Стикер: доставлено",
+      "credentials": { "rabbitmq": { "id": "j2NDgekuNqvR5Z6Q", "name": "RabbitMQ account" } }
+    },
+    {
+      "parameters": {
+        "queue": "vpn_bot.incoming",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify({type: \"delivery_confirmation\", business_id: $('When Executed by Another Workflow').item.json.business_id, message_id: $('When Executed by Another Workflow').item.json.message_id, dialog_id: $('When Executed by Another Workflow').item.json.dialog_id, status: \"failed\", error: $json.error?.message ?? $json.error ?? \"Ошибка отправки\"}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.rabbitmq",
+      "typeVersion": 1.1,
+      "position": [272, 640],
+      "id": "7fdd3f7a-8251-45bc-8bfe-e46ec8cc5d5f",
+      "name": "Стикер: ошибка",
+      "credentials": { "rabbitmq": { "id": "j2NDgekuNqvR5Z6Q", "name": "RabbitMQ account" } }
+    },
+    {
+      "parameters": {
+        "queue": "vpn_bot.incoming",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify({type: \"delivery_confirmation\", business_id: $('When Executed by Another Workflow').item.json.business_id, message_id: $('When Executed by Another Workflow').item.json.message_id, dialog_id: $('When Executed by Another Workflow').item.json.dialog_id, status: \"delivered\"}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.rabbitmq",
+      "typeVersion": 1.1,
+      "position": [720, 736],
+      "id": "b1a7c4d2-0001-4000-9000-000000000001",
+      "name": "Голос: доставлено",
+      "credentials": { "rabbitmq": { "id": "j2NDgekuNqvR5Z6Q", "name": "RabbitMQ account" } }
+    },
+    {
+      "parameters": {
+        "queue": "vpn_bot.incoming",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify({type: \"delivery_confirmation\", business_id: $('When Executed by Another Workflow').item.json.business_id, message_id: $('When Executed by Another Workflow').item.json.message_id, dialog_id: $('When Executed by Another Workflow').item.json.dialog_id, status: \"failed\", error: $json.error?.message ?? $json.error ?? \"Ошибка отправки\"}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.rabbitmq",
+      "typeVersion": 1.1,
+      "position": [720, 928],
+      "id": "b1a7c4d2-0002-4000-9000-000000000002",
+      "name": "Голос: ошибка",
+      "credentials": { "rabbitmq": { "id": "j2NDgekuNqvR5Z6Q", "name": "RabbitMQ account" } }
+    },
+    {
+      "parameters": {
+        "queue": "vpn_bot.incoming",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify({type: \"delivery_confirmation\", business_id: $('When Executed by Another Workflow').item.json.business_id, message_id: $('When Executed by Another Workflow').item.json.message_id, dialog_id: $('When Executed by Another Workflow').item.json.dialog_id, status: \"delivered\"}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.rabbitmq",
+      "typeVersion": 1.1,
+      "position": [272, 1024],
+      "id": "a3e93e18-77ca-4480-8d3f-d8ecd522449a",
+      "name": "Текст: доставлено",
+      "credentials": { "rabbitmq": { "id": "j2NDgekuNqvR5Z6Q", "name": "RabbitMQ account" } }
+    },
+    {
+      "parameters": {
+        "queue": "vpn_bot.incoming",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify({type: \"delivery_confirmation\", business_id: $('When Executed by Another Workflow').item.json.business_id, message_id: $('When Executed by Another Workflow').item.json.message_id, dialog_id: $('When Executed by Another Workflow').item.json.dialog_id, status: \"failed\", error: $json.error?.message ?? $json.error ?? \"Ошибка отправки\"}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.rabbitmq",
+      "typeVersion": 1.1,
+      "position": [272, 1216],
+      "id": "9afb0097-2b4e-4590-a40c-3c4ad89d3db7",
+      "name": "Текст: ошибка",
+      "credentials": { "rabbitmq": { "id": "j2NDgekuNqvR5Z6Q", "name": "RabbitMQ account" } }
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [[{ "node": "Константы", "type": "main", "index": 0 }]]
+    },
+    "Константы": { "main": [[{ "node": "Switch", "type": "main", "index": 0 }]] },
+    "Switch": {
+      "main": [
+        [{ "node": "Скачать фото", "type": "main", "index": 0 }],
+        [{ "node": "Send a sticker", "type": "main", "index": 0 }],
+        [{ "node": "Голос: getFile", "type": "main", "index": 0 }],
+        [{ "node": "Send a text message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Скачать фото": {
+      "main": [[{ "node": "Send a photo message", "type": "main", "index": 0 }]]
+    },
+    "Send a photo message": {
+      "main": [
+        [{ "node": "Фото: доставлено", "type": "main", "index": 0 }],
+        [{ "node": "Фото: ошибка", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send a sticker": {
+      "main": [
+        [{ "node": "Стикер: доставлено", "type": "main", "index": 0 }],
+        [{ "node": "Стикер: ошибка", "type": "main", "index": 0 }]
+      ]
+    },
+    "Голос: getFile": {
+      "main": [[{ "node": "Голос: скачать", "type": "main", "index": 0 }]]
+    },
+    "Голос: скачать": {
+      "main": [[{ "node": "Голос: sendVoice", "type": "main", "index": 0 }]]
+    },
+    "Голос: sendVoice": {
+      "main": [
+        [{ "node": "Голос: доставлено", "type": "main", "index": 0 }],
+        [{ "node": "Голос: ошибка", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send a text message": {
+      "main": [
+        [{ "node": "Текст: доставлено", "type": "main", "index": 0 }],
+        [{ "node": "Текст: ошибка", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": { "templateCredsSetupCompleted": true }
+}

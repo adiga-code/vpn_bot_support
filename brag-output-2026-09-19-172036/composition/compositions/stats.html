@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ru">
+  <head><meta charset="UTF-8" /></head>
+  <body>
+    <template>
+      <style>
+        #root { position: absolute; inset: 0; padding: 40px 60px; display: flex; flex-direction: column; gap: 24px; }
+        #st-head { display: flex; align-items: flex-end; justify-content: space-between; }
+        #st-ranges { display: flex; gap: 6px; background: #13131a; border: 1px solid #2a2a3a; border-radius: 14px; padding: 6px; }
+        .st-range { padding: 10px 20px; border-radius: 10px; font-size: 20px; font-weight: 500; color: #868d99; }
+        .st-range.on { background: #4f8ef7; color: #0d0d12; font-weight: 600; }
+        #st-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; }
+        .st-card { background: #13131a; border: 1px solid #2a2a3a; border-radius: 18px; padding: 22px 26px; height: 140px; display: flex; flex-direction: column; justify-content: space-between; opacity: 0; }
+        .st-label { font-size: 21px; color: #868d99; }
+        .st-value { font-size: 52px; font-weight: 600; color: #f1f1f5; letter-spacing: -0.03em; line-height: 1; }
+        #st-chart { background: #13131a; border: 1px solid #2a2a3a; border-radius: 18px; padding: 24px 28px; height: 340px; position: relative; }
+        #st-heat { background: #13131a; border: 1px solid #2a2a3a; border-radius: 18px; padding: 22px 28px; height: 186px; }
+        .st-cardtitle { font-size: 24px; font-weight: 600; color: #f1f1f5; }
+        .st-cardsub { font-size: 19px; color: #868d99; }
+        #st-chart-head, #st-heat-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; }
+        #st-svg-wrap { position: relative; height: 218px; }
+        #st-badge { position: absolute; right: 8px; top: 2px; background: #1a1a24; border: 1px solid rgba(79,142,247,0.3); border-radius: 10px; padding: 8px 14px; opacity: 0; }
+        #st-badge .k { font-size: 16px; color: #868d99; }
+        #st-badge .v { font-size: 21px; font-weight: 600; color: #7ba8f9; }
+        #st-axis { display: flex; justify-content: space-between; margin-top: 10px; font-size: 17px; color: #868d99; }
+        #st-bars { display: grid; grid-template-columns: repeat(24, 1fr); gap: 5px; height: 96px; align-items: end; }
+        .st-bar { border-radius: 4px; background: #4f8ef7; transform-origin: 50% 100%; }
+      </style>
+
+      <div id="root" data-composition-id="scr-stats" data-width="1920" data-height="960">
+        <div id="st-head">
+          <div>
+            <div class="scr-title">Статистика</div>
+            <div class="scr-sub">данные за выбранный период</div>
+          </div>
+          <div id="st-ranges">
+            <div class="st-range">Сегодня</div>
+            <div class="st-range">7 дней</div>
+            <div class="st-range on">14 дней</div>
+            <div class="st-range">30 дней</div>
+          </div>
+        </div>
+
+        <div id="st-cards">
+          <div class="st-card" id="st-c1">
+            <div class="st-label">Обращений сегодня</div>
+            <div class="st-value mono" id="st-count">0</div>
+          </div>
+          <div class="st-card" id="st-c2">
+            <div class="st-label">Первый ответ (команда)</div>
+            <div class="st-value mono">42 сек</div>
+          </div>
+          <div class="st-card" id="st-c3">
+            <div class="st-label">Закрыто диалогов</div>
+            <div class="st-value mono">96</div>
+          </div>
+          <div class="st-card" id="st-c4">
+            <div class="st-label">Ср. ответ (команда)</div>
+            <div class="st-value mono">3 мин 10 сек</div>
+          </div>
+        </div>
+
+        <div id="st-chart">
+          <div id="st-chart-head">
+            <div class="st-cardtitle">Обращения по дням</div>
+            <div class="st-cardsub">последние 14 дней</div>
+          </div>
+          <div id="st-svg-wrap">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="none" style="width:100%;height:100%;overflow:visible">
+              <defs>
+                <linearGradient id="st-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#4F8EF7" stop-opacity="0.35" />
+                  <stop offset="100%" stop-color="#4F8EF7" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+              <line x1="0" x2="100" y1="4"  y2="4"  stroke="#2a2a3a" stroke-width="0.3" stroke-dasharray="0.6 0.6" />
+              <line x1="0" x2="100" y1="28" y2="28" stroke="#2a2a3a" stroke-width="0.3" stroke-dasharray="0.6 0.6" />
+              <line x1="0" x2="100" y1="52" y2="52" stroke="#2a2a3a" stroke-width="0.3" stroke-dasharray="0.6 0.6" />
+              <line x1="0" x2="100" y1="76" y2="76" stroke="#2a2a3a" stroke-width="0.3" stroke-dasharray="0.6 0.6" />
+              <path id="st-area" d="" fill="url(#st-fill)" opacity="0" />
+              <path id="st-line" d="" fill="none" stroke="#4F8EF7" stroke-width="2.4"
+                    vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <div id="st-badge">
+              <div class="k">сегодня</div>
+              <div class="v mono">128 обращ.</div>
+            </div>
+          </div>
+          <div id="st-axis">
+            <span>6 сен</span><span>8 сен</span><span>10 сен</span><span>12 сен</span>
+            <span>14 сен</span><span>16 сен</span><span>19 сен</span>
+          </div>
+        </div>
+
+        <div id="st-heat">
+          <div id="st-heat-head">
+            <div class="st-cardtitle">Обращения по часам</div>
+            <div class="st-cardsub">средние значения за 14 дней · пик в 21:00</div>
+          </div>
+          <div id="st-bars"></div>
+        </div>
+      </div>
+
+      <script>
+        (function () {
+          // 14 days of ticket volume — a fixed authored series, no RNG (determinism).
+          var SERIES = [58, 64, 61, 73, 69, 81, 77, 88, 84, 96, 91, 104, 112, 128];
+          var HOURS = [12, 8, 5, 4, 3, 3, 5, 11, 22, 34, 41, 46, 52, 49, 44, 47, 55, 63, 74, 86, 97, 100, 78, 41];
+
+          var w = 100, h = 100;
+          var max = Math.max.apply(null, SERIES), min = Math.min.apply(null, SERIES);
+          var pts = SERIES.map(function (v, i) {
+            var x = (i / (SERIES.length - 1)) * w;
+            var y = h - ((v - min) / (max - min || 1)) * h * 0.82 - 6;
+            return [x, y];
+          });
+          var d = pts.map(function (p, i) { return (i === 0 ? "M " : "L ") + p[0].toFixed(2) + " " + p[1].toFixed(2); }).join(" ");
+          var line = document.getElementById("st-line");
+          var area = document.getElementById("st-area");
+          line.setAttribute("d", d);
+          area.setAttribute("d", d + " L " + w + " " + h + " L 0 " + h + " Z");
+
+          var bars = document.getElementById("st-bars");
+          var hmax = Math.max.apply(null, HOURS);
+          for (var b = 0; b < HOURS.length; b++) {
+            var el = document.createElement("div");
+            el.className = "st-bar";
+            var t = HOURS[b] / hmax;
+            el.style.height = Math.max(8, t * 100) + "%";
+            el.style.opacity = (0.28 + t * 0.72).toFixed(2);
+            bars.appendChild(el);
+          }
+
+          var tl = gsap.timeline({ paused: true });
+
+          // beat-grid (114.84 BPM): metric cards at 1.60 / 2.12 / 2.65 / 3.18
+          var cards = ["#st-c1", "#st-c2", "#st-c3", "#st-c4"];
+          var at = [1.60, 2.12, 2.65, 3.18];
+          for (var c = 0; c < cards.length; c++) {
+            tl.fromTo("#st-head", { opacity: 0, y: -12 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 0.02);
+          tl.fromTo(cards[c], { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: 0.42, ease: "power3.out" }, at[c]);
+          }
+
+          // the headline metric counts up while its card settles
+          var counter = { n: 0 };
+          var out = document.getElementById("st-count");
+          tl.to(counter, {
+            n: 128, duration: 1.05, ease: "power2.out",
+            onUpdate: function () { out.textContent = String(Math.round(counter.n)); }
+          }, 1.60);
+
+          // beat-locked: 3.70s (strong cue 1.00) — the chart draws itself
+          var len = line.getTotalLength();
+          tl.fromTo(line, { strokeDasharray: len, strokeDashoffset: len },
+                          { strokeDashoffset: 0, duration: 1.0, ease: "power2.inOut" }, 3.70);
+          tl.to(area, { opacity: 1, duration: 0.7, ease: "power2.out" }, 3.95);
+          tl.fromTo("#st-badge", { opacity: 0, y: -8 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 4.55);
+
+          // beat-grid: 4.75s — the hour heatmap rises
+          tl.fromTo(".st-bar", { scaleY: 0 }, { scaleY: 1, duration: 0.42, ease: "power2.out", stagger: 0.012 }, 4.75);
+
+          // audio-reactive (subtle): the chart's fill breathes with the bass
+          var A = window.AUDIO_DATA;
+          if (A && A.totalFrames) {
+            var mk = function (i) {
+              return function () { area.style.filter = "saturate(" + (1 + A.bass[i] * 0.35).toFixed(3) + ")"; };
+            };
+            for (var f = 0; f < 170; f++) { tl.call(mk(f), [], f / A.fps); }
+          }
+
+          window.__timelines["scr-stats"] = tl;
+        })();
+      </script>
+    </template>
+  </body>
+</html>
