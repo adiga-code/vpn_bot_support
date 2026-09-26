@@ -1,6 +1,7 @@
 import asyncio
 import json
 import uuid
+import zlib
 from pathlib import Path
 from typing import Optional
 
@@ -283,6 +284,10 @@ class CustomerBody(BaseModel):
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
+
+# Потолок распакованной пачки импорта истории: защита от gzip-бомбы.
+_IMPORT_BATCH_MAX = 64 * 1024 * 1024
+
 
 def build_app(
     settings: Settings,
@@ -1464,6 +1469,59 @@ def build_app(
         if result["imported"]:
             # Тикетов может быть тысячи — не шлём по событию на каждый, а
             # просим панели перечитать список разом.
+            await ws.broadcast({"type": "dialogs_reload"}, service_id)
+        return result
+
+    # Файл со всеми чатами весит мегабайты, а обратный прокси перед панелью
+    # (nginx по умолчанию — 1 МБ) режет такой запрос с 413. Поэтому основной
+    # путь — импорт выгрузки, которая уже лежит на сервере, а свой файл
+    # браузер шлёт сжатыми пачками чатов.
+
+    @app.post("/api/services/{service_id}/history/import-export")
+    async def history_import_export(service_id: int, operator: dict = Depends(require_auth)):
+        service = await _require_fallback(service_id, operator)
+        path = history_exporter.file_for(service_id) if history_exporter else None
+        if not path:
+            raise HTTPException(404, "Готовой выгрузки нет — сначала выгрузите историю")
+        payload = await asyncio.to_thread(lambda: json.loads(path.read_text(encoding="utf-8")))
+        result = await history_importer.run(service, payload)
+        if result["imported"]:
+            await ws.broadcast({"type": "dialogs_reload"}, service_id)
+        return result
+
+    @app.post("/api/services/{service_id}/history/import-batch")
+    async def history_import_batch(service_id: int, request: Request,
+                                   operator: dict = Depends(require_auth)):
+        """Пачка чатов из файла выгрузки: тело — тот же JSON, что и файл, но с
+        частью `chats`, плюс `final` у последней пачки. Может прийти сжатым
+        gzip (заголовок X-Body-Encoding) — так пачка легко влезает в лимит
+        прокси."""
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await db.get_service(service_id)
+        if not service:
+            raise HTTPException(404, "Сервис не найден")
+        raw = await request.body()
+        encoding = (request.headers.get("x-body-encoding")
+                    or request.headers.get("content-encoding") or "").lower()
+        if "gzip" in encoding:
+            unzip = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            try:
+                raw = unzip.decompress(raw, _IMPORT_BATCH_MAX)
+            except zlib.error:
+                raise HTTPException(400, "Пачка повреждена (gzip)")
+            if unzip.unconsumed_tail:
+                raise HTTPException(413, "Пачка слишком большая")
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(400, "Пачка не читается как JSON")
+        try:
+            result = await history_importer.run(service, payload)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if payload.get("final"):
+            # Панели перечитывают список один раз — после последней пачки.
             await ws.broadcast({"type": "dialogs_reload"}, service_id)
         return result
 

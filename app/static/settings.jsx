@@ -1017,6 +1017,7 @@ function HistoryBlock({ service, showToast }) {
   const [job, setJob] = useStateT({ state: "idle" });
   const [importing, setImporting] = useStateT(false);
   const [result, setResult] = useStateT(null);
+  const [progress, setProgress] = useStateT("");
   const base = `/api/services/${service.id}/history`;
 
   async function poll() {
@@ -1052,6 +1053,47 @@ function HistoryBlock({ service, showToast }) {
     } catch { showToast("Не удалось скачать файл"); }
   }
 
+  // Выгрузка уже лежит на сервере — импортируем её там же, без передачи
+  // файла через браузер и прокси.
+  async function importExport() {
+    setImporting(true);
+    setResult(null);
+    try {
+      const r = await window.apiFetch("POST", base + "/import-export");
+      setResult(r);
+      showToast(`Импортировано чатов: ${r.imported}`);
+    } catch (err) {
+      setResult({ ok: false, error: err?.detail || "Не удалось импортировать" });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  // Свой файл уходит пачками чатов, сжатыми gzip: целиком он весит мегабайты,
+  // а прокси перед панелью (nginx по умолчанию — 1 МБ) режет такое с 413.
+  async function sendBatch(body) {
+    const headers = { "Content-Type": "application/json" };
+    const token = localStorage.getItem("hd_token");
+    if (token) headers["Authorization"] = "Bearer " + token;
+    let payload = body;
+    if (typeof CompressionStream !== "undefined") {
+      const stream = new Blob([body]).stream().pipeThrough(new CompressionStream("gzip"));
+      payload = await new Response(stream).blob();
+      headers["X-Body-Encoding"] = "gzip";
+    }
+    const res = await fetch(base + "/import-batch", { method: "POST", headers, body: payload });
+    if (res.status === 413) {
+      throw new Error("Прокси перед панелью режет запросы по размеру. Поднимите " +
+                      "client_max_body_size в nginx или выгрузите историю здесь же " +
+                      "и нажмите «Импортировать эту выгрузку»");
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `${res.status} ${res.statusText}`);
+    }
+    return res.json();
+  }
+
   async function upload(e) {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -1059,13 +1101,39 @@ function HistoryBlock({ service, showToast }) {
     setImporting(true);
     setResult(null);
     try {
-      const r = await window.apiFetch("UPLOAD", base + "/import", file);
-      setResult(r);
-      showToast(`Импортировано чатов: ${r.imported}`);
+      let data;
+      try { data = JSON.parse(await file.text()); }
+      catch { throw new Error("Файл не читается как JSON"); }
+      if (!data || !Array.isArray(data.chats)) throw new Error("Это не файл выгрузки истории панели");
+
+      const limit = typeof CompressionStream !== "undefined" ? 2_000_000 : 700_000;
+      const enc = new TextEncoder();
+      const batches = [];
+      let cur = [], size = 0;
+      for (const chat of data.chats) {
+        const n = enc.encode(JSON.stringify(chat)).length;
+        if (cur.length && size + n > limit) { batches.push(cur); cur = []; size = 0; }
+        cur.push(chat);
+        size += n;
+      }
+      if (cur.length || !batches.length) batches.push(cur);
+
+      const total = { ok: true, imported: 0, skipped: 0, messages: 0 };
+      for (let i = 0; i < batches.length; i++) {
+        setProgress(`Пачка ${i + 1}/${batches.length}, импортировано чатов: ${total.imported}`);
+        const r = await sendBatch(JSON.stringify({
+          format: data.format, account: data.account, chats: batches[i],
+          final: i === batches.length - 1,
+        }));
+        total.imported += r.imported; total.skipped += r.skipped; total.messages += r.messages;
+      }
+      setResult(total);
+      showToast(`Импортировано чатов: ${total.imported}`);
     } catch (err) {
-      setResult({ ok: false, error: err?.detail || "Не удалось импортировать" });
+      setResult({ ok: false, error: err?.message || "Не удалось импортировать" });
     } finally {
       setImporting(false);
+      setProgress("");
     }
   }
 
@@ -1085,10 +1153,16 @@ function HistoryBlock({ service, showToast }) {
           {job.state === "running" ? "Выгружаем…" : "Выгрузить историю"}
         </button>
         {job.state === "done" && (
-          <button type="button" onClick={download} className={btn}>Скачать JSON</button>
+          <>
+            <button type="button" onClick={importExport} disabled={importing}
+              className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold disabled:opacity-40">
+              {importing ? "Импортируем…" : "Импортировать эту выгрузку"}
+            </button>
+            <button type="button" onClick={download} className={btn}>Скачать JSON</button>
+          </>
         )}
         <label className={btn + " cursor-pointer" + (importing ? " opacity-40 pointer-events-none" : "")}>
-          {importing ? "Загружаем…" : "Загрузить JSON"}
+          {importing ? "Загружаем…" : "Загрузить свой JSON"}
           <input type="file" accept=".json,application/json" onChange={upload} className="hidden" />
         </label>
       </div>
@@ -1099,9 +1173,11 @@ function HistoryBlock({ service, showToast }) {
       )}
       {job.state === "done" && (
         <div className="text-[11px] text-[#22c55e]">
-          Готово: чатов {job.chats_done}, сообщений {job.messages}
+          Готово: чатов {job.chats_done}, сообщений {job.messages}. Нажмите
+          «Импортировать эту выгрузку», чтобы перенести их в панель.
         </div>
       )}
+      {progress && <div className="text-[11px] text-[#d1d1d8]">{progress}</div>}
       {job.state === "error" && (
         <div className="rounded-lg px-3 py-2 text-[11px] border bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]">
           {job.error}
