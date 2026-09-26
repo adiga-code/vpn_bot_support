@@ -49,6 +49,31 @@ class _Timeout(RuntimeError):
                          f"что сервер панели ходит наружу")
 
 
+def _human_error(e: Exception) -> str | None:
+    """Ошибки Telegram при входе — по-русски и с тем, что делать дальше.
+    None — ошибка не из узнаваемых, отдаём как есть."""
+    name = type(e).__name__
+    if name == "PhoneCodeInvalidError":
+        return "Неверный код — проверьте и введите ещё раз"
+    if name == "PasswordHashInvalidError":
+        return "Неверный пароль двухфакторки — введите ещё раз"
+    if name == "PhoneCodeExpiredError":
+        return ("Код истёк. Telegram сразу гасит код входа, если его переслать или "
+                "вставить в любой чат Telegram, — запросите новый и перепишите "
+                "его вручную из уведомления")
+    if name in ("FloodWaitError", "PhoneNumberFloodError"):
+        seconds = getattr(e, "seconds", None)
+        return (f"Telegram просит подождать {seconds} с перед новой попыткой"
+                if seconds else "Слишком много попыток — Telegram просит подождать")
+    if name == "PhoneNumberInvalidError":
+        return "Неверный номер телефона — нужен формат +79990000000"
+    if name in ("ApiIdInvalidError", "ApiIdPublishedFloodError"):
+        return "app_id/app_hash не подходят — проверьте их на my.telegram.org"
+    if name == "PhoneNumberBannedError":
+        return "Этот номер заблокирован в Telegram"
+    return None
+
+
 def _install_hint(error: Exception) -> str:
     return (f"Telethon не установлен ({error}). Добавьте telethon в requirements.txt "
             f"и пересоберите образ.")
@@ -250,8 +275,13 @@ class FallbackSenderService:
         except asyncio.TimeoutError:
             await client.disconnect()
             raise _Timeout("запрос кода")
-        except Exception:
+        except Exception as e:
             await client.disconnect()
+            print(f"[fallback] send-code сервиса {service_id}: "
+                  f"{type(e).__name__}: {redact(e)}")
+            human = _human_error(e)
+            if human:
+                raise RuntimeError(human) from e
             raise
         self._pending[service_id] = {
             "client": client, "phone": phone, "hash": sent.phone_code_hash,
@@ -284,8 +314,18 @@ class FallbackSenderService:
             # Клиента не отпускаем: пароль придёт следующим запросом.
             item["at"] = time.monotonic()
             return {"ok": False, "needs2fa": True}
-        except Exception:
+        except Exception as e:
+            print(f"[fallback] sign-in сервиса {service_id}: "
+                  f"{type(e).__name__}: {redact(e)}")
+            human = _human_error(e)
+            if type(e).__name__ in ("PhoneCodeInvalidError", "PasswordHashInvalidError"):
+                # Опечатка — не повод жечь код: Telegram даёт ввести его ещё
+                # раз, и форма остаётся на том же шаге.
+                item["at"] = time.monotonic()
+                raise RuntimeError(human) from e
             await self._drop_pending(service_id)
+            if human:
+                raise RuntimeError(human) from e
             raise
 
         me = await asyncio.wait_for(client.get_me(), _CONNECT_TIMEOUT)
