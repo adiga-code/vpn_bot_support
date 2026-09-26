@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="ru" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>VPN Хелпдеск — клиент и оператор</title>
+    <script src="assets/gsap.min.js"></script>
+    <script src="assets/audio-data.js"></script>
+    <style>
+      @font-face {
+        font-family: 'Inter';
+        font-style: normal; font-weight: 100 900; font-display: block;
+        src: url(assets/fonts/Inter-var-cyrillic.woff2) format('woff2');
+        unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+      }
+      @font-face {
+        font-family: 'Inter';
+        font-style: normal; font-weight: 100 900; font-display: block;
+        src: url(assets/fonts/Inter-var-latin.woff2) format('woff2');
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+          U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+          U+FEFF, U+FFFD;
+      }
+      @font-face {
+        font-family: 'JetBrains Mono';
+        font-style: normal; font-weight: 100 800; font-display: block;
+        src: url(assets/fonts/JetBrainsMono-var-cyrillic.woff2) format('woff2');
+        unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+      }
+      @font-face {
+        font-family: 'JetBrains Mono';
+        font-style: normal; font-weight: 100 800; font-display: block;
+        src: url(assets/fonts/JetBrainsMono-var-latin.woff2) format('woff2');
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+          U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+          U+FEFF, U+FFFD;
+      }
+
+      :root {
+        --bg: #0d0d12; --surface: #13131a; --raise: #1a1a24; --line: #2a2a3a;
+        --text: #f1f1f5; --muted: #868d99; --accent: #4f8ef7; --accent-lt: #7ba8f9;
+        --violet: #a855f7; --warn: #eab308; --danger: #ef4444;
+        --tg-bg: #f6f8fa; --tg-out: #e7f3ff; --tg-in: #ffffff; --tg-line: #e5e8ea;
+        --tg-accent: #3390ec; --tg-accent-text: #1c5a9e; --tg-ink: #0e1621; --tg-muted: #5b6472;
+      }
+
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: #05050a; }
+      #root {
+        position: relative; width: 100%; height: 100%; overflow: hidden;
+        background: #05050a; color: var(--text);
+        font-family: 'Inter', system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+      /* ── panel-wrap: hosts the sub-composition, wiped in from the right,
+         then resized into the right half for the "both worlds" scene ──── */
+      #panel-wrap {
+        position: absolute; left: 0; top: 0; width: 1920px; height: 1080px;
+        transform-origin: 0 0; clip-path: inset(0 0 0 100%);
+      }
+      #panel-wrap > div { width: 100%; height: 100%; }
+
+      /* ── divider: the boundary line during the border transition ──────── */
+      #divider {
+        position: absolute; left: 466px; top: 0; width: 3px; height: 1080px;
+        background: linear-gradient(to bottom, transparent, #2a2a3a 12%, #2a2a3a 88%, transparent);
+        opacity: 0; z-index: 25; pointer-events: none;
+      }
+
+      /* ── phone: persistent host element, repositioned across the whole
+         video by the main timeline (full-frame → corner → both-worlds) ─── */
+      #phone-wrap {
+        position: absolute; left: 700px; top: 10px; width: 520px; height: 1060px;
+        transform-origin: 0 0; z-index: 30; opacity: 0;
+      }
+      #phone-body {
+        position: relative; width: 100%; height: 100%; border-radius: 46px; overflow: hidden;
+        background: var(--tg-bg); box-shadow: 0 40px 90px rgba(0,0,0,0.55), 0 0 0 2px #1c1c26;
+        display: flex; flex-direction: column; font-family: 'Inter', system-ui, sans-serif;
+      }
+      #ph-head {
+        flex: 0 0 148px; background: #ffffff; border-bottom: 1px solid var(--tg-line);
+        display: flex; align-items: center; gap: 16px; padding: 46px 26px 0 26px;
+      }
+      #ph-back { font-size: 30px; color: var(--tg-accent); font-weight: 300; }
+      #ph-av { width: 46px; height: 46px; border-radius: 999px; background: linear-gradient(135deg,#1c5a9e,#1a4e88);
+               display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 18px; }
+      #ph-name { font-size: 20px; font-weight: 600; color: var(--tg-ink); }
+      #ph-sub { font-size: 14px; color: var(--tg-accent-text); margin-top: 1px; }
+      #ph-body { flex: 1 1 auto; padding: 22px 20px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; background: var(--tg-bg); }
+      .ph-row { display: flex; }
+      .ph-row.out { justify-content: flex-end; }
+      .ph-col { max-width: 78%; }
+      .ph-bub { font-size: 17.5px; line-height: 1.38; padding: 11px 15px; border-radius: 18px; color: var(--tg-ink); }
+      .ph-bub.in { background: var(--tg-in); border: 1px solid var(--tg-line); border-radius: 18px 18px 18px 5px; }
+      .ph-bub.out { background: var(--tg-out); border-radius: 18px 18px 5px 18px; }
+      .ph-meta { font-size: 12px; color: var(--tg-muted); margin-top: 4px; display: flex; align-items: center; gap: 3px; }
+      .ph-meta.out { justify-content: flex-end; margin-right: 3px; }
+      .ph-meta.in { margin-left: 3px; }
+      .ph-tick { font-weight: 700; }
+      .ph-tick.grey { color: var(--tg-muted); }
+      .ph-tick.blue { color: var(--tg-accent-text); }
+      #ph-dots { display: flex; gap: 4px; padding: 13px 16px; background: var(--tg-in); border: 1px solid var(--tg-line);
+                 border-radius: 18px 18px 18px 5px; width: fit-content; }
+      #ph-dots.hidden-init { opacity: 0; }
+      .ph-dot { width: 7px; height: 7px; border-radius: 999px; background: #b9c1c8; }
+
+      /* ── top caption band ────────────────────────────────────────────── */
+      #cap-band { position: absolute; inset: 0; pointer-events: none; z-index: 40; }
+      .cap {
+        position: absolute; top: 196px; left: 50%; transform: translateX(-50%);
+        background: rgba(13,13,18,0.82); border: 1px solid var(--line); border-radius: 999px;
+        padding: 12px 30px; font-size: 22px; font-weight: 500; color: var(--text);
+        letter-spacing: -0.005em; opacity: 0; z-index: 40; white-space: nowrap;
+      }
+
+      /* ── outro card ──────────────────────────────────────────────────── */
+      #outro {
+        position: absolute; inset: 0; background: #05050a; z-index: 50;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px;
+        opacity: 0;
+      }
+      #ot-tile { width: 132px; height: 132px; border-radius: 34px;
+                 background: linear-gradient(135deg, #4f8ef7, #a855f7);
+                 display: flex; align-items: center; justify-content: center;
+                 font-size: 66px; font-weight: 700; color: #fff; opacity: 0; }
+      #ot-name { font-size: 58px; font-weight: 600; letter-spacing: -0.03em; color: var(--text); opacity: 0; }
+      #ot-tag { font-size: 30px; color: var(--muted); letter-spacing: -0.005em; opacity: 0; text-align: center; max-width: 1200px; }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="23.7"
+      data-width="1920"
+      data-height="1080"
+      data-fps="30"
+    >
+      <!-- panel sub-composition: mounts once the border opens (3.18s) -->
+      <div id="panel-wrap">
+        <div id="panel-slot" class="clip"
+             data-composition-id="panel" data-composition-src="compositions/panel.html"
+             data-start="3.18" data-duration="20.52" data-track-index="1"
+             data-width="1920" data-height="1080"></div>
+      </div>
+
+      <div id="divider"></div>
+
+      <!-- phone: persistent host element, always present, repositioned by
+           the main timeline; msg/typing children are its own timed clips -->
+      <div id="phone-wrap">
+        <div id="phone-body">
+          <div id="ph-head">
+            <span id="ph-back">‹</span>
+            <div id="ph-av">Х</div>
+            <div>
+              <div id="ph-name">VPN Support</div>
+              <div id="ph-sub">бот</div>
+            </div>
+          </div>
+          <div id="ph-body">
+            <div class="ph-row" id="ph-typing0">
+              <div id="ph-dots" class="hidden-init"><div class="ph-dot"></div><div class="ph-dot"></div><div class="ph-dot"></div></div>
+            </div>
+
+            <div class="ph-row out" id="ph-msg1" style="opacity:0">
+              <div class="ph-col">
+                <div class="ph-bub out">По Wi-Fi работает, а на мобильном нет</div>
+                <div class="ph-meta out">21:47 <span class="ph-tick grey">✓</span></div>
+              </div>
+            </div>
+
+            <div class="ph-row out" id="ph-typing1" style="opacity:0">
+              <div id="ph-dots1" class="ph-col"><div id="ph-dots1-inner" style="display:flex;gap:4px;padding:13px 16px;background:var(--tg-out);border-radius:18px 18px 5px 18px;width:fit-content;"><div class="ph-dot"></div><div class="ph-dot"></div><div class="ph-dot"></div></div></div>
+            </div>
+
+            <div class="ph-row out" id="ph-msg2" style="opacity:0">
+              <div class="ph-col">
+                <div class="ph-bub out">Уже пробовал. Не помогло.</div>
+                <div class="ph-meta out">21:48 <span class="ph-tick grey">✓</span></div>
+              </div>
+            </div>
+
+            <div class="ph-row" id="ph-typing2" style="opacity:0">
+              <div id="ph-dots2" style="display:flex;gap:4px;padding:13px 16px;background:var(--tg-in);border:1px solid var(--tg-line);border-radius:18px 18px 18px 5px;width:fit-content;"><div class="ph-dot"></div><div class="ph-dot"></div><div class="ph-dot"></div></div>
+            </div>
+
+            <div class="ph-row" id="ph-msg3" style="opacity:0">
+              <div class="ph-col">
+                <div class="ph-bub in">Готово! Включили резервный канал доставки — попробуйте ещё раз.</div>
+                <div class="ph-meta in">21:49 <span class="ph-tick blue" id="ph-tick3">✓✓</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- captions: nested (not root-direct children) so their own
+           top/left/transform positioning isn't overridden by root-level
+           clip auto-layout -->
+      <div id="cap-band">
+        <div class="cap clip" id="cap1" data-start="3.4" data-duration="1.7">Клиент видит Telegram</div>
+        <div class="cap clip" id="cap2" data-start="5.5" data-duration="3.7">ИИ отвечает по базе знаний</div>
+        <div class="cap clip" id="cap3" data-start="9.7" data-duration="4.3">Оператор дожимает шаблоном</div>
+        <div class="cap clip" id="cap4" data-start="14.5" data-duration="4.7">Резервный канал — клиент ничего не заметил</div>
+      </div>
+
+      <!-- outro / punchline -->
+      <div id="outro">
+        <div id="ot-tile">Х</div>
+        <div id="ot-name">VPN Хелпдеск</div>
+        <div id="ot-tag">Клиент видит Telegram. Мы видим всё.</div>
+      </div>
+
+      <!-- ══ audio ══════════════════════════════════════════════════════ -->
+      <audio id="bgm" src="assets/music/happy-beats-business-moves-vol-11-by-ende-dot-app.mp3"
+             data-start="0" data-duration="23.7" data-track-index="10"
+             data-automation='{"version":1,"lanes":[{"target":"volume","points":[{"t":0,"v":0},{"t":0.5,"v":0.26},{"t":3.18,"v":0.28},{"t":5.28,"v":0.31},{"t":19.49,"v":0.28},{"t":21.2,"v":0.2},{"t":22.9,"v":0.08},{"t":23.7,"v":0}]}]}'></audio>
+
+      <!-- client typing ticks, phone side -->
+      <audio id="sfx-key0" src="assets/sfx/keyboard/keypress-003.wav" data-start="0.18" data-duration="0.18" data-track-index="11" data-volume="0.45"></audio>
+      <audio id="sfx-key1" src="assets/sfx/keyboard/keypress-011.wav" data-start="8.7" data-duration="0.18" data-track-index="11" data-volume="0.45"></audio>
+      <!-- border wipe: soft drop as the panel reveals -->
+      <audio id="sfx-wipe" src="assets/sfx/interface/drop_002.ogg" data-start="3.18" data-duration="0.19" data-track-index="12" data-volume="0.55"></audio>
+      <!-- ticket lands -->
+      <audio id="sfx-ticket" src="assets/sfx/interface/drop_001.ogg" data-start="4.03" data-duration="0.11" data-track-index="11" data-volume="0.5"></audio>
+      <!-- AI answers -->
+      <audio id="sfx-ai" src="assets/sfx/interface/bong_001.ogg" data-start="5.98" data-duration="0.123" data-track-index="12" data-volume="0.5"></audio>
+      <!-- operator claims + picks template -->
+      <audio id="sfx-claim" src="assets/sfx/ui/click2.ogg" data-start="9.98" data-duration="0.056" data-track-index="11" data-volume="0.6"></audio>
+      <audio id="sfx-pick" src="assets/sfx/interface/select_008.ogg" data-start="11.5" data-duration="0.047" data-track-index="12" data-volume="0.5"></audio>
+      <!-- delivery fails: dry, no drama -->
+      <audio id="sfx-fail" src="assets/sfx/interface/error_005.ogg" data-start="14.5" data-duration="0.22" data-track-index="11" data-volume="0.45"></audio>
+      <!-- reserve channel + phone reply land together — beat-locked 16.86s -->
+      <audio id="sfx-reserve" src="assets/sfx/interface/bong_001.ogg" data-start="16.86" data-duration="0.123" data-track-index="12" data-volume="0.6"></audio>
+      <!-- key line of a second typing tick right before the reply -->
+      <audio id="sfx-key2" src="assets/sfx/keyboard/keypress-019.wav" data-start="15.0" data-duration="0.18" data-track-index="13" data-volume="0.4"></audio>
+      <!-- logo lands -->
+      <audio id="sfx-logo" src="assets/sfx/impact/impactBell_heavy_000.ogg" data-start="21.2" data-duration="1.48" data-track-index="11" data-volume="0.6"></audio>
+    </div>
+
+    <script>
+      (function () {
+        function build() {
+          var tl = gsap.timeline({ paused: true });
+
+          // ═══ Scene 1 — Клиент (0.00–3.18s) ═════════════════════════════
+          tl.fromTo("#phone-wrap", { opacity: 0, scale: 0.97 }, { opacity: 1, scale: 1, duration: 0.35, ease: "power2.out" }, 0.05);
+          tl.to("#ph-dots", { opacity: 1, duration: 0.14 }, 0.18);
+          tl.to("#ph-dots", { opacity: 0, duration: 0.14 }, 0.58);
+          tl.fromTo("#ph-msg1", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 0.62);
+
+          // ═══ Scene 2 — Граница (3.18–5.28s) ═════════════════════════════
+          // beat-locked: 3.18s — the world switch, the single biggest gesture
+          tl.to("#divider", { opacity: 1, duration: 0.2, ease: "power1.out" }, 3.18);
+          tl.to("#divider", { opacity: 0, duration: 0.35, ease: "power1.in" }, 4.9);
+          tl.to("#panel-wrap", { clipPath: "inset(0 0 0 0%)", duration: 0.85, ease: "power2.inOut" }, 3.18);
+          // phone shrinks into the bottom-left corner window
+          tl.to("#phone-wrap", { x: -660, y: 670, scale: 0.34, duration: 0.85, ease: "power2.inOut" }, 3.18);
+          tl.fromTo("#cap1", { opacity: 0, y: -8 }, { opacity: 1, y: 0, duration: 0.28, ease: "power2.out" }, 3.4);
+          tl.to("#cap1", { opacity: 0, duration: 0.22 }, 4.9);
+
+          // ═══ Scene 3 — Тикет и ИИ (5.28–9.50s) ══════════════════════════
+          tl.fromTo("#cap2", { opacity: 0, y: -8 }, { opacity: 1, y: 0, duration: 0.28, ease: "power2.out" }, 5.5);
+          tl.to("#cap2", { opacity: 0, duration: 0.22 }, 9.0);
+          // client types the second line on the phone (corner window)
+          tl.to("#ph-typing1", { opacity: 1, duration: 0.14 }, 8.6);
+          tl.to("#ph-typing1", { opacity: 0, duration: 0.14 }, 9.15);
+          tl.fromTo("#ph-msg2", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.28, ease: "power2.out" }, 9.2);
+
+          // ═══ Scene 4 — Оператор (9.50–14.22s) ═══════════════════════════
+          tl.fromTo("#cap3", { opacity: 0, y: -8 }, { opacity: 1, y: 0, duration: 0.28, ease: "power2.out" }, 9.7);
+          tl.to("#cap3", { opacity: 0, duration: 0.22 }, 13.7);
+
+          // ═══ Scene 5 — Сбой и резервный канал (14.22–19.49s) ═══════════
+          tl.fromTo("#cap4", { opacity: 0, y: -8 }, { opacity: 1, y: 0, duration: 0.28, ease: "power2.out" }, 14.5);
+          tl.to("#cap4", { opacity: 0, duration: 0.22 }, 18.9);
+          // the client sees only "печатает…" on the bot's side — no hint of failure
+          tl.to("#ph-typing2", { opacity: 1, duration: 0.16 }, 14.4);
+          tl.to("#ph-typing2", { opacity: 0, duration: 0.14 }, 16.8);
+          // beat-locked: 16.86s — the reserve channel resolves it, and the
+          // ordinary blue ✓✓ lands on the phone at the exact same instant
+          tl.fromTo("#ph-msg3", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 16.86);
+          tl.fromTo("#ph-tick3", { opacity: 0 }, { opacity: 1, duration: 0.2 }, 17.05);
+
+          // ═══ Scene 6 — Оба мира (19.49–23.70s) ══════════════════════════
+          tl.to("#phone-wrap", { x: -560, y: 201, scale: 0.62, duration: 0.7, ease: "power2.inOut" }, 19.49);
+          tl.to("#panel-wrap", { x: 713, y: 211, scale: 0.608, duration: 0.7, ease: "power2.inOut" }, 19.49);
+          // fade to the mark
+          tl.to("#outro", { opacity: 1, duration: 0.4, ease: "power2.inOut" }, 20.9);
+          tl.fromTo("#ot-tile", { opacity: 0, scale: 0.84 }, { opacity: 1, scale: 1, duration: 0.42, ease: "back.out(1.5)" }, 21.2);
+          tl.fromTo("#ot-name", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.36, ease: "power2.out" }, 21.75);
+          tl.fromTo("#ot-tag", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.4, ease: "power2.out" }, 22.25);
+
+          // audio-reactive: the mark's halo breathes with treble on landing
+          var A = window.AUDIO_DATA, tile = document.getElementById("ot-tile");
+          if (A && A.totalFrames) {
+            var mk = function (i) {
+              return function () {
+                tile.style.boxShadow = "0 0 " + (24 + A.treble[i] * 58).toFixed(1) + "px rgba(79,142,247," + (0.16 + A.treble[i] * 0.28).toFixed(3) + ")";
+              };
+            };
+            var base = Math.round(21.2 * A.fps);
+            for (var f = 0; f < 90; f++) {
+              if (base + f < A.totalFrames) { tl.call(mk(base + f), [], 21.2 + f / A.fps); }
+            }
+          }
+
+          window.__timelines["main"] = tl;
+          if (window.__hfForceTimelineRebind) window.__hfForceTimelineRebind();
+        }
+
+        if (document.fonts && document.fonts.ready) { document.fonts.ready.then(build); } else { build(); }
+      })();
+    </script>
+  </body>
+</html>
