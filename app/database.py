@@ -212,6 +212,9 @@ class DatabaseManager:
             # Запрос второго оператора на передачу тикета: кто просит и когда.
             ("dialogs", "claim_requested_by",   "TEXT"),
             ("dialogs", "claim_requested_at",   "TIMESTAMPTZ"),
+            # Тикет собран из переписки, которая была до подключения панели:
+            # всегда закрыт, в статистику не идёт (см. HistoryImporter).
+            ("dialogs", "imported",             "BOOLEAN NOT NULL DEFAULT FALSE"),
             # messages
             ("messages", "kind",            "TEXT"),
             ("messages", "text",            "TEXT"),
@@ -945,6 +948,70 @@ class DatabaseManager:
             "UPDATE dialogs SET unread_count=0 WHERE dialog_id=$1", dialog_id
         )
 
+    async def import_closed_dialog(self, service: dict, chat: dict,
+                                   messages: list[dict], operator_name: str = None) -> int:
+        """Переписка из выгрузки Telegram → закрытый тикет «<префикс><chat_id>-0».
+
+        Номер 0 не пересекается с обращениями из панели (resolve_open_dialog
+        нумерует с 1), а флаг `imported` делает повторную загрузку того же
+        файла безопасной: второй раз чат пропускается. Возвращает число
+        импортированных сообщений (0 — чат пропущен).
+
+        `messages` — [{"kind": "user"|"operator", "text": str, "date": datetime}]
+        в хронологическом порядке, непустой.
+
+        Выгрузка Telegram содержит и то, что клиент писал уже при панели, —
+        оно лежит в тикетах панели. Поэтому берутся только сообщения старше
+        первого такого тикета, иначе переписка задвоится.
+        """
+        service_id = service["id"]
+        chat_id = str(chat["chat_id"])
+        dialog_id = f"{service.get('dialog_id_prefix') or ''}{chat_id}-0"
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM dialogs WHERE (service_id=$1 AND chat_id=$2 AND imported) "
+                    "OR dialog_id=$3",
+                    service_id, chat_id, dialog_id,
+                )
+                if exists:
+                    return False
+                panel_since = await conn.fetchval(
+                    "SELECT MIN(created_at) FROM dialogs "
+                    "WHERE service_id=$1 AND chat_id=$2 AND NOT imported",
+                    service_id, chat_id,
+                )
+                if panel_since is not None:
+                    messages = [m for m in messages if m["date"] < panel_since]
+                if not messages:
+                    return False
+                first, last = messages[0]["date"], messages[-1]["date"]
+                await conn.execute(
+                    """INSERT INTO dialogs (
+                           dialog_id, chat_id, service_id, ai_enabled, status, imported,
+                           user_name, user_username, last_message_text, last_message_time,
+                           unread_count, created_at, updated_at, closed_at)
+                       VALUES ($1,$2,$3,FALSE,'closed',TRUE,$4,$5,$6,$7,0,$8,$7,$7)""",
+                    dialog_id, chat_id, service_id,
+                    chat.get("name") or None, chat.get("username") or None,
+                    (messages[-1]["text"] or "")[:500], last, first,
+                )
+                await conn.executemany(
+                    """INSERT INTO messages (dialog_id, kind, text, operator_name,
+                                             delivery_status, created_at)
+                       VALUES ($1,$2,$3,$4,'delivered',$5)""",
+                    [(dialog_id, m["kind"], m["text"],
+                      operator_name if m["kind"] == "operator" else None, m["date"])
+                     for m in messages],
+                )
+                await conn.execute(
+                    """INSERT INTO messages (dialog_id, kind, text, created_at)
+                       VALUES ($1,'system',$2,$3)""",
+                    dialog_id, "Переписка импортирована из истории Telegram",
+                    last,
+                )
+        return len(messages)
+
     # ── Messages ──────────────────────────────────────────────────────────────
 
     async def save_message(
@@ -973,7 +1040,7 @@ class DatabaseManager:
 
     async def get_messages(self, dialog_id: str) -> list[dict]:
         rows = await self.pool.fetch(
-            "SELECT * FROM messages WHERE dialog_id=$1 ORDER BY created_at ASC", dialog_id,
+            "SELECT * FROM messages WHERE dialog_id=$1 ORDER BY created_at ASC, id ASC", dialog_id,
         )
         return [dict(r) for r in rows]
 
@@ -1088,14 +1155,14 @@ class DatabaseManager:
         sids = service_ids or []
         today_total = await self.pool.fetchval(
             "SELECT COUNT(*) FROM dialogs "
-            "WHERE service_id = ANY($1::int[]) AND created_at::date = CURRENT_DATE", sids
+            "WHERE service_id = ANY($1::int[]) AND NOT imported AND created_at::date = CURRENT_DATE", sids
         ) or 0
         today_closed = await self.pool.fetchval(
-            "SELECT COUNT(*) FROM dialogs WHERE service_id = ANY($1::int[]) "
+            "SELECT COUNT(*) FROM dialogs WHERE service_id = ANY($1::int[]) AND NOT imported "
             "AND status='closed' AND updated_at::date = CURRENT_DATE", sids
         ) or 0
         ai_resolved = await self.pool.fetchval(
-            "SELECT COUNT(*) FROM dialogs WHERE service_id = ANY($1::int[]) "
+            "SELECT COUNT(*) FROM dialogs WHERE service_id = ANY($1::int[]) AND NOT imported "
             "AND status='closed' AND operator_called=FALSE AND updated_at::date = CURRENT_DATE", sids
         ) or 0
         ai_pct = int(ai_resolved / today_closed * 100) if today_closed else 0
@@ -1103,7 +1170,7 @@ class DatabaseManager:
         # Daily counts for last N days (missing days filled with 0)
         daily_rows = await self.pool.fetch(
             """SELECT created_at::date as d, COUNT(*) as cnt
-               FROM dialogs WHERE service_id = ANY($2::int[])
+               FROM dialogs WHERE service_id = ANY($2::int[]) AND NOT imported
                  AND created_at >= NOW() - ($1 || ' days')::interval
                GROUP BY d ORDER BY d""",
             str(days), sids,
@@ -1118,7 +1185,7 @@ class DatabaseManager:
         # Hourly distribution over the last 14 days
         hourly_rows = await self.pool.fetch(
             """SELECT EXTRACT(HOUR FROM created_at)::int as h, COUNT(*) as cnt
-               FROM dialogs WHERE service_id = ANY($1::int[])
+               FROM dialogs WHERE service_id = ANY($1::int[]) AND NOT imported
                  AND created_at >= NOW() - '14 days'::interval
                GROUP BY h ORDER BY h""",
             sids,
@@ -1131,7 +1198,7 @@ class DatabaseManager:
         operators = []
         for op in op_rows:
             closed = await self.pool.fetchval(
-                "SELECT COUNT(*) FROM dialogs WHERE service_id = ANY($1::int[]) "
+                "SELECT COUNT(*) FROM dialogs WHERE service_id = ANY($1::int[]) AND NOT imported "
                 "AND status='closed' AND updated_at::date = CURRENT_DATE", sids
             ) or 0
             operators.append({
@@ -1177,7 +1244,7 @@ class DatabaseManager:
                 ORDER BY created_at ASC LIMIT 1
             ) m ON true
             WHERE d.created_at >= NOW() - $1::interval
-              AND d.service_id = ANY($2::int[])
+              AND d.service_id = ANY($2::int[]) AND NOT d.imported
         """, interval, sids)
 
         team_next = await self.pool.fetchval("""
@@ -1192,7 +1259,7 @@ class DatabaseManager:
             ) m_usr ON true
             WHERE m_op.kind = 'operator'
               AND m_op.created_at >= NOW() - $1::interval
-              AND d.service_id = ANY($2::int[])
+              AND d.service_id = ANY($2::int[]) AND NOT d.imported
         """, interval, sids)
 
         team_close = await self.pool.fetchval("""
@@ -1200,7 +1267,7 @@ class DatabaseManager:
             FROM dialogs
             WHERE status = 'closed' AND closed_at IS NOT NULL
               AND created_at >= NOW() - $1::interval
-              AND service_id = ANY($2::int[])
+              AND service_id = ANY($2::int[]) AND NOT imported
         """, interval, sids)
 
         op_first_rows = await self.pool.fetch("""
@@ -1215,7 +1282,7 @@ class DatabaseManager:
             ) m ON true
             WHERE d.created_at >= NOW() - $1::interval
               AND m.operator_name IS NOT NULL
-              AND d.service_id = ANY($2::int[])
+              AND d.service_id = ANY($2::int[]) AND NOT d.imported
             GROUP BY m.operator_name
         """, interval, sids)
 
@@ -1233,7 +1300,7 @@ class DatabaseManager:
             WHERE m_op.kind = 'operator'
               AND m_op.created_at >= NOW() - $1::interval
               AND m_op.operator_name IS NOT NULL
-              AND d.service_id = ANY($2::int[])
+              AND d.service_id = ANY($2::int[]) AND NOT d.imported
             GROUP BY m_op.operator_name
         """, interval, sids)
 
