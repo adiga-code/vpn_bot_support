@@ -525,6 +525,7 @@ function DialogsScreen({
   const [aiEnabled, setAiEnabled] = useStateD(true);
   const [lightboxUrl, setLightboxUrl] = useStateD(null);
   const [pendingFile, setPendingFile] = useStateD(null);
+  const [editorFile,  setEditorFile]  = useStateD(null);  // картинка в редакторе
   const [confirmClose, setConfirmClose] = useStateD(false);
   const [showTemplates, setShowTemplates] = useStateD(false);
   const [showTransfer, setShowTransfer] = useStateD(false);
@@ -736,15 +737,41 @@ function DialogsScreen({
     } catch { showToast("Ошибка передачи"); }
   }
 
-  async function handleFileSelect(e) {
-    const file = e.target.files?.[0];
-    if (!file || !active) return;
-    e.target.value = "";
+  // Картинку перед отправкой можно поправить во встроенном редакторе (кисть,
+  // обрезка, поворот). GIF — мимо: анимация на canvas потерялась бы.
+  const isEditableImage = (file) => file.type.startsWith("image/") && file.type !== "image/gif";
+
+  async function uploadAttachment(file, source = null) {
     try {
       const { url } = await window.apiFetch("UPLOAD", "/api/upload", file);
       const type = file.type.startsWith("image/") ? "photo" : file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") ? "audio" : "document";
-      setPendingFile({ url, type, name: file.name });
+      // source — исходник до правок: «Изменить» открывает редактор заново с него.
+      setPendingFile({ url, type, name: file.name, source });
     } catch { showToast("Ошибка загрузки файла"); }
+  }
+
+  function attachFile(file) {
+    if (!file || !active) return;
+    if (isEditableImage(file)) setEditorFile(file);
+    else uploadAttachment(file);
+  }
+
+  function handleFileSelect(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    attachFile(file);
+  }
+
+  // Ctrl+V скриншота прямо в поле ответа. Текст вставляется как обычно.
+  function onComposerPaste(e) {
+    if (mode !== "message") return;
+    const item = [...(e.clipboardData?.items || [])].find(
+      (it) => it.kind === "file" && it.type.startsWith("image/"));
+    if (!item) return;
+    const file = item.getAsFile();
+    if (!file) return;
+    e.preventDefault();
+    attachFile(file);
   }
 
   async function sendMessage() {
@@ -1261,8 +1288,21 @@ function DialogsScreen({
           <div className="mb-2 flex items-center gap-2 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg px-3 py-2">
             <Icon name="paperclip" className="w-4 h-4 text-[#4F8EF7] shrink-0" />
             <span className="text-xs text-[#f1f1f5] truncate flex-1">{pendingFile.name}</span>
+            {pendingFile.source && (
+              <button onClick={() => setEditorFile(pendingFile.source)}
+                className="text-xs text-[#7BA8F9] hover:underline shrink-0">Изменить</button>
+            )}
             <button onClick={() => setPendingFile(null)} className="text-[#6b7280] hover:text-[#ef4444]"><Icon name="x" className="w-3.5 h-3.5" /></button>
           </div>
+        )}
+        {editorFile && (
+          <PhotoEditor file={editorFile}
+            onCancel={() => setEditorFile(null)}
+            onDone={(edited) => {
+              const source = editorFile;
+              setEditorFile(null);
+              uploadAttachment(edited, source);
+            }} />
         )}
         <div className={"relative bg-[#1a1a24] border rounded-xl focus-within:border-[#4F8EF7]/50 transition " +
           (mode === "comment" ? "border-[#eab308]/30 focus-within:border-[#eab308]/50" : "border-[#2a2a3a]")}>
@@ -1280,6 +1320,7 @@ function DialogsScreen({
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onComposerKeyDown}
+            onPaste={onComposerPaste}
             placeholder={
               active.status === "closed" ? "Диалог закрыт" :
               mode === "comment" ? "Комментарий виден только операторам..." :
