@@ -2,11 +2,12 @@ import asyncio
 import json
 import uuid
 import zlib
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -16,8 +17,8 @@ from app.config import Settings
 from app.database import DatabaseManager, validate_slug as _validate_slug
 from app.dialogs import parse_ai_enabled, resolve_service, user_info_from
 from app.kb import (
-    compose_content, delete_from_qdrant, index_article, make_slug, process_document,
-    split_content, split_number,
+    CATEGORY_LABELS, compose_content, delete_from_qdrant, export_markdown, index_article,
+    make_slug, process_document, split_content, split_number,
 )
 from app.media import internalize
 from app.redact import mask_tail, mask_url, redact
@@ -157,7 +158,7 @@ class TemplateBody(BaseModel):
     title: str
     text: str
 
-_KB_CATEGORIES = ("troubleshooting", "setup", "payment", "faq", "escalation")
+_KB_CATEGORIES = tuple(CATEGORY_LABELS)
 
 class KBArticleBody(BaseModel):
     title: str
@@ -1773,14 +1774,33 @@ def build_app(
     @app.get("/api/kb")
     async def get_kb(service_id: Optional[int] = None, operator: dict = Depends(require_auth)):
         service = await require_service(service_id, operator)
-        articles = await db.get_kb_articles(service["id"])
+        articles = await _kb_articles(service["id"])
+        for a in articles:
+            a["body"] = split_content(a["title"], a["content"])
+        return articles
+
+    async def _kb_articles(sid: int) -> list[dict]:
+        articles = await db.get_kb_articles(sid)
         for a in articles:
             try:
                 a["keywords"] = json.loads(a["keywords"])
             except Exception:
                 a["keywords"] = []
-            a["body"] = split_content(a["title"], a["content"])
         return articles
+
+    # Выгрузка доступна всем, кто видит базу знаний (агентам тоже): она не
+    # открывает ничего сверх того, что и так показывает вкладка.
+    @app.get("/api/kb/export")
+    async def export_kb(service_id: Optional[int] = None,
+                        operator: dict = Depends(require_auth)):
+        service = await require_service(service_id, operator)
+        articles = await _kb_articles(service["id"])
+        text = export_markdown(articles, f"База знаний — {service['name']}")
+        filename = f"kb-{service['slug']}-{datetime.now().strftime('%Y-%m-%d')}.md"
+        return Response(
+            content=text, media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     def _kb_chunk(body: KBArticleBody, article_id: str) -> dict:
         """Проверить форму статьи и собрать чанк в том же виде, что у загрузки."""

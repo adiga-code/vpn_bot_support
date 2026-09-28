@@ -145,6 +145,31 @@ def _extract_keywords(block: str) -> list[str]:
     return [k.strip(" .*_") for k in m.group(1).split(";") if k.strip(" .*_")]
 
 
+CATEGORY_LABELS = {
+    "troubleshooting": "Решение проблем",
+    "setup":           "Настройка",
+    "payment":         "Оплата",
+    "faq":             "FAQ",
+    "escalation":      "Эскалация",
+}
+_CATEGORY_RE = re.compile(r"(?mi)^[ \t]*[*_]*Категория:[*_]*[ \t]*(.+?)[ \t]*$")
+
+
+def _extract_category(block: str) -> str | None:
+    """Необязательная строка «Категория: Настройка» (или код: «setup»).
+    Без неё категория угадывается по заголовку и запросам. Выгрузка базы
+    пишет её в каждую статью — иначе категория, выставленная вручную,
+    при повторной загрузке угадывалась бы заново."""
+    m = _CATEGORY_RE.search(block or "")
+    if not m:
+        return None
+    value = m.group(1).strip(" .*_").lower()
+    for code, label in CATEGORY_LABELS.items():
+        if value in (code, label.lower()):
+            return code
+    return None
+
+
 _NUM_RE = re.compile(r"^(\d+(?:\.\d+)*)[.)]?\s*")
 
 
@@ -209,8 +234,10 @@ def parse_markdown_sections(text: str) -> list[dict] | None:
     seen: set[str] = set()
     chunks: list[dict] = []
 
-    def add(title: str, body: str, keywords: list[str], id_prefix: str, num: str):
-        body = re.sub(r"\n-{3,}\s*$", "", (body or "").strip())
+    def add(title: str, body: str, keywords: list[str], id_prefix: str, num: str,
+            category: str | None = None):
+        body = _CATEGORY_RE.sub("", body or "")
+        body = re.sub(r"\n-{3,}\s*$", "", body.strip())
         if len(body) < 20:
             return
         pieces = _split_by_paragraphs(body)
@@ -224,7 +251,7 @@ def parse_markdown_sections(text: str) -> list[dict] | None:
             chunks.append({
                 "id":       slug,
                 "title":    shown,
-                "category": _guess_category(title, keywords),
+                "category": category or _guess_category(title, keywords),
                 "keywords": keywords,
                 "content":  compose_content(shown, piece),
                 "position": len(chunks),
@@ -239,13 +266,17 @@ def parse_markdown_sections(text: str) -> list[dict] | None:
         subs = sub_parts[1:]
         if not subs:
             # Подпунктов нет — тема остаётся одним чанком целиком.
-            add(parent_title, section_body, parent_kw, parent_prefix, parent_num)
+            add(parent_title, section_body, parent_kw, parent_prefix, parent_num,
+                _extract_category(section_body))
             continue
+        # Категория темы берётся только из текста до первого "### " — иначе
+        # строка «Категория:» подпункта приписалась бы всей теме.
+        parent_cat = _extract_category(sub_parts[0])
         # Текст до первого "### " (определения, строка «Запросы:») — свой
         # чанк, без самой строки «Запросы:».
         intro = re.sub(r"(?mi)^\s*[*_]*Запросы:.*$", "", sub_parts[0]).strip()
         if len(intro) >= 20:
-            add(parent_title, intro, parent_kw, parent_prefix, parent_num)
+            add(parent_title, intro, parent_kw, parent_prefix, parent_num, parent_cat)
         for sp in subs:
             sub_header, _, sub_body = sp.partition("\n")
             sub_title, sub_prefix, sub_num = _num_prefix(sub_header.strip())
@@ -254,8 +285,34 @@ def parse_markdown_sections(text: str) -> list[dict] | None:
             # свой префикс достаточен и без родительского — конфликтов между
             # темами он не даёт.
             add(title, sub_body, parent_kw + _extract_keywords(sub_body),
-                sub_prefix or parent_prefix, sub_num or parent_num)
+                sub_prefix or parent_prefix, sub_num or parent_num,
+                _extract_category(sub_body) or parent_cat)
     return chunks or None
+
+
+def export_markdown(articles: list[dict], heading: str) -> str:
+    """База знаний обратно в markdown — в том формате, который принимает
+    загрузка. Каждая статья — отдельный "## "-раздел с её заголовком (номер
+    в начале), строками «Категория:» и «Запросы:» и текстом. При повторной
+    загрузке такой файл даёт те же статьи: тот же заголовок, id, категорию и
+    запросы — поэтому базу можно скачать, поправить в редакторе и загрузить
+    обратно, не теряя ручных правок из панели.
+
+    Разделы плоские, без "### ": статья, добавленная в панели, не обязана
+    называться «Тема — Сценарий», и вложение исказило бы её заголовок.
+    Строки «Запросы:»/«Категория:», которые уже есть в тексте статьи,
+    заменяются одной актуальной — список запросов в панели мог измениться."""
+    label_re = re.compile(r"(?mi)^[ \t]*[*_]*(?:Запросы|Категория):.*(?:\n|$)")
+    lines = [f"# {heading}", ""]
+    for a in articles:
+        body = label_re.sub("", split_content(a["title"], a["content"])).strip()
+        lines += [f"## {a['title']}", ""]
+        lines.append(f"**Категория:** {CATEGORY_LABELS.get(a['category'], a['category'])}")
+        keywords = a.get("keywords") or []
+        if keywords:
+            lines.append(f"**Запросы:** {'; '.join(keywords)}")
+        lines += ["", body, ""]
+    return "\n".join(lines)
 
 
 async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:

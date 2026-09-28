@@ -2069,6 +2069,7 @@ function KBSection({ service, isAdmin = false }) {
   const [query,      setQuery]      = useStateT("");
   const [catFilter,  setCatFilter]  = useStateT("all");
   const [editor,     setEditor]     = useStateT(null);  // {} — новая статья, объект — правка
+  const [exporting,  setExporting]  = useStateT(false);
   const fileRef = React.createRef();
 
   function reload() {
@@ -2140,6 +2141,29 @@ function KBSection({ service, isAdmin = false }) {
     }
   }
 
+  async function handleExport() {
+    setExporting(true);
+    setUploadErr(null);
+    try {
+      const headers = {};
+      const token = localStorage.getItem("hd_token");
+      if (token) headers["Authorization"] = "Bearer " + token;
+      const res = await fetch("/api/kb/export" + svcQuery(service), { headers });
+      if (!res.ok) throw new Error();
+      const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "")?.[1];
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name || "kb.md";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      setUploadErr("Не удалось выгрузить базу знаний");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function handleReset() {
     if (!window.confirm("Сбросить всю базу знаний? Все статьи и векторы будут удалены без возможности восстановления.")) return;
     setResetting(true);
@@ -2185,10 +2209,18 @@ function KBSection({ service, isAdmin = false }) {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {uploading && <span className="text-xs text-[#6b7280] animate-pulse">Обработка ИИ...</span>}
+          {articles.length > 0 && (
+            <button onClick={handleExport} disabled={exporting}
+              title="Скачать базу одним .md-файлом — в формате, который принимает загрузка"
+              className="px-3 py-2 rounded-lg bg-[#1a1a24] hover:bg-[#22222e] text-[#c4c4d0] text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 border border-[#2a2a3a]">
+              <Icon name="download" className="w-3.5 h-3.5" strokeWidth={2.5} />
+              {exporting ? "Выгрузка..." : "Скачать .md"}
+            </button>
+          )}
           {isAdmin && articles && articles.length > 0 && (
             <button onClick={handleReset} disabled={resetting}
               className="px-3 py-2 rounded-lg bg-[#ef4444]/10 hover:bg-[#ef4444]/20 text-[#ef4444] text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 border border-[#ef4444]/20">
-              <Icon name="trash-2" className="w-3.5 h-3.5" strokeWidth={2.5} />
+              <Icon name="trash" className="w-3.5 h-3.5" strokeWidth={2.5} />
               {resetting ? "Сброс..." : "Сбросить всё"}
             </button>
           )}
