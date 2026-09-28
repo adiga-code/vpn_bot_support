@@ -788,6 +788,9 @@ function FallbackBlock({ service, showToast }) {
   // idle | code | 2fa
   const [step, setStep] = useStateT("idle");
   const [busy, setBusy] = useStateT(false);
+  // Куда Telegram отправил код: приложение, SMS, почта… — без подсказки
+  // «код отправлен» при пустом SMS выглядит поломкой.
+  const [delivery, setDelivery] = useStateT(null);  // {text, canResend}
   const [state, setState] = useStateT({
     enabled: !!service?.fallbackEnabled,
     account: service?.fallbackAccount || "",
@@ -809,10 +812,20 @@ function FallbackBlock({ service, showToast }) {
   async function sendCode() {
     setCheck(null);
     try {
-      await call("/send-code", { app_id: Number(appId), app_hash: appHash.trim(), phone: phone.trim() });
+      const r = await call("/send-code", { app_id: Number(appId), app_hash: appHash.trim(), phone: phone.trim() });
+      setDelivery({ text: r?.delivery || "Код отправлен", canResend: !!r?.canResend });
       setStep("code");
-      showToast("Код отправлен в Телеграм");
+      showToast("Код запрошен");
     } catch (e) { setCheck({ ok: false, error: e?.detail || "Не удалось отправить код" }); }
+  }
+
+  async function resendCode() {
+    setCheck(null);
+    try {
+      const r = await call("/resend-code", {});
+      setDelivery({ text: r?.delivery || "Код отправлен повторно", canResend: !!r?.canResend });
+      showToast("Код отправлен повторно");
+    } catch (e) { setCheck({ ok: false, error: e?.detail || "Не удалось отправить код повторно" }); }
   }
 
   async function signIn() {
@@ -933,6 +946,17 @@ function FallbackBlock({ service, showToast }) {
 
           {step !== "idle" && (
             <div className="space-y-3 border-l-2 border-[#4F8EF7]/40 pl-3">
+              {delivery && step === "code" && (
+                <div className="rounded-lg px-3 py-2 text-[11px] leading-relaxed border bg-[#4F8EF7]/10 border-[#4F8EF7]/25 text-[#9DBDFB]">
+                  {delivery.text}
+                  {delivery.canResend && (
+                    <button type="button" onClick={resendCode} disabled={busy}
+                      className="block mt-1.5 underline hover:text-white disabled:opacity-40">
+                      Не пришёл — отправить другим способом
+                    </button>
+                  )}
+                </div>
+              )}
               <div>
                 <label className="block text-xs text-[#6b7280] mb-1.5">Код из Телеграм</label>
                 <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="12345"
@@ -950,7 +974,7 @@ function FallbackBlock({ service, showToast }) {
                   className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold disabled:opacity-40">
                   {busy ? "Входим…" : "Войти"}
                 </button>
-                <button type="button" onClick={() => { setStep("idle"); setCode(""); setPassword(""); }}
+                <button type="button" onClick={() => { setStep("idle"); setCode(""); setPassword(""); setDelivery(null); }}
                   className="px-3 py-2 rounded-lg text-xs text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">
                   Отмена
                 </button>
@@ -979,6 +1003,193 @@ function FallbackBlock({ service, showToast }) {
           ? "bg-[#22c55e]/10 border-[#22c55e]/25 text-[#22c55e]"
           : "bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]")}>
           {check.ok ? <>Связь есть: <b>{check.account}</b></> : check.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── История до подключения панели ────────────────────────────────────────────
+// Выгрузка всех личных переписок аккаунта поддержки в JSON (той же сессией,
+// что у резервной отправки) и загрузка такого файла: каждый чат становится
+// закрытым тикетом, а новое сообщение клиента откроет свежий тикет.
+function HistoryBlock({ service, showToast }) {
+  const [job, setJob] = useStateT({ state: "idle" });
+  const [importing, setImporting] = useStateT(false);
+  const [result, setResult] = useStateT(null);
+  const [progress, setProgress] = useStateT("");
+  const base = `/api/services/${service.id}/history`;
+
+  async function poll() {
+    try { setJob(await window.apiFetch("GET", base + "/export")); } catch {}
+  }
+
+  useEffectT(() => { poll(); }, [service.id]);
+  useEffectT(() => {
+    if (job.state !== "running") return;
+    const t = setInterval(poll, 2000);
+    return () => clearInterval(t);
+  }, [job.state, service.id]);
+
+  async function startExport() {
+    setResult(null);
+    try { setJob(await window.apiFetch("POST", base + "/export")); }
+    catch (e) { setJob({ state: "error", error: e?.detail || "Не удалось начать выгрузку" }); }
+  }
+
+  async function download() {
+    try {
+      const headers = {};
+      const token = localStorage.getItem("hd_token");
+      if (token) headers["Authorization"] = "Bearer " + token;
+      const res = await fetch(base + "/export/file", { headers });
+      if (!res.ok) throw new Error();
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = job.filename || "history.json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch { showToast("Не удалось скачать файл"); }
+  }
+
+  // Выгрузка уже лежит на сервере — импортируем её там же, без передачи
+  // файла через браузер и прокси.
+  async function importExport() {
+    setImporting(true);
+    setResult(null);
+    try {
+      const r = await window.apiFetch("POST", base + "/import-export");
+      setResult(r);
+      showToast(`Импортировано чатов: ${r.imported}`);
+    } catch (err) {
+      setResult({ ok: false, error: err?.detail || "Не удалось импортировать" });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  // Свой файл уходит пачками чатов, сжатыми gzip: целиком он весит мегабайты,
+  // а прокси перед панелью (nginx по умолчанию — 1 МБ) режет такое с 413.
+  async function sendBatch(body) {
+    const headers = { "Content-Type": "application/json" };
+    const token = localStorage.getItem("hd_token");
+    if (token) headers["Authorization"] = "Bearer " + token;
+    let payload = body;
+    if (typeof CompressionStream !== "undefined") {
+      const stream = new Blob([body]).stream().pipeThrough(new CompressionStream("gzip"));
+      payload = await new Response(stream).blob();
+      headers["X-Body-Encoding"] = "gzip";
+    }
+    const res = await fetch(base + "/import-batch", { method: "POST", headers, body: payload });
+    if (res.status === 413) {
+      throw new Error("Прокси перед панелью режет запросы по размеру. Поднимите " +
+                      "client_max_body_size в nginx или выгрузите историю здесь же " +
+                      "и нажмите «Импортировать эту выгрузку»");
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `${res.status} ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  async function upload(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setImporting(true);
+    setResult(null);
+    try {
+      let data;
+      try { data = JSON.parse(await file.text()); }
+      catch { throw new Error("Файл не читается как JSON"); }
+      if (!data || !Array.isArray(data.chats)) throw new Error("Это не файл выгрузки истории панели");
+
+      const limit = typeof CompressionStream !== "undefined" ? 2_000_000 : 700_000;
+      const enc = new TextEncoder();
+      const batches = [];
+      let cur = [], size = 0;
+      for (const chat of data.chats) {
+        const n = enc.encode(JSON.stringify(chat)).length;
+        if (cur.length && size + n > limit) { batches.push(cur); cur = []; size = 0; }
+        cur.push(chat);
+        size += n;
+      }
+      if (cur.length || !batches.length) batches.push(cur);
+
+      const total = { ok: true, imported: 0, skipped: 0, messages: 0 };
+      for (let i = 0; i < batches.length; i++) {
+        setProgress(`Пачка ${i + 1}/${batches.length}, импортировано чатов: ${total.imported}`);
+        const r = await sendBatch(JSON.stringify({
+          format: data.format, account: data.account, chats: batches[i],
+          final: i === batches.length - 1,
+        }));
+        total.imported += r.imported; total.skipped += r.skipped; total.messages += r.messages;
+      }
+      setResult(total);
+      showToast(`Импортировано чатов: ${total.imported}`);
+    } catch (err) {
+      setResult({ ok: false, error: err?.message || "Не удалось импортировать" });
+    } finally {
+      setImporting(false);
+      setProgress("");
+    }
+  }
+
+  const btn = "px-3 py-2 rounded-lg border border-[#2a2a3a] text-xs text-[#d1d1d8] hover:bg-[#1a1a24] disabled:opacity-40";
+
+  return (
+    <div className="space-y-3">
+      <div className="text-[10px] text-[#6b7280] leading-relaxed">
+        Переписки, которые были до подключения панели. Выгрузка берёт все личные
+        чаты аккаунта (без ботов и групп, медиа — пометкой), загрузка кладёт каждый
+        чат в <b>закрытый</b> тикет. Повторная загрузка уже импортированные чаты пропускает.
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={startExport}
+          disabled={job.state === "running"}
+          className={btn}>
+          {job.state === "running" ? "Выгружаем…" : "Выгрузить историю"}
+        </button>
+        {job.state === "done" && (
+          <>
+            <button type="button" onClick={importExport} disabled={importing}
+              className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold disabled:opacity-40">
+              {importing ? "Импортируем…" : "Импортировать эту выгрузку"}
+            </button>
+            <button type="button" onClick={download} className={btn}>Скачать JSON</button>
+          </>
+        )}
+        <label className={btn + " cursor-pointer" + (importing ? " opacity-40 pointer-events-none" : "")}>
+          {importing ? "Загружаем…" : "Загрузить свой JSON"}
+          <input type="file" accept=".json,application/json" onChange={upload} className="hidden" />
+        </label>
+      </div>
+      {job.state === "running" && (
+        <div className="text-[11px] text-[#d1d1d8]">
+          Чатов {job.chats_done}/{job.chats_total || "…"}, сообщений {job.messages}
+        </div>
+      )}
+      {job.state === "done" && (
+        <div className="text-[11px] text-[#22c55e]">
+          Готово: чатов {job.chats_done}, сообщений {job.messages}. Нажмите
+          «Импортировать эту выгрузку», чтобы перенести их в панель.
+        </div>
+      )}
+      {progress && <div className="text-[11px] text-[#d1d1d8]">{progress}</div>}
+      {job.state === "error" && (
+        <div className="rounded-lg px-3 py-2 text-[11px] border bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]">
+          {job.error}
+        </div>
+      )}
+      {result && (
+        <div className={"rounded-lg px-3 py-2 text-[11px] border " + (result.ok
+          ? "bg-[#22c55e]/10 border-[#22c55e]/25 text-[#22c55e]"
+          : "bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444]")}>
+          {result.ok
+            ? <>Импортировано чатов: <b>{result.imported}</b> ({result.messages} сообщений), пропущено: {result.skipped}</>
+            : result.error}
         </div>
       )}
     </div>
@@ -1207,6 +1418,12 @@ function ServiceModal({ editing, onSave, onClose, showToast }) {
                   и покажет результат в переписке.
                 </div>
                 <FallbackBlock service={editing} showToast={showToast} />
+                {editing && (
+                  <div className="mt-4 pt-3 border-t border-[#2a2a3a]">
+                    <div className="text-xs text-[#d1d1d8] mb-2">История до подключения панели</div>
+                    <HistoryBlock service={editing} showToast={showToast} />
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -12,6 +12,7 @@ from app.config import Settings
 from app.customer import CustomerService
 from app.database import DatabaseManager
 from app.fallback_sender import FallbackSenderService
+from app.history_export import HistoryExporter
 from app.health import ServiceHealthMonitor, load_plugins
 from app.n8n_client import N8NClient
 from app.rabbitmq_consumer import RabbitMQConsumer
@@ -133,6 +134,8 @@ async def main():
     # Резервная отправка: подхватывает ответ оператора, когда n8n не смог
     # доставить его в business-чат Telegram.
     fallback = FallbackSenderService(db)
+    # Выгрузка старых переписок той же сессией — для импорта в панель.
+    history_exporter = HistoryExporter(fallback, settings.uploads_path() / "exports")
 
     chat_client = make_chat_client(settings.CHAT_PROVIDER, settings.OPENAI_API_KEY, settings.GEMINI_API_KEY)
     routing = RoutingEngine(db, ws_manager, n8n_client)
@@ -140,7 +143,7 @@ async def main():
                                 fallback=fallback, storage=make_storage(settings),
                                 settings=settings)
     app = build_app(settings, db, ws_manager, n8n_client, routing, customers, health_monitor,
-                    fallback=fallback)
+                    fallback=fallback, history_exporter=history_exporter)
 
     # ── HTTP server ───────────────────────────────────────────────────────────
     config = uvicorn.Config(
@@ -161,6 +164,7 @@ async def main():
             routing.sweep_forever(),
         )
     finally:
+        await history_exporter.close()
         await fallback.close()
         await rmq.close()
         await redis.aclose()

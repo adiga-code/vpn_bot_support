@@ -1,6 +1,7 @@
 import asyncio
 import json
 import uuid
+import zlib
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +40,7 @@ from app.customer import (
     build_customer_provider,
     known_customer_providers,
 )
+from app.history_import import HistoryImporter
 from app.health import MONITORING_DEFAULTS, ServiceHealthMonitor, known_providers
 from app.providers.remnawave import check_connection as _remnawave_check_connection
 from app.ws_manager import WebSocketManager
@@ -294,6 +296,10 @@ class CustomerBody(BaseModel):
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
+# Потолок распакованной пачки импорта истории: защита от gzip-бомбы.
+_IMPORT_BATCH_MAX = 64 * 1024 * 1024
+
+
 def build_app(
     settings: Settings,
     db: DatabaseManager,
@@ -303,6 +309,7 @@ def build_app(
     customers: CustomerService,
     health: ServiceHealthMonitor,
     fallback=None,
+    history_exporter=None,
 ) -> FastAPI:
     app = FastAPI(title="VPN Helpdesk")
     uploads = settings.uploads_path()
@@ -1360,7 +1367,15 @@ def build_app(
             return await fallback.send_code(service_id, body.app_id, body.app_hash,
                                             body.phone.strip())
         except Exception as e:
-            raise HTTPException(400, redact(e)[:200])
+            raise HTTPException(400, redact(e)[:300])
+
+    @app.post("/api/services/{service_id}/fallback/resend-code")
+    async def fallback_resend_code(service_id: int, operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        try:
+            return await fallback.resend_code(service_id)
+        except Exception as e:
+            raise HTTPException(400, redact(e)[:300])
 
     @app.post("/api/services/{service_id}/fallback/sign-in")
     async def fallback_sign_in(service_id: int, body: FallbackCodeBody,
@@ -1369,7 +1384,7 @@ def build_app(
         try:
             return await fallback.sign_in(service_id, body.code.strip(), body.password)
         except Exception as e:
-            raise HTTPException(400, redact(e)[:200])
+            raise HTTPException(400, redact(e)[:300])
 
     @app.post("/api/services/{service_id}/fallback/session")
     async def fallback_set_session(service_id: int, body: FallbackSessionBody,
@@ -1411,6 +1426,115 @@ def build_app(
         await _require_fallback(service_id, operator)
         await fallback.save(service_id, {"enabled": False, "config": {}})
         return {"ok": True}
+
+    # ── История до подключения панели ─────────────────────────────────────────
+    # Выгрузка старых личных переписок аккаунта поддержки (той же сессией, что
+    # у резервной отправки) в JSON и загрузка такого файла обратно: каждый чат
+    # становится закрытым тикетом. Подробности — history_export/history_import.
+
+    history_importer = HistoryImporter(db)
+
+    @app.post("/api/services/{service_id}/history/export")
+    async def history_export_start(service_id: int, operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        if not history_exporter:
+            raise HTTPException(503, "Выгрузка истории не собрана в этой установке")
+        try:
+            return await history_exporter.start(service_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+
+    @app.get("/api/services/{service_id}/history/export")
+    async def history_export_status(service_id: int, operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        if not history_exporter:
+            return {"state": "idle"}
+        return history_exporter.status(service_id)
+
+    @app.get("/api/services/{service_id}/history/export/file")
+    async def history_export_file(service_id: int, operator: dict = Depends(require_auth)):
+        await _require_fallback(service_id, operator)
+        path = history_exporter.file_for(service_id) if history_exporter else None
+        if not path:
+            raise HTTPException(404, "Готовой выгрузки нет")
+        return FileResponse(path, media_type="application/json", filename=path.name)
+
+    @app.post("/api/services/{service_id}/history/import")
+    async def history_import(service_id: int, file: UploadFile = File(...),
+                             operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await db.get_service(service_id)
+        if not service:
+            raise HTTPException(404, "Сервис не найден")
+        try:
+            payload = json.loads(await file.read())
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(400, "Файл не читается как JSON")
+        try:
+            result = await history_importer.run(service, payload)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if result["imported"]:
+            # Тикетов может быть тысячи — не шлём по событию на каждый, а
+            # просим панели перечитать список разом.
+            await ws.broadcast({"type": "dialogs_reload"}, service_id)
+        return result
+
+    # Файл со всеми чатами весит мегабайты, а обратный прокси перед панелью
+    # (nginx по умолчанию — 1 МБ) режет такой запрос с 413. Поэтому основной
+    # путь — импорт выгрузки, которая уже лежит на сервере, а свой файл
+    # браузер шлёт сжатыми пачками чатов.
+
+    @app.post("/api/services/{service_id}/history/import-export")
+    async def history_import_export(service_id: int, operator: dict = Depends(require_auth)):
+        service = await _require_fallback(service_id, operator)
+        path = history_exporter.file_for(service_id) if history_exporter else None
+        if not path:
+            raise HTTPException(404, "Готовой выгрузки нет — сначала выгрузите историю")
+        payload = await asyncio.to_thread(lambda: json.loads(path.read_text(encoding="utf-8")))
+        result = await history_importer.run(service, payload)
+        if result["imported"]:
+            await ws.broadcast({"type": "dialogs_reload"}, service_id)
+        return result
+
+    @app.post("/api/services/{service_id}/history/import-batch")
+    async def history_import_batch(service_id: int, request: Request,
+                                   operator: dict = Depends(require_auth)):
+        """Пачка чатов из файла выгрузки: тело — тот же JSON, что и файл, но с
+        частью `chats`, плюс `final` у последней пачки. Может прийти сжатым
+        gzip (заголовок X-Body-Encoding) — так пачка легко влезает в лимит
+        прокси."""
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await db.get_service(service_id)
+        if not service:
+            raise HTTPException(404, "Сервис не найден")
+        raw = await request.body()
+        encoding = (request.headers.get("x-body-encoding")
+                    or request.headers.get("content-encoding") or "").lower()
+        if "gzip" in encoding:
+            unzip = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            try:
+                raw = unzip.decompress(raw, _IMPORT_BATCH_MAX)
+            except zlib.error:
+                raise HTTPException(400, "Пачка повреждена (gzip)")
+            if unzip.unconsumed_tail:
+                raise HTTPException(413, "Пачка слишком большая")
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(400, "Пачка не читается как JSON")
+        try:
+            result = await history_importer.run(service, payload)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if payload.get("final"):
+            # Панели перечитывают список один раз — после последней пачки.
+            await ws.broadcast({"type": "dialogs_reload"}, service_id)
+        return result
 
     # ── Папки тикетов ─────────────────────────────────────────────────────────
     # Папка — второй срез списка поверх статусов: тикет остаётся в «В работе»
