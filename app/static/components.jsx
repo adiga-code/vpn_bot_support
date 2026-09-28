@@ -273,6 +273,34 @@ function ServiceSwitcher({ services, currentServiceId, onSelect, activeService, 
   );
 }
 
+// Плашка «Временная проблема» над списком диалогов — пока тумблер включён.
+// Прежде всего напоминание выключить его, когда сбой починят: иначе ИИ так и
+// будет рассказывать клиентам о давно решённой проблеме.
+function IncidentBanner({ services, currentServiceId, onEdit }) {
+  const active = (services || []).filter((s) => s.incident?.enabled &&
+    (currentServiceId === null || s.id === currentServiceId));
+  if (!active.length) return null;
+  const multi = (services || []).length > 1;
+  return (
+    <div className="shrink-0 bg-[#f59e0b]/10 border-b border-[#f59e0b]/30">
+      {active.map((s) => (
+        <div key={s.id} className="flex items-center gap-2.5 px-3 sm:px-4 py-2 text-xs">
+          <span className="text-[#f59e0b] shrink-0"><Icon name="info" className="w-4 h-4" strokeWidth={2} /></span>
+          <div className="min-w-0 flex-1 text-[#fcd34d]">
+            <span className="font-semibold">Временная проблема{multi ? ` · ${s.name}` : ""}:</span>{" "}
+            <span className="text-[#fde68a]/90 break-words">{s.incident.text}</span>
+            <span className="text-[#f59e0b]/80"> — ИИ сообщает об этом клиентам</span>
+          </div>
+          <button onClick={() => onEdit(s.id)}
+            className="shrink-0 px-2.5 py-1 rounded-md border border-[#f59e0b]/40 text-[#fcd34d] hover:bg-[#f59e0b]/15 font-medium">
+            Изменить
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ContextChip({ label, value, dot, mono, strong, accent }) {
   return (
     <span className="shrink-0 inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#0d0d12] border border-[#2a2a3a]/70">

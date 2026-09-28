@@ -35,6 +35,11 @@ AUTOMATION_DEFAULTS = {
     "close_message_text": "Спасибо за обращение! Если появятся вопросы — просто напишите нам.",
     "max_tickets_per_operator": 10,
     "offline_grace_seconds": 60,
+    # Автозакрытие тикетов, которые так и остались на ИИ: N минут без новых
+    # сообщений (ни от клиента, ни от ИИ) — и тикет закрывается сам, с тем же
+    # сообщением при закрытии и запросом оценки, что и ручное закрытие.
+    "auto_close_ai_enabled": False,
+    "auto_close_ai_minutes": 30,
     # Промпт гейта-маршрутизатора: возвращает РОВНО HANDOFF или CONTINUE. n8n
     # публикует его отдельным полем vpn_bot:ai_settings.handoff_prompt (см.
     # web_server._sync_ai_settings_to_redis), к промпту ответчика не
@@ -77,6 +82,9 @@ class RoutingEngine:
         self.db = db
         self.ws = ws
         self.n8n = n8n
+        # Хук после закрытия тикета (саммари диалога — ему нужен чат-клиент,
+        # который живёт в web_server). Синхронная функция от dialog_id.
+        self.on_closed = None
 
     # ── Internals ─────────────────────────────────────────────────────────────
 
@@ -305,12 +313,58 @@ class RoutingEngine:
         await self.drain()
         return updated
 
-    async def close(self, dialog_id: str, chat_id: str, closed_by: str) -> dict:
+    async def close(self, dialog_id: str, chat_id: str, closed_by: str,
+                    sys_text: str = "Диалог закрыт оператором") -> dict:
         await self.db.move_to_closed(dialog_id)
-        updated = await self._emit(dialog_id, "Диалог закрыт оператором")
+        updated = await self._emit(dialog_id, sys_text)
         await self.n8n.notify_dialog_closed(dialog_id, chat_id, closed_by, updated)
         await self.drain()  # the freed slot may serve the queue
         return updated
+
+    async def after_close(self, dialog: dict):
+        """Всё, что следует за закрытием тикета, — одинаково для ручного и
+        автоматического: саммари, «сообщение при закрытии» и запрос оценки
+        (если они включены во вкладке «Автоматизация» сервиса)."""
+        if self.on_closed:
+            self.on_closed(dialog["dialog_id"])
+        automation = await self._automation(dialog["service_id"])
+        if automation.get("close_message_enabled") and automation.get("close_message_text"):
+            asyncio.create_task(
+                self.n8n.send_to_user(dialog["chat_id"], automation["close_message_text"],
+                                      service=dialog)
+            )
+        if automation.get("rating_enabled"):
+            rating_text = automation.get("rating_message_text") or "Оцените качество поддержки:"
+            asyncio.create_task(
+                self.n8n.send_rating_request(dialog["chat_id"], dialog["dialog_id"],
+                                             rating_text, service=dialog)
+            )
+
+    async def auto_close_idle_ai(self):
+        """Закрыть тикеты, которые остались на ИИ (к оператору не передавались)
+        и молчат дольше заданного в «Автоматизации» сервиса. Отсчёт — от
+        последнего сообщения любой стороны: пока клиент и бот переписываются,
+        тикет не закрывается. Если клиент напишет после закрытия, заведётся
+        новый тикет — закрытый не переоткрывается."""
+        for service in await self.db.get_services():
+            automation = await self._automation(service["id"])
+            if not automation.get("auto_close_ai_enabled"):
+                continue
+            minutes = self._cfg_int(automation, "auto_close_ai_minutes")
+            if minutes < 1:
+                continue
+            for d in await self.db.get_idle_ai_dialogs(service["id"], minutes):
+                # Перечитываем: между выборкой и закрытием могло прийти свежее
+                # сообщение или тикет могли передать оператору.
+                fresh = await self.db.get_dialog(d["dialog_id"])
+                if not fresh or fresh["status"] != "ai":
+                    continue
+                await self.close(
+                    fresh["dialog_id"], fresh["chat_id"], "Автозакрытие",
+                    sys_text=f"Диалог закрыт автоматически: {minutes} мин без новых сообщений",
+                )
+                await self.after_close(fresh)
+                print(f"[routing.auto_close] {fresh['dialog_id']} closed after {minutes} min idle")
 
     async def reopen_closed(self, dialog_id: str, chat_id: str) -> dict:
         """«Открыть снова»: back to the queue, unassigned; AI stays off."""
@@ -425,8 +479,19 @@ class RoutingEngine:
         returns and drains the queue even if an event-driven drain was lost
         (e.g. across a restart). All state lives in Postgres."""
         print("Routing sweeper started")
+        tick = 0
         while True:
             await asyncio.sleep(interval)
+            tick += 1
+            # Автозакрытие считается в минутах — проверять чаще раза в минуту
+            # незачем.
+            if tick * interval % 60 < interval:
+                try:
+                    await self.auto_close_idle_ai()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    print(f"[routing.sweep] auto-close error: {e}")
             try:
                 # Грейс свой у каждого сервиса — обходим сервисы, а не операторов.
                 for service in await self.db.get_services():

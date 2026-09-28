@@ -1663,6 +1663,17 @@ class DatabaseManager:
             dialog_id,
         )
 
+    async def get_idle_ai_dialogs(self, service_id: int, minutes: int) -> list[dict]:
+        """Тикеты на ИИ, где дольше `minutes` минут не было сообщений ни от
+        клиента, ни от ИИ (last_message_time обновляют обе стороны)."""
+        rows = await self.pool.fetch(
+            "SELECT * FROM dialogs WHERE service_id=$1 AND status='ai' "
+            "AND COALESCE(last_message_time, updated_at) < NOW() - make_interval(mins => $2) "
+            "ORDER BY last_message_time ASC",
+            service_id, minutes,
+        )
+        return [dict(r) for r in rows]
+
     async def get_return_requested_dialogs(self) -> list[dict]:
         rows = await self.pool.fetch(
             "SELECT * FROM dialogs WHERE status='waiting' AND return_requested_at IS NOT NULL "

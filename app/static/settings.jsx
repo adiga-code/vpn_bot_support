@@ -27,7 +27,7 @@ function ServiceBanner({ service, hint }) {
 
 function SettingsScreen({ operators: ops, setOperators, showToast, currentOperator,
                           services = [], serviceId = null, onServicesChanged,
-                          mobileChrome = null }) {
+                          mobileChrome = null, jump = null }) {
   const isAdmin = currentOperator?.role === "admin";
   const defaultSection = isAdmin ? "operators" : "profile";
   const [section, setSection] = useStateT(defaultSection);
@@ -36,6 +36,13 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
   const [confirmDelete, setConfirmDelete] = useStateT(null);
   // Телефон: null — список разделов, иначе открыт конкретный раздел.
   const [mobileSection, setMobileSection] = useStateT(null);
+
+  // Переход в раздел извне (плашка «Временная проблема» над диалогами).
+  useEffectT(() => {
+    if (!jump?.section) return;
+    setSection(jump.section);
+    setMobileSection(jump.section);
+  }, [jump?.n]);
 
   // Настройки всегда правятся у конкретного ВПН-а: промпт, база знаний,
   // автоматизация и рассылка у каждого свои.
@@ -54,6 +61,8 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       hint: "промпт, модель, автоответ" },
     { id: "kb",         label: "База знаний",   icon: "book",      adminOnly: false, scope: "service",
       hint: "статьи для ответов ИИ" },
+    { id: "incident",   label: "Временные сбои", icon: "info",    adminOnly: false, scope: "service",
+      hint: "сбой или блокировка — ИИ сообщит клиентам" },
     { id: "automation", label: "Автоматизация", icon: "zap",       adminOnly: true,  scope: "service",
       hint: "эскалация, оценки, лимиты" },
     // advanced: URL и токен теперь спрашивают прямо в форме сервиса, поэтому
@@ -107,6 +116,7 @@ function SettingsScreen({ operators: ops, setOperators, showToast, currentOperat
       {section === "profile"       && <ProfileSection showToast={showToast} />}
       {section === "ai"            && <AISection showToast={showToast} service={svc} />}
       {section === "kb"            && <KBSection service={svc} isAdmin={isAdmin} />}
+      {section === "incident"      && <IncidentSection showToast={showToast} service={svc} />}
       {section === "automation"    && <AutomationSection showToast={showToast} service={svc} />}
       {section === "customer"      && <CustomerSection showToast={showToast} service={svc} />}
       {section === "sounds"        && <SoundsSection showToast={showToast} />}
@@ -2387,6 +2397,101 @@ function KBSection({ service, isAdmin = false }) {
   );
 }
 
+// Временная проблема: пока тумблер включён, текст дописывается в промпт ИИ
+// сервиса (бэкенд — /api/settings/incident), и бот сообщает о сбое клиентам.
+// Доступно и агентам: сбой случается внезапно, включить может любой на смене.
+function IncidentSection({ showToast, service }) {
+  const [data,    setData]    = useStateT(null);   // сохранённое на сервере
+  const [enabled, setEnabled] = useStateT(false);  // черновик
+  const [text,    setText]    = useStateT("");
+  const [saving,  setSaving]  = useStateT(false);
+  const [err,     setErr]     = useStateT(null);
+
+  useEffectT(() => {
+    setData(null);
+    window.apiFetch("GET", "/api/settings/incident" + svcQuery(service)).then((d) => {
+      setData(d); setEnabled(d.enabled); setText(d.text || ""); setErr(null);
+    }).catch(() => setData({ enabled: false, text: "" }));
+  }, [service?.id]);
+
+  async function save(nextEnabled, nextText) {
+    if (nextEnabled && !nextText.trim()) {
+      setEnabled(true);
+      setErr("Опишите проблему — этот текст увидит ИИ");
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      const d = await window.apiFetch("PUT", "/api/settings/incident" + svcQuery(service),
+                                      { enabled: nextEnabled, text: nextText });
+      setData(d); setEnabled(d.enabled); setText(d.text || "");
+      showToast(d.enabled ? "Временная проблема включена — ИИ сообщит о ней клиентам"
+                          : "Временная проблема выключена");
+    } catch (e) {
+      setErr(typeof e?.detail === "string" ? e.detail : "Не удалось сохранить");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Выключение и включение с уже написанным текстом сохраняются сразу —
+  // в момент сбоя не нужно искать кнопку «Сохранить».
+  function toggle() { save(!enabled, text); }
+
+  if (!data) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
+  const dirty = enabled !== data.enabled || text.trim() !== (data.text || "").trim();
+  const when = data.updatedAt ? new Date(data.updatedAt).toLocaleString("ru-RU",
+    { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : null;
+
+  return (
+    <div className="max-w-[800px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
+      <div>
+        <h1 className="text-xl font-semibold text-[#f1f1f5]">Временные проблемы</h1>
+        <div className="text-xs text-[#6b7280] mt-0.5">
+          Блокировка, сбой серверов, проблемы с оплатой — ИИ будет сообщать о них клиентам
+        </div>
+      </div>
+      <ServiceBanner service={service} />
+
+      <div className={"border rounded-xl divide-y transition " + (data.enabled
+        ? "bg-[#f59e0b]/5 border-[#f59e0b]/40 divide-[#f59e0b]/20"
+        : "bg-[#13131a] border-[#2a2a3a]/60 divide-[#2a2a3a]/60")}>
+        <SettingsRow
+          title={data.enabled ? "Проблема активна" : "Проблем нет"}
+          desc={data.enabled
+            ? "Текст ниже добавлен в промпт ИИ. Выключите, когда всё починят."
+            : "Включите, когда что-то сломалось, и опишите проблему"}
+          control={<Switch on={enabled} onChange={saving ? () => {} : toggle} />}
+        />
+        <div className="px-5 py-4 space-y-3">
+          <label className="block text-xs text-[#6b7280]">Что случилось (увидит ИИ)</label>
+          <textarea value={text} onChange={(e) => { setText(e.target.value); setErr(null); }} rows={5}
+            maxLength={2000}
+            placeholder="Блокировка РКН: сейчас не работают серверы в Нидерландах. Чиним, ориентировочно до 18:00 МСК. Временно подключайтесь к серверам в Финляндии."
+            className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed placeholder:text-[#6b7280]" />
+          <div className="text-xs text-[#6b7280] leading-relaxed">
+            Пишите фактами: что не работает, кого касается, что делать клиенту и когда ждать решения.
+            ИИ упомянет проблему, только если вопрос клиента может быть с ней связан.
+          </div>
+          {err && (
+            <div className="text-xs text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-3 py-2">{err}</div>
+          )}
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="text-[11px] text-[#6b7280]">
+              {data.updatedBy && when && <>{data.enabled ? "Включил" : "Изменил"} {data.updatedBy} · {when}</>}
+            </div>
+            <button onClick={() => save(enabled, text)} disabled={saving || !dirty}
+              className="px-4 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-sm font-semibold disabled:opacity-40">
+              {saving ? "Сохранение..." : (enabled && !data.enabled ? "Включить" : "Сохранить")}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AutomationSection({ showToast, service }) {
   const [s, setS] = useStateT(null);
 
@@ -2520,7 +2625,7 @@ function AutomationSection({ showToast, service }) {
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
         <SettingsRow
           title="Отправлять сообщение при закрытии"
-          desc="Пользователь получает текст после закрытия диалога оператором"
+          desc="Пользователь получает текст после закрытия диалога — оператором или автоматически"
           control={<Switch on={s.close_message_enabled} onChange={() => toggle("close_message_enabled")} />}
         />
         {s.close_message_enabled && (
@@ -2533,6 +2638,35 @@ function AutomationSection({ showToast, service }) {
               className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 leading-relaxed"
               placeholder="Спасибо за обращение!..."
             />
+          </div>
+        )}
+      </div>
+
+      {/* Auto-close idle AI tickets */}
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
+        <SettingsRow
+          title="Автозакрытие тикетов на ИИ"
+          desc="Закрывать тикеты, которые не передавались оператору, если в них долго нет новых сообщений"
+          control={<Switch on={s.auto_close_ai_enabled} onChange={() => toggle("auto_close_ai_enabled")} />}
+        />
+        {s.auto_close_ai_enabled && (
+          <div className="px-5 py-4 space-y-2">
+            <div className="flex items-center gap-4">
+              <div>
+                <div className="text-sm text-[#f1f1f5]">Закрывать через, мин</div>
+                <div className="text-xs text-[#6b7280] mt-0.5">Отсчёт от последнего сообщения — клиента или ИИ</div>
+              </div>
+              <input
+                type="number" min="1" max="10080"
+                value={s.auto_close_ai_minutes ?? 30}
+                onChange={e => set("auto_close_ai_minutes", Math.min(10080, Math.max(1, parseInt(e.target.value) || 1)))}
+                className="w-20 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-1.5 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 text-center ml-auto"
+              />
+            </div>
+            <div className="text-xs text-[#6b7280]">
+              При закрытии уходят сообщение при закрытии и запрос оценки, если они включены.
+              Если клиент напишет снова — откроется новый тикет. Не забудьте нажать «Сохранить».
+            </div>
           </div>
         )}
       </div>

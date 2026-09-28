@@ -2,14 +2,14 @@ import asyncio
 import json
 import uuid
 import zlib
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.ai_client import make_chat_client, make_kb_chat_client
 from app.auth import create_token, decode_token, hash_password, verify_password
@@ -60,6 +60,17 @@ _AI_DEFAULTS = {
     "handoff_enabled": True,
     "classification_enabled": False,
 }
+
+# Блок «временная проблема» — дописывается в конец промпта ответчика, пока
+# тумблер включён (см. _sync_ai_settings_to_redis и /api/settings/incident).
+_INCIDENT_PROMPT = (
+    "ВАЖНО — сейчас действует временная проблема, о ней уже знает команда:\n"
+    "«{text}»\n"
+    "Если вопрос клиента может быть связан с этой проблемой — честно и коротко "
+    "сообщи о ней, скажи, что команда уже работает над решением, и не предлагай "
+    "бесполезных шагов настройки. Если вопрос явно не связан с проблемой — не "
+    "упоминай её."
+)
 
 # The gate/handoff instruction is no longer concatenated onto the responder
 # prompt. It is published to n8n as its own field
@@ -147,8 +158,14 @@ class AutomationSettingsBody(BaseModel):
     close_message_text: str = ""
     max_tickets_per_operator: int = 10
     offline_grace_seconds: int = 60
+    auto_close_ai_enabled: bool = False
+    auto_close_ai_minutes: int = Field(30, ge=1, le=10080)  # до недели
     operator_call_keywords: str = "оператор, менеджер, жив человек, реальн человек, поддержк"
     handoff_instruction_text: str = _AUTOMATION_DEFAULTS["handoff_instruction_text"]
+
+class IncidentBody(BaseModel):
+    enabled: bool
+    text: str = ""
 
 class BroadcastBody(BaseModel):
     text: str
@@ -794,20 +811,8 @@ def build_app(
         dialog = await require_dialog_write(dialog_id, operator)
         # Transition + system message + broadcasts + n8n sync + queue drain
         await routing.close(dialog_id, dialog["chat_id"], operator["name"])
-        if chat_client:
-            asyncio.create_task(_summarize_dialog_bg(dialog_id))
-        automation = await db.get_setting_json(
-            "automation", _AUTOMATION_DEFAULTS, dialog["service_id"]
-        )
-        if automation.get("close_message_enabled") and automation.get("close_message_text"):
-            asyncio.create_task(
-                n8n.send_to_user(dialog["chat_id"], automation["close_message_text"], service=dialog)
-            )
-        if automation.get("rating_enabled"):
-            rating_text = automation.get("rating_message_text") or "Оцените качество поддержки:"
-            asyncio.create_task(
-                n8n.send_rating_request(dialog["chat_id"], dialog_id, rating_text, service=dialog)
-            )
+        # Саммари, сообщение при закрытии и оценка — общие с автозакрытием.
+        await routing.after_close(dialog)
         return {"ok": True}
 
     async def _summarize_dialog_bg(dialog_id: str):
@@ -819,6 +824,11 @@ def build_app(
                 print(f"[summarizer] dialog={dialog_id} → {summary}")
         except Exception as e:
             print(f"[summarizer] bg error: {e}")
+
+    # Саммари строится и для тикетов, закрытых автоматически из обходчика
+    # маршрутизации, — он вызывает этот хук через routing.after_close.
+    if chat_client:
+        routing.on_closed = lambda dialog_id: asyncio.create_task(_summarize_dialog_bg(dialog_id))
 
     # ── Карточка клиента ──────────────────────────────────────────────────────
     # Профиль и управление аккаунтом живут во внешней API; панель знает только
@@ -1254,7 +1264,14 @@ def build_app(
         ids = await db.get_operator_service_ids(operator)
         counts = await db.get_service_counts(ids)
         services = [s for s in await db.get_services() if s["id"] in ids]
-        return [_fmt_service(s, counts.get(s["id"], 0)) for s in services]
+        out = []
+        for s in services:
+            item = _fmt_service(s, counts.get(s["id"], 0))
+            # Активная временная проблема — для плашки над списком диалогов.
+            inc = await _get_incident(s["id"])
+            item["incident"] = {"enabled": inc["enabled"], "text": inc["text"]}
+            out.append(item)
+        return out
 
     @app.get("/api/services/all")
     async def get_all_services(operator: dict = Depends(require_auth)):
@@ -1728,8 +1745,18 @@ def build_app(
 
         Ключ пер-сервисный: у каждого ВПН-а свой воркфлоу n8n и свой промпт."""
         automation = await db.get_setting_json("automation", None, service["id"]) or {}
+        incident = await _get_incident(service["id"])
         n8n_data = dict(ai)
         n8n_data["prompt"] = ai.get("prompt") or ""
+        # Временная проблема приклеивается к промпту ответчика — n8n читает его
+        # из Redis на каждом сообщении, так что тумблер действует сразу, без
+        # правки воркфлоу. Отдельным полем — на случай, если в n8n захочется
+        # использовать текст напрямую.
+        incident_text = incident["text"].strip() if incident["enabled"] else ""
+        if incident_text:
+            n8n_data["prompt"] = (n8n_data["prompt"].rstrip() + "\n\n"
+                                  + _INCIDENT_PROMPT.format(text=incident_text))
+        n8n_data["incident"] = incident_text
         n8n_data["handoff_prompt"] = (
             (automation.get("handoff_instruction_text") or "").strip()
             or _AUTOMATION_DEFAULTS["handoff_instruction_text"]
@@ -1737,6 +1764,46 @@ def build_app(
         await n8n.redis.set(
             f"vpn_bot:{service['slug']}:ai_settings", json.dumps(n8n_data, ensure_ascii=False)
         )
+
+    # ── Settings: временные проблемы ─────────────────────────────────────────
+    # Сбой (блокировка РКН, падение серверов) случается внезапно, поэтому
+    # включать тумблер может любой оператор с доступом к сервису, не только
+    # админ. Текст уходит в промпт ИИ через _sync_ai_settings_to_redis.
+
+    async def _get_incident(sid: int) -> dict:
+        stored = await db.get_setting_json("incident", None, sid) or {}
+        return {"enabled": bool(stored.get("enabled")), "text": stored.get("text") or "",
+                "updatedBy": stored.get("updated_by"), "updatedAt": stored.get("updated_at")}
+
+    @app.get("/api/settings/incident")
+    async def get_incident(service_id: Optional[int] = None,
+                           operator: dict = Depends(require_auth)):
+        service = await require_service(service_id, operator)
+        return {**await _get_incident(service["id"]),
+                "serviceId": service["id"], "serviceName": service["name"]}
+
+    @app.put("/api/settings/incident")
+    async def save_incident(body: IncidentBody, service_id: Optional[int] = None,
+                            operator: dict = Depends(require_auth)):
+        service = await require_service(service_id, operator)
+        text = body.text.strip()
+        if body.enabled and not text:
+            raise HTTPException(422, "Опишите проблему — этот текст увидит ИИ")
+        if len(text) > 2000:
+            raise HTTPException(422, "Текст длиннее 2000 символов")
+        await db.set_setting_json("incident", {
+            "enabled": body.enabled, "text": text,
+            "updated_by": operator["name"],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, service["id"])
+        # Не мутировать _AI_DEFAULTS: get_setting_json отдаёт дефолт как есть.
+        ai = {**_AI_DEFAULTS,
+              **(await db.get_setting_json("ai_settings", None, service["id"]) or {})}
+        await _sync_ai_settings_to_redis(ai, service)
+        print(f"[incident] {service['slug']}: {'ON' if body.enabled else 'OFF'} "
+              f"by {operator['name']}: {text[:120]}")
+        await ws.broadcast({"type": "services_changed"})
+        return await _get_incident(service["id"])
 
     @app.put("/api/settings/ai")
     async def save_ai_settings(body: AISettingsBody, service_id: Optional[int] = None,
