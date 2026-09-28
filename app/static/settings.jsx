@@ -1688,9 +1688,160 @@ const CATEGORY_COLORS = {
   escalation:      "bg-[#A855F7]/15 text-[#C084FC] border-[#A855F7]/30",
 };
 
-// Агенту база знаний доступна только на просмотр: список статей и их текст
-// видны всем, а загрузка, сброс и удаление — по-прежнему только у админа
-// (бэкенд на /api/kb/upload и DELETE /api/kb тоже это проверяет).
+// Номер раздела в начале заголовка: "02.1 Как определить…" → "02.1".
+const KB_NUM_RE = /^(\d+(?:\.\d+)*)[.)]?\s+/;
+
+// Поиск не различает регистр и ё/е. Замена ё→е и toLowerCase не меняют длину
+// строки, поэтому позиции совпадений в нормализованном тексте совпадают
+// с позициями в исходном — по ним и подсвечиваем.
+function kbNorm(s) { return (s || "").toLowerCase().replace(/ё/g, "е"); }
+
+function kbRanges(text, terms) {
+  const norm = kbNorm(text);
+  const ranges = [];
+  for (const t of terms) {
+    let i = norm.indexOf(t);
+    while (i !== -1) { ranges.push([i, i + t.length]); i = norm.indexOf(t, i + t.length); }
+  }
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const r of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+    else merged.push([...r]);
+  }
+  return merged;
+}
+
+function KBHighlight({ text, terms }) {
+  if (!text || !terms.length) return text || null;
+  const ranges = kbRanges(text, terms);
+  if (!ranges.length) return text;
+  const out = [];
+  let pos = 0;
+  ranges.forEach(([a, b], i) => {
+    if (a > pos) out.push(text.slice(pos, a));
+    out.push(<mark key={i} className="bg-[#eab308]/30 text-[#fde68a] rounded-sm px-0.5">{text.slice(a, b)}</mark>);
+    pos = b;
+  });
+  if (pos < text.length) out.push(text.slice(pos));
+  return out;
+}
+
+// Фрагмент текста статьи вокруг первого совпадения — чтобы было видно, почему
+// статья нашлась, когда запрос встречается только в тексте, а не в заголовке.
+function kbSnippet(content, terms) {
+  const norm = kbNorm(content);
+  let at = -1;
+  for (const t of terms) {
+    const i = norm.indexOf(t);
+    if (i !== -1 && (at === -1 || i < at)) at = i;
+  }
+  if (at === -1) return null;
+  const start = Math.max(0, at - 60);
+  const end = Math.min(content.length, at + 120);
+  return (start > 0 ? "…" : "") + content.slice(start, end).replace(/\s+/g, " ").trim()
+       + (end < content.length ? "…" : "");
+}
+
+function kbErrorText(err, fallback) {
+  if (typeof err?.detail === "string") return err.detail;
+  if (Array.isArray(err?.detail)) return err.detail.map((d) => d.msg || String(d)).join("; ");
+  return err?.message || fallback;
+}
+
+function KBArticleModal({ article, onSave, onClose }) {
+  const [form, setForm] = useStateT({
+    title:    article?.title || "",
+    category: article?.category || "faq",
+    keywords: (article?.keywords || []).join("; "),
+    body:     article?.body ?? "",
+  });
+  const [saving, setSaving] = useStateT(false);
+  const [err,    setErr]    = useStateT(null);
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!form.title.trim()) { setErr("Укажите заголовок"); return; }
+    if (form.body.trim().length < 20) { setErr("Текст статьи слишком короткий (минимум 20 символов)"); return; }
+    setSaving(true);
+    setErr(null);
+    try {
+      await onSave({
+        title:    form.title.trim(),
+        category: form.category,
+        keywords: form.keywords.split(/[;\n]/).map((k) => k.trim()).filter(Boolean),
+        body:     form.body,
+      });
+    } catch (e2) {
+      setErr(kbErrorText(e2, "Ошибка сохранения"));
+      setSaving(false);
+    }
+  }
+
+  const inputCls = "w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 placeholder:text-[#6b7280]";
+  return (
+    <ModalOverlay onClose={saving ? null : onClose}>
+      <div className="bg-[#13131a] border border-[#2a2a3a] rounded-xl p-5 sm:p-6 w-full max-w-2xl max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <div className="font-semibold text-[#f1f1f5]">{article ? "Редактировать статью" : "Новая статья"}</div>
+          <button type="button" onClick={onClose} disabled={saving}
+            className="p-1 text-[#6b7280] hover:text-[#f1f1f5] rounded disabled:opacity-40"><Icon name="x" /></button>
+        </div>
+        <form onSubmit={submit} className="space-y-4">
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Заголовок</label>
+            <input value={form.title} onChange={(e) => set("title", e.target.value)} autoFocus
+              placeholder="02.3 Как подключить роутер"
+              className={inputCls} />
+            <div className="text-[11px] text-[#6b7280] mt-1">
+              Начните с номера раздела — статья встанет в списке на своё место.
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-[180px_1fr] gap-4">
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">Категория</label>
+              <select value={form.category} onChange={(e) => set("category", e.target.value)} className={inputCls}>
+                {Object.entries(CATEGORY_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-[#6b7280] mb-1.5">Ключевые запросы (через «;»)</label>
+              <input value={form.keywords} onChange={(e) => set("keywords", e.target.value)}
+                placeholder="роутер; keenetic; настроить на роутере"
+                className={inputCls} />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-[#6b7280] mb-1.5">Текст статьи</label>
+            <textarea value={form.body} onChange={(e) => set("body", e.target.value)} rows={14}
+              placeholder="Пошаговая инструкция, которую ИИ будет использовать в ответах…"
+              className={inputCls + " leading-relaxed resize-y font-mono text-xs"} />
+          </div>
+          {err && (
+            <div className="text-xs text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-3 py-2">{err}</div>
+          )}
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <div className="text-[11px] text-[#6b7280]">После сохранения статья сразу переиндексируется для ИИ.</div>
+            <div className="flex gap-2 shrink-0">
+              <button type="button" onClick={onClose} disabled={saving}
+                className="px-3 py-1.5 rounded-lg text-sm text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24] disabled:opacity-40">Отмена</button>
+              <button type="submit" disabled={saving}
+                className="px-4 py-1.5 rounded-lg text-sm font-medium bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white disabled:opacity-60">
+                {saving ? "Индексация…" : "Сохранить"}
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </ModalOverlay>
+  );
+}
+
+// Агенту база знаний доступна на просмотр и поиск: список статей и их текст
+// видны всем, а загрузка, правка, добавление, удаление и сброс — только
+// у админа (бэкенд тоже это проверяет).
 function KBSection({ service, isAdmin = false }) {
   const [articles,   setArticles]   = useStateT(null);
   const [uploading,  setUploading]  = useStateT(false);
@@ -1698,12 +1849,31 @@ function KBSection({ service, isAdmin = false }) {
   const [deleting,   setDeleting]   = useStateT(null);
   const [expanded,   setExpanded]   = useStateT(null);
   const [resetting,  setResetting]  = useStateT(false);
+  const [query,      setQuery]      = useStateT("");
+  const [catFilter,  setCatFilter]  = useStateT("all");
+  const [editor,     setEditor]     = useStateT(null);  // {} — новая статья, объект — правка
   const fileRef = React.createRef();
+
+  function reload() {
+    return window.apiFetch("GET", "/api/kb" + svcQuery(service)).then(setArticles);
+  }
 
   useEffectT(() => {
     setArticles(null);
-    window.apiFetch("GET", "/api/kb" + svcQuery(service)).then(setArticles).catch(() => setArticles([]));
+    setQuery("");
+    setCatFilter("all");
+    setExpanded(null);
+    reload().catch(() => setArticles([]));
   }, [service?.id]);
+
+  async function saveArticle(payload) {
+    const res = editor?.id
+      ? await window.apiFetch("PUT", `/api/kb/${encodeURIComponent(editor.id)}` + svcQuery(service), payload)
+      : await window.apiFetch("POST", "/api/kb/articles" + svcQuery(service), payload);
+    setEditor(null);
+    await reload().catch(() => {});
+    if (res?.id) setExpanded(res.id);
+  }
 
   async function handleUpload(e) {
     const file = e.target.files?.[0];
@@ -1740,10 +1910,12 @@ function KBSection({ service, isAdmin = false }) {
     }
   }
 
-  async function handleDelete(id) {
+  async function handleDelete(a) {
+    if (!window.confirm(`Удалить статью «${a.title}»? Она пропадёт и из поиска ИИ.`)) return;
+    const id = a.id;
     setDeleting(id);
     try {
-      await window.apiFetch("DELETE", `/api/kb/${id}` + svcQuery(service));
+      await window.apiFetch("DELETE", `/api/kb/${encodeURIComponent(id)}` + svcQuery(service));
       setArticles((arr) => arr.filter((a) => a.id !== id));
     } catch {
     } finally {
@@ -1763,21 +1935,38 @@ function KBSection({ service, isAdmin = false }) {
     }
   }
 
+  // Поиск: каждое слово запроса должно найтись хоть где-то — в номере,
+  // заголовке, ключевых запросах, id или тексте статьи.
+  const terms = useMemoT(() => kbNorm(query).split(/\s+/).filter(Boolean), [query]);
+  const catCounts = useMemoT(() => {
+    const m = {};
+    (articles || []).forEach((a) => { m[a.category] = (m[a.category] || 0) + 1; });
+    return m;
+  }, [articles]);
+  const shown = useMemoT(() => (articles || []).filter((a) => {
+    if (catFilter !== "all" && a.category !== catFilter) return false;
+    if (!terms.length) return true;
+    const kw = Array.isArray(a.keywords) ? a.keywords : [];
+    const hay = kbNorm([a.title, a.id, kw.join(" "), a.content].join("\n"));
+    return terms.every((t) => hay.includes(t));
+  }), [articles, terms, catFilter]);
+  const filtering = terms.length > 0 || catFilter !== "all";
+
   if (articles === null) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
 
   return (
     <div className="max-w-[1100px] mx-auto p-3 sm:p-6 space-y-4 sm:space-y-5">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-xl font-semibold text-[#f1f1f5]">База знаний</h1>
           <div className="text-xs text-[#6b7280] mt-0.5">
-            {articles.length} чанков · используется ИИ для поиска
+            {articles.length} статей · используется ИИ для поиска
             {isAdmin
-              ? <> · <span className="text-[#f59e0b]">загрузка заменяет базу целиком</span></>
+              ? <> · <span className="text-[#f59e0b]">загрузка документа заменяет базу целиком</span></>
               : <> · только просмотр</>}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {uploading && <span className="text-xs text-[#6b7280] animate-pulse">Обработка ИИ...</span>}
           {isAdmin && articles && articles.length > 0 && (
             <button onClick={handleReset} disabled={resetting}
@@ -1788,6 +1977,11 @@ function KBSection({ service, isAdmin = false }) {
           )}
           {isAdmin && (
             <>
+              <button onClick={() => setEditor({})} disabled={uploading}
+                className="px-3 py-2 rounded-lg bg-[#4F8EF7]/10 hover:bg-[#4F8EF7]/20 text-[#7BA8F9] text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 border border-[#4F8EF7]/30">
+                <Icon name="edit" className="w-3.5 h-3.5" strokeWidth={2.5} />
+                Добавить статью
+              </button>
               <button onClick={() => fileRef.current?.click()} disabled={uploading}
                 className="px-3 py-2 rounded-lg bg-[#4F8EF7] hover:bg-[#3d7ce8] text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50">
                 <Icon name="plus" className="w-3.5 h-3.5" strokeWidth={2.5} />
@@ -1822,45 +2016,111 @@ function KBSection({ service, isAdmin = false }) {
       )}
 
       {articles.length > 0 && (
+        <div className="space-y-2.5">
+          <div className="relative">
+            <Icon name="search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#6b7280]" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)}
+              placeholder="Поиск по номеру, заголовку, запросам и тексту…"
+              className="w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg pl-9 pr-9 py-2 text-sm text-[#f1f1f5] placeholder:text-[#6b7280] focus:outline-none focus:border-[#4F8EF7]/50" />
+            {query && (
+              <button onClick={() => setQuery("")} aria-label="Очистить поиск"
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[#6b7280] hover:text-[#f1f1f5] rounded">
+                <Icon name="x" className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {[["all", "Все", articles.length],
+              ...Object.keys(CATEGORY_LABELS).filter((k) => catCounts[k])
+                .map((k) => [k, CATEGORY_LABELS[k], catCounts[k]])].map(([k, label, n]) => (
+              <button key={k} onClick={() => setCatFilter(k)}
+                className={"px-2.5 py-1 rounded-full text-xs border transition " +
+                  (catFilter === k
+                    ? "bg-[#4F8EF7]/15 text-[#7BA8F9] border-[#4F8EF7]/40"
+                    : "text-[#9ca3af] border-[#2a2a3a] hover:text-[#f1f1f5] hover:bg-[#1a1a24]")}>
+                {label} <span className="opacity-60">{n}</span>
+              </button>
+            ))}
+            {filtering && (
+              <span className="text-xs text-[#6b7280] ml-auto">Найдено {shown.length} из {articles.length}</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {articles.length > 0 && shown.length === 0 && (
+        <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-8 text-center">
+          <div className="text-sm text-[#f1f1f5] font-medium mb-1">Ничего не найдено</div>
+          <button onClick={() => { setQuery(""); setCatFilter("all"); }}
+            className="text-xs text-[#7BA8F9] hover:underline">Сбросить поиск</button>
+        </div>
+      )}
+
+      {shown.length > 0 && (
         <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/40">
-          {articles.map((a) => {
+          {shown.map((a) => {
             const kw = Array.isArray(a.keywords) ? a.keywords : [];
             const catColor = CATEGORY_COLORS[a.category] || CATEGORY_COLORS.faq;
             const catLabel = CATEGORY_LABELS[a.category] || a.category;
             const isOpen = expanded === a.id;
+            const m = (a.title || "").match(KB_NUM_RE);
+            const num = m ? m[1] : null;
+            const titleText = m ? a.title.slice(m[0].length) : a.title;
+            // При поиске совпавшие запросы показываем первыми; в раскрытой
+            // статье — все запросы, а не первые 6.
+            const hit = (k) => terms.some((t) => kbNorm(k).includes(t));
+            const kwSorted = terms.length ? [...kw.filter(hit), ...kw.filter((k) => !hit(k))] : kw;
+            const kwShown = isOpen ? kwSorted : kwSorted.slice(0, 6);
+            const titleHit = terms.some((t) => kbNorm(a.title).includes(t) || kw.some((k) => kbNorm(k).includes(t)));
+            const snippet = terms.length && !titleHit && !isOpen ? kbSnippet(a.body ?? a.content, terms) : null;
             return (
               <div key={a.id}>
-                <div className="px-5 py-3 flex items-start justify-between gap-3 hover:bg-[#1a1a24]/40 transition">
+                <div className="px-3 sm:px-5 py-3 flex items-start justify-between gap-3 hover:bg-[#1a1a24]/40 transition">
                   <button className="flex items-start gap-3 min-w-0 flex-1 text-left" onClick={() => setExpanded(isOpen ? null : a.id)}>
-                    <div className="w-9 h-9 rounded-lg bg-[#4F8EF7]/10 text-[#7BA8F9] flex items-center justify-center shrink-0 mt-0.5">
-                      <Icon name="book" />
-                    </div>
+                    {num ? (
+                      <div className="min-w-[3.25rem] h-9 px-1.5 rounded-lg bg-[#4F8EF7]/10 text-[#7BA8F9] font-mono text-xs font-semibold flex items-center justify-center shrink-0 mt-0.5">
+                        <KBHighlight text={num} terms={terms} />
+                      </div>
+                    ) : (
+                      <div className="w-[3.25rem] h-9 rounded-lg bg-[#4F8EF7]/10 text-[#7BA8F9] flex items-center justify-center shrink-0 mt-0.5">
+                        <Icon name="book" />
+                      </div>
+                    )}
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-sm text-[#f1f1f5] font-medium">{a.title}</span>
+                        <span className="text-sm text-[#f1f1f5] font-medium"><KBHighlight text={titleText} terms={terms} /></span>
                         <span className={"inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium border " + catColor}>{catLabel}</span>
                       </div>
                       {kw.length > 0 && (
                         <div className="flex flex-wrap gap-1 mt-1">
-                          {kw.slice(0, 6).map((k, i) => (
-                            <span key={i} className="text-[10px] text-[#6b7280] bg-[#1a1a24] px-1.5 py-0.5 rounded">{k}</span>
+                          {kwShown.map((k, i) => (
+                            <span key={i} className="text-[10px] text-[#6b7280] bg-[#1a1a24] px-1.5 py-0.5 rounded"><KBHighlight text={k} terms={terms} /></span>
                           ))}
-                          {kw.length > 6 && <span className="text-[10px] text-[#6b7280]">+{kw.length - 6}</span>}
+                          {kw.length > kwShown.length && <span className="text-[10px] text-[#6b7280]">+{kw.length - kwShown.length}</span>}
                         </div>
+                      )}
+                      {snippet && (
+                        <div className="text-xs text-[#9ca3af] mt-1.5 leading-relaxed"><KBHighlight text={snippet} terms={terms} /></div>
                       )}
                     </div>
                   </button>
                   {isAdmin && (
-                    <button onClick={() => handleDelete(a.id)} disabled={deleting === a.id}
-                      className="p-1.5 text-[#6b7280] hover:text-[#ef4444] hover:bg-[#ef4444]/10 rounded transition shrink-0 mt-0.5 disabled:opacity-40">
-                      <Icon name="trash" className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-0.5 shrink-0 mt-0.5">
+                      <button onClick={() => setEditor(a)} aria-label="Редактировать"
+                        className="p-1.5 text-[#6b7280] hover:text-[#7BA8F9] hover:bg-[#4F8EF7]/10 rounded transition">
+                        <Icon name="edit" className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => handleDelete(a)} disabled={deleting === a.id} aria-label="Удалить"
+                        className="p-1.5 text-[#6b7280] hover:text-[#ef4444] hover:bg-[#ef4444]/10 rounded transition disabled:opacity-40">
+                        <Icon name="trash" className="w-4 h-4" />
+                      </button>
+                    </div>
                   )}
                 </div>
                 {isOpen && (
-                  <div className="px-5 pb-4 pt-0">
-                    <div className="ml-12 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-4 py-3 text-xs text-[#9ca3af] leading-relaxed whitespace-pre-wrap">
-                      {a.content}
+                  <div className="px-3 sm:px-5 pb-4 pt-0">
+                    <div className="sm:ml-16 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-4 py-3 text-xs text-[#9ca3af] leading-relaxed whitespace-pre-wrap break-words">
+                      <KBHighlight text={a.content} terms={terms} />
                     </div>
                   </div>
                 )}
@@ -1868,6 +2128,11 @@ function KBSection({ service, isAdmin = false }) {
             );
           })}
         </div>
+      )}
+
+      {editor && (
+        <KBArticleModal article={editor.id ? editor : null}
+                        onSave={saveArticle} onClose={() => setEditor(null)} />
       )}
     </div>
   );

@@ -91,6 +91,9 @@ def _make_slug(title: str, existing: set[str], prefix: str = "") -> str:
     return slug
 
 
+make_slug = _make_slug  # для ручного добавления статей в web_server
+
+
 def _split_by_paragraphs(body: str, max_words: int = 350) -> list[str]:
     """Разбить длинный текст по границам абзацев, а не потоком слов — иначе
     готовая пошаговая инструкция («Открыв меню бота… Нажмите…») рвётся
@@ -142,13 +145,50 @@ def _extract_keywords(block: str) -> list[str]:
     return [k.strip(" .*_") for k in m.group(1).split(";") if k.strip(" .*_")]
 
 
-def _num_prefix(header: str) -> tuple[str, str]:
-    """(текст заголовка без номера, номер как дефисный слаг-префикс).
-    "02.1 Как определить" → ("Как определить", "02-1-"); без номера — ("", "")."""
-    m = re.match(r"^(\d+(?:\.\d+)*)[.)]?\s*", header)
+_NUM_RE = re.compile(r"^(\d+(?:\.\d+)*)[.)]?\s*")
+
+
+def split_number(header: str) -> tuple[str, str]:
+    """(номер раздела, текст заголовка без номера).
+    "02.1 Как определить" → ("02.1", "Как определить"); без номера — ("", header)."""
+    m = _NUM_RE.match(header)
     if not m:
-        return header, ""
-    return header[m.end():].strip(), m.group(1).replace(".", "-") + "-"
+        return "", header
+    return m.group(1), header[m.end():].strip()
+
+
+def number_key(title: str) -> tuple[int, ...] | None:
+    """Ключ сортировки по ведущему номеру заголовка: "02.10 …" → (2, 10).
+    Сравнение числовое, поэтому 02.10 идёт после 02.9, а не перед ним."""
+    num, _ = split_number(title or "")
+    return tuple(int(p) for p in num.split(".")) if num else None
+
+
+def _num_prefix(header: str) -> tuple[str, str, str]:
+    """(текст заголовка без номера, номер как дефисный слаг-префикс, номер).
+    "02.1 Как определить" → ("Как определить", "02-1-", "02.1"); без номера —
+    (header, "", "")."""
+    num, rest = split_number(header)
+    if not num:
+        return header, "", ""
+    return rest, num.replace(".", "-") + "-", num
+
+
+def compose_content(title: str, body: str) -> str:
+    """Текст чанка = заголовок + пустая строка + тело: заголовок попадает и в
+    эмбеддинг, и в выдачу ИИ. Тот же формат у загрузки и у ручной правки."""
+    return f"{title}\n\n{body.strip()}"
+
+
+def split_content(title: str, content: str) -> str:
+    """Тело статьи без ведущей строки-заголовка — для формы редактирования.
+    У статей, загруженных до того, как номер стал оставаться в заголовке,
+    первая строка — заголовок без номера; её тоже отрезаем."""
+    head, sep, rest = (content or "").partition("\n")
+    head = head.strip()
+    if sep and head and head in (title.strip(), split_number(title.strip())[1]):
+        return rest.lstrip("\n")
+    return content or ""
 
 
 def parse_markdown_sections(text: str) -> list[dict] | None:
@@ -169,47 +209,52 @@ def parse_markdown_sections(text: str) -> list[dict] | None:
     seen: set[str] = set()
     chunks: list[dict] = []
 
-    def add(title: str, body: str, keywords: list[str], id_prefix: str):
+    def add(title: str, body: str, keywords: list[str], id_prefix: str, num: str):
         body = re.sub(r"\n-{3,}\s*$", "", (body or "").strip())
         if len(body) < 20:
             return
         pieces = _split_by_paragraphs(body)
         for i, piece in enumerate(pieces):
             part_title = title if i == 0 else f"{title} — часть {i + 1}"
+            # Слаг — из заголовка БЕЗ номера (номер уже в id_prefix): id статей
+            # и точек Qdrant не меняются оттого, что номер теперь остаётся
+            # в видимом заголовке.
             slug = _make_slug(part_title, seen, prefix=id_prefix)
+            shown = f"{num} {part_title}" if num else part_title
             chunks.append({
                 "id":       slug,
-                "title":    part_title,
+                "title":    shown,
                 "category": _guess_category(title, keywords),
                 "keywords": keywords,
-                "content":  f"{part_title}\n\n{piece}",
+                "content":  compose_content(shown, piece),
+                "position": len(chunks),
             })
 
     for part in parts[1:]:
         header, _, section_body = part.partition("\n")
-        parent_title, parent_prefix = _num_prefix(header.strip())
+        parent_title, parent_prefix, parent_num = _num_prefix(header.strip())
         parent_kw = _extract_keywords(section_body)
 
         sub_parts = re.split(r"(?m)^###\s+", section_body)
         subs = sub_parts[1:]
         if not subs:
             # Подпунктов нет — тема остаётся одним чанком целиком.
-            add(parent_title, section_body, parent_kw, parent_prefix)
+            add(parent_title, section_body, parent_kw, parent_prefix, parent_num)
             continue
         # Текст до первого "### " (определения, строка «Запросы:») — свой
         # чанк, без самой строки «Запросы:».
         intro = re.sub(r"(?mi)^\s*[*_]*Запросы:.*$", "", sub_parts[0]).strip()
         if len(intro) >= 20:
-            add(parent_title, intro, parent_kw, parent_prefix)
+            add(parent_title, intro, parent_kw, parent_prefix, parent_num)
         for sp in subs:
             sub_header, _, sub_body = sp.partition("\n")
-            sub_title, sub_prefix = _num_prefix(sub_header.strip())
+            sub_title, sub_prefix, sub_num = _num_prefix(sub_header.strip())
             title = f"{parent_title} — {sub_title}".strip(" —") if sub_title else parent_title
             # Номер у "### " уже включает номер родителя ("02.1"), поэтому
             # свой префикс достаточен и без родительского — конфликтов между
             # темами он не даёт.
             add(title, sub_body, parent_kw + _extract_keywords(sub_body),
-                sub_prefix or parent_prefix)
+                sub_prefix or parent_prefix, sub_num or parent_num)
     return chunks or None
 
 
@@ -275,6 +320,7 @@ async def chunk_document(text: str, chat_client: "ChatClient") -> list[dict]:
             "category": c.get("category", "faq"),
             "keywords": c.get("keywords", []),
             "content":  content,
+            "position": len(result),
         })
     print(f"[chunk_document] Number of chunks after filtering: {len(result)}")
     return result
@@ -368,6 +414,16 @@ async def upsert_to_qdrant(chunks: list[dict], qdrant_url: str, collection: str)
     ]
     await client.upsert(collection_name=collection, points=points)
     await client.close()
+
+
+async def index_article(chunk: dict, openai_key: str, qdrant_url: str, collection: str):
+    """Проиндексировать одну статью, добавленную или исправленную вручную.
+    Point-id детерминирован по id статьи, поэтому правка перезаписывает
+    прежнюю точку в Qdrant, а не плодит дубль."""
+    item = dict(chunk)
+    await embed_chunks([item], openai_key)
+    await ensure_collection(qdrant_url, collection)
+    await upsert_to_qdrant([item], qdrant_url, collection)
 
 
 async def delete_from_qdrant(article_id: str, qdrant_url: str, collection: str):

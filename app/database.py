@@ -234,6 +234,10 @@ class DatabaseManager:
             # «Был в сети»: отдельно от offline_since, который гасится при
             # переподключении, потому что обслуживает грейс-таймер маршрутизации.
             ("operators", "last_seen_at",  "TIMESTAMPTZ"),
+            # kb_articles: порядок раздела в загруженном документе и время
+            # последней ручной правки.
+            ("kb_articles", "position",    "INTEGER NOT NULL DEFAULT 0"),
+            ("kb_articles", "updated_at",  "TIMESTAMPTZ"),
         ]
         for table, col, typedef in new_cols:
             await conn.execute(
@@ -1265,22 +1269,66 @@ class DatabaseManager:
 
     async def save_kb_article(
         self, id: str, title: str, category: str, keywords: str, content: str, service_id: int,
+        position: int = 0,
     ):
         await self.pool.execute(
-            """INSERT INTO kb_articles (id, title, category, keywords, content, service_id)
-               VALUES ($1,$2,$3,$4,$5,$6)
+            """INSERT INTO kb_articles (id, title, category, keywords, content, service_id, position)
+               VALUES ($1,$2,$3,$4,$5,$6,$7)
                ON CONFLICT (id) DO UPDATE SET
                  title=EXCLUDED.title, category=EXCLUDED.category,
                  keywords=EXCLUDED.keywords, content=EXCLUDED.content,
-                 service_id=EXCLUDED.service_id""",
-            id, title, category, keywords, content, service_id,
+                 service_id=EXCLUDED.service_id, position=EXCLUDED.position""",
+            id, title, category, keywords, content, service_id, position,
         )
 
     async def get_kb_articles(self, service_id: int) -> list[dict]:
+        """Статьи в порядке разделов документа. Сначала — по номеру в начале
+        заголовка ("02.10" после "02.9"), чтобы вручную добавленная «02.3 …»
+        встала под раздел 02; статьи без номера — следом, в порядке загрузки."""
+        from app.kb import number_key
         rows = await self.pool.fetch(
-            "SELECT * FROM kb_articles WHERE service_id=$1 ORDER BY created_at DESC", service_id,
+            "SELECT * FROM kb_articles WHERE service_id=$1 ORDER BY position, created_at",
+            service_id,
         )
-        return [dict(r) for r in rows]
+        articles = [dict(r) for r in rows]
+
+        def order(a):
+            key = number_key(a["title"])
+            return (0, key) if key is not None else (1, ())
+
+        # sort() стабилен: внутри одного номера (и среди статей без номера)
+        # сохраняется порядок position.
+        articles.sort(key=order)
+        return articles
+
+    async def get_kb_article(self, article_id: str, service_id: int) -> Optional[dict]:
+        row = await self.pool.fetchrow(
+            "SELECT * FROM kb_articles WHERE id=$1 AND service_id=$2", article_id, service_id,
+        )
+        return dict(row) if row else None
+
+    async def kb_article_ids(self) -> set[str]:
+        # id — первичный ключ на всю таблицу, общий для всех сервисов.
+        rows = await self.pool.fetch("SELECT id FROM kb_articles")
+        return {r["id"] for r in rows}
+
+    async def next_kb_position(self, service_id: int) -> int:
+        return await self.pool.fetchval(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM kb_articles WHERE service_id=$1",
+            service_id,
+        )
+
+    async def update_kb_article(
+        self, article_id: str, service_id: int, title: str, category: str,
+        keywords: str, content: str,
+    ) -> bool:
+        result = await self.pool.execute(
+            """UPDATE kb_articles SET title=$1, category=$2, keywords=$3, content=$4,
+                      updated_at=NOW()
+               WHERE id=$5 AND service_id=$6""",
+            title, category, keywords, content, article_id, service_id,
+        )
+        return result == "UPDATE 1"
 
     async def delete_kb_article(self, article_id: str, service_id: int) -> bool:
         result = await self.pool.execute(

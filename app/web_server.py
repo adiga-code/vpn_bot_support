@@ -14,7 +14,10 @@ from app.auth import create_token, decode_token, hash_password, verify_password
 from app.config import Settings
 from app.database import DatabaseManager, validate_slug as _validate_slug
 from app.dialogs import parse_ai_enabled, resolve_service, user_info_from
-from app.kb import delete_from_qdrant, process_document
+from app.kb import (
+    compose_content, delete_from_qdrant, index_article, make_slug, process_document,
+    split_content, split_number,
+)
 from app.media import internalize
 from app.redact import mask_tail, mask_url, redact
 from app.routing import AUTOMATION_DEFAULTS as _AUTOMATION_DEFAULTS, RoutingEngine
@@ -151,6 +154,14 @@ class TemplateBody(BaseModel):
     group_name: str = "Общие"
     title: str
     text: str
+
+_KB_CATEGORIES = ("troubleshooting", "setup", "payment", "faq", "escalation")
+
+class KBArticleBody(BaseModel):
+    title: str
+    category: str = "faq"
+    keywords: list[str] = []
+    body: str  # текст статьи без строки-заголовка
 
 class TransferBody(BaseModel):
     operator_name: str
@@ -1644,7 +1655,81 @@ def build_app(
                 a["keywords"] = json.loads(a["keywords"])
             except Exception:
                 a["keywords"] = []
+            a["body"] = split_content(a["title"], a["content"])
         return articles
+
+    def _kb_chunk(body: KBArticleBody, article_id: str) -> dict:
+        """Проверить форму статьи и собрать чанк в том же виде, что у загрузки."""
+        title = " ".join(body.title.split())
+        text = body.body.strip()
+        if not title:
+            raise HTTPException(422, "Укажите заголовок")
+        if len(title) > 300:
+            raise HTTPException(422, "Заголовок длиннее 300 символов")
+        if body.category not in _KB_CATEGORIES:
+            raise HTTPException(422, "Неизвестная категория")
+        if len(text) < 20:
+            raise HTTPException(422, "Текст статьи слишком короткий (минимум 20 символов)")
+        keywords = []
+        for k in body.keywords:
+            k = k.strip()
+            if k and k not in keywords:
+                keywords.append(k)
+        return {
+            "id":       article_id,
+            "title":    title,
+            "category": body.category,
+            "keywords": keywords,
+            "content":  compose_content(title, text),
+        }
+
+    async def _kb_index(chunk: dict, service: dict):
+        """Сначала Qdrant, потом БД: если индексация упала, в панели и в поиске
+        ИИ остаётся прежняя рабочая версия, а не расходятся друг с другом."""
+        if not settings.OPENAI_API_KEY:
+            raise HTTPException(400, "OPENAI_API_KEY is required for embeddings")
+        try:
+            await index_article(chunk, settings.OPENAI_API_KEY, settings.QDRANT_URL,
+                                service["qdrant_collection"])
+        except Exception as e:
+            print(f"[KB] index_article failed for {chunk['id']}: {e}")
+            raise HTTPException(502, f"Не удалось проиндексировать статью: {e}")
+
+    @app.post("/api/kb/articles")
+    async def create_kb_article(body: KBArticleBody, service_id: Optional[int] = None,
+                                operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
+        chunk = _kb_chunk(body, "")
+        # Слаг — как у загрузки: номер раздела префиксом + транслит заголовка.
+        num, rest = split_number(chunk["title"])
+        chunk["id"] = make_slug(rest or chunk["title"], await db.kb_article_ids(),
+                                prefix=num.replace(".", "-") + "-" if num else "")
+        await _kb_index(chunk, service)
+        await db.save_kb_article(
+            chunk["id"], chunk["title"], chunk["category"],
+            json.dumps(chunk["keywords"], ensure_ascii=False),
+            chunk["content"], service["id"], await db.next_kb_position(service["id"]),
+        )
+        return {"ok": True, "id": chunk["id"]}
+
+    @app.put("/api/kb/{article_id}")
+    async def update_kb_article(article_id: str, body: KBArticleBody,
+                                service_id: Optional[int] = None,
+                                operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
+        if not await db.get_kb_article(article_id, service["id"]):
+            raise HTTPException(404)
+        chunk = _kb_chunk(body, article_id)
+        await _kb_index(chunk, service)
+        await db.update_kb_article(
+            article_id, service["id"], chunk["title"], chunk["category"],
+            json.dumps(chunk["keywords"], ensure_ascii=False), chunk["content"],
+        )
+        return {"ok": True, "id": article_id}
 
     @app.post("/api/kb/upload")
     async def upload_kb(file: UploadFile = File(...), service_id: Optional[int] = None,
@@ -1671,7 +1756,7 @@ def build_app(
             await db.save_kb_article(
                 c["id"], c["title"], c["category"],
                 json.dumps(c["keywords"], ensure_ascii=False),
-                c["content"], service["id"],
+                c["content"], service["id"], c.get("position", 0),
             )
         return {"chunks_created": len(chunks), "ids": [c["id"] for c in chunks]}
 
