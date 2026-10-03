@@ -3,6 +3,8 @@ import io
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.config import normalize_public_url
+
 if TYPE_CHECKING:
     from app.config import Settings
 
@@ -10,8 +12,10 @@ if TYPE_CHECKING:
 class LocalStorage:
     def __init__(self, uploads_path: Path, base_url: str):
         self.uploads_path = uploads_path
-        # base_url must be scheme+host only, e.g. https://example.com (no path suffix)
-        self.base_url = base_url.rstrip("/") if base_url else ""
+        # base_url must be scheme+host only, e.g. https://example.com (no path suffix).
+        # Схему дописываем: без неё ссылка относительная, и вложение не откроет
+        # ни браузер оператора, ни n8n.
+        self.base_url = normalize_public_url(base_url)
 
     async def save(self, content: bytes, filename: str) -> str:
         (self.uploads_path / filename).write_bytes(content)
@@ -26,14 +30,14 @@ class S3Storage:
         self.access_key = access_key
         self.secret_key = secret_key
         self.region = region
-        self.public_url = public_url.rstrip("/") if public_url else ""
+        self.public_url = normalize_public_url(public_url)
 
     async def save(self, content: bytes, filename: str) -> str:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._upload_sync, content, filename)
         if self.public_url:
             return f"{self.public_url}/{filename}"
-        base = (self.endpoint_url or "https://s3.amazonaws.com").rstrip("/")
+        base = normalize_public_url(self.endpoint_url) or "https://s3.amazonaws.com"
         return f"{base}/{self.bucket}/{filename}"
 
     def _upload_sync(self, content: bytes, filename: str) -> None:

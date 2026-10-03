@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ru">
+  <head><meta charset="UTF-8" /></head>
+  <body>
+    <template>
+      <style>
+        #root { position: absolute; inset: 0; display: flex; flex-direction: column; }
+        #tp-head { height: 96px; flex: 0 0 96px; border-bottom: 1px solid #2a2a3a; background: #13131a;
+                   display: flex; align-items: center; gap: 20px; padding: 0 60px; }
+        #tp-av { width: 56px; height: 56px; border-radius: 999px; background: linear-gradient(135deg, #2a2a3a, #1a1a24);
+                 border: 1px solid #2a2a3a; display: flex; align-items: center; justify-content: center;
+                 font-size: 22px; font-weight: 600; }
+        #tp-name { font-size: 27px; font-weight: 600; letter-spacing: -0.015em; }
+        #tp-sub { font-size: 20px; color: #868d99; margin-top: 3px; }
+        #tp-pill { margin-left: auto; height: 44px; padding: 0 22px; border-radius: 999px; font-size: 20px; font-weight: 500;
+                   background: rgba(234,179,8,0.12); border: 1px solid rgba(234,179,8,0.35); color: #eab308;
+                   display: flex; align-items: center; }
+        #tp-body { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: flex-end;
+                   gap: 24px; padding: 0 60px 20px; }
+        .tp-row { display: flex; }
+        .tp-col { max-width: 1040px; }
+        .tp-bub { font-size: 28px; line-height: 1.42; padding: 20px 28px; }
+        .tp-bub.client { background: #1a1a24; border-radius: 26px 26px 26px 10px; }
+        .tp-bub.ai { position: relative; background: rgba(79,142,247,0.12); border: 1px solid rgba(79,142,247,0.25);
+                     border-radius: 26px 26px 26px 10px; }
+        #tp-badge { position: absolute; top: -15px; left: 22px; background: #4f8ef7; color: #0d0d12;
+                    font-size: 16px; font-weight: 700; letter-spacing: 0.02em; padding: 3px 12px; border-radius: 8px; }
+        .tp-bub.op { background: rgba(168,85,247,0.15); border: 1px solid rgba(168,85,247,0.3);
+                     border-radius: 26px 26px 10px 26px; }
+        .tp-meta { font-size: 19px; color: #868d99; margin-top: 10px; }
+        .tp-meta.r { text-align: right; margin-right: 12px; }
+        .tp-meta.l { margin-left: 12px; }
+        #tp-sent { opacity: 0; }
+        #tp-composer { flex: 0 0 148px; border-top: 1px solid #2a2a3a; padding: 28px 60px; position: relative; }
+        #tp-box { height: 76px; border-radius: 16px; background: #1a1a24; border: 1px solid #2a2a3a;
+                  display: flex; align-items: center; padding: 0 26px; gap: 16px; font-size: 25px; color: #868d99; }
+        #tp-text { position: relative; flex: 1 1 auto; height: 34px; color: #f1f1f5; }
+        #tp-text span { position: absolute; left: 0; top: 0; white-space: nowrap; opacity: 0; }
+        #tp-send { margin-left: auto; width: 50px; height: 50px; border-radius: 12px;
+                   background: rgba(79,142,247,0.16); color: #7ba8f9;
+                   display: flex; align-items: center; justify-content: center; font-size: 23px; }
+        #tp-panel { position: absolute; left: 60px; right: 60px; bottom: 120px; background: #13131a;
+                    border: 1px solid #2a2a3a; border-radius: 16px; overflow: hidden;
+                    box-shadow: 0 28px 70px rgba(0,0,0,0.65); opacity: 0; }
+        #tp-panel-head { padding: 16px 24px; font-size: 21px; color: #868d99; border-bottom: 1px solid #2a2a3a; }
+        .tp-item { position: relative; padding: 16px 24px; font-size: 23px; color: #f1f1f5; opacity: 0; }
+        .tp-sel { position: absolute; inset: 0; background: #1a1a24; opacity: 0; }
+        .tp-item span { position: relative; }
+      </style>
+
+      <div id="root" data-composition-id="scr-tmpl" data-width="1920" data-height="960">
+        <div id="tp-head">
+          <div id="tp-av">А</div>
+          <div>
+            <div id="tp-name">Алексей К.</div>
+            <div id="tp-sub">@alexey_k · GruVPN</div>
+          </div>
+          <div id="tp-pill">В работе · Марина</div>
+        </div>
+
+        <div id="tp-body">
+          <div class="tp-row">
+            <div class="tp-col">
+              <div class="tp-bub client">Не работает на мобильном интернете</div>
+              <div class="tp-meta l">21:47</div>
+            </div>
+          </div>
+          <div class="tp-row">
+            <div class="tp-col">
+              <div class="tp-bub ai"><div id="tp-badge">ИИ</div>Это ограничение мобильной сети — включите WhiteList по инструкции.</div>
+              <div class="tp-meta l">21:47</div>
+            </div>
+          </div>
+          <div class="tp-row">
+            <div class="tp-col">
+              <div class="tp-bub client">Уже пробовал. Не помогло.</div>
+              <div class="tp-meta l">21:48</div>
+            </div>
+          </div>
+          <div class="tp-row" id="tp-sent" style="justify-content:flex-end">
+            <div class="tp-col">
+              <div class="tp-bub op">Откройте приложение → «Настройки» → включите WhiteList и переподключитесь.</div>
+              <div class="tp-meta r">Марина · 21:49</div>
+            </div>
+          </div>
+        </div>
+
+        <div id="tp-composer">
+          <div id="tp-panel">
+            <div id="tp-panel-head">Поиск шаблонов...</div>
+            <div class="tp-item" id="tp-i1"><div class="tp-sel" id="tp-i1-sel"></div><span>WhiteList — подключение на мобильном</span></div>
+            <div class="tp-item" id="tp-i2"><div class="tp-sel"></div><span>Продление подписки</span></div>
+            <div class="tp-item" id="tp-i3"><div class="tp-sel"></div><span>Сброс ключа и переустановка</span></div>
+          </div>
+          <div id="tp-box">
+            <span id="tp-text">
+              <span id="tp-slash">/</span>
+              <span id="tp-full">Откройте приложение → «Настройки» → включите WhiteList…</span>
+            </span>
+            <div id="tp-send">➤</div>
+          </div>
+        </div>
+      </div>
+
+      <script>
+        (function () {
+          var tl = gsap.timeline({ paused: true });
+          // scene starts at 10.54 — local t = global t − 10.54
+          // beat-grid: global 11.06s — the operator types «/»
+          tl.fromTo("#tp-head", { opacity: 0, y: -12 }, { opacity: 1, y: 0, duration: 0.28, ease: "power2.out" }, 0.02);
+          tl.fromTo("#tp-body", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 0.08);
+          tl.to("#tp-slash", { opacity: 1, duration: 0.01 }, 0.52);
+          tl.fromTo("#tp-panel", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 0.52);
+          // beat-grid: global 11.60 / 12.12 — template rows, one per beat
+          tl.fromTo("#tp-i1", { opacity: 0, x: -12 }, { opacity: 1, x: 0, duration: 0.26, ease: "power2.out" }, 1.06);
+          tl.fromTo("#tp-i2", { opacity: 0, x: -12 }, { opacity: 1, x: 0, duration: 0.26, ease: "power2.out" }, 1.30);
+          tl.fromTo("#tp-i3", { opacity: 0, x: -12 }, { opacity: 1, x: 0, duration: 0.26, ease: "power2.out" }, 1.58);
+          // beat-grid: global 12.65s — the WhiteList template is picked
+          tl.to("#tp-i1-sel", { opacity: 1, duration: 0.14, ease: "power2.out" }, 2.11);
+          tl.to("#tp-panel", { opacity: 0, y: 10, duration: 0.2, ease: "power2.in" }, 2.26);
+          tl.to("#tp-slash", { opacity: 0, duration: 0.01 }, 2.26);
+          tl.to("#tp-full", { opacity: 1, duration: 0.01 }, 2.26);
+          // beat-grid: global 13.18s — sent
+          tl.to("#tp-full", { opacity: 0, duration: 0.01 }, 2.64);
+          tl.fromTo("#tp-sent", { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: 0.36, ease: "power3.out" }, 2.64);
+          window.__timelines["scr-tmpl"] = tl;
+        })();
+      </script>
+    </template>
+  </body>
+</html>
