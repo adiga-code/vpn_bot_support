@@ -162,6 +162,7 @@ function Icon({ name, className = "w-4 h-4", strokeWidth = 1.75 }) {
     paperclip: <><path d="m21 12-9.5 9.5a5 5 0 0 1-7-7L13 5a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 7" /></>,
     chevronDown: <><path d="m6 9 6 6 6-6" /></>,
     chevronRight: <><path d="m9 6 6 6-6 6" /></>,
+    chevronLeft: <><path d="m15 6-6 6 6 6" /></>,
     x: <><path d="M18 6 6 18M6 6l12 12" /></>,
     check: <><path d="M20 6 9 17l-5-5" /></>,
     plus: <><path d="M12 5v14M5 12h14" /></>,
@@ -205,6 +206,128 @@ function Icon({ name, className = "w-4 h-4", strokeWidth = 1.75 }) {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={className}>
       {paths[name]}
     </svg>
+  );
+}
+
+// ── Горизонтальный ряд, который удобно листать мышью ────────────────────────
+// Тонкий скроллбар в узкой панели трудно поймать курсором, поэтому он скрыт, а
+// ряд листается тремя способами: колесом при наведении, перетаскиванием мышью
+// и стрелками по краям (видны, только если в ту сторону есть куда ехать).
+// На тач-экранах остаётся родной свайп. activeKey — ключ активного элемента:
+// при его смене элемент с data-active подтягивается в видимую область.
+function ScrollTabs({ children, className = "", activeKey, edge = "#13131a" }) {
+  const scrollerRef = useRef(null);
+  const dragRef = useRef(null);
+  const suppressClick = useRef(false);
+  const [canLeft,  setCanLeft]  = useState(false);
+  const [canRight, setCanRight] = useState(false);
+  const [dragging, setDragging] = useState(false);
+
+  const measure = () => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    setCanLeft(el.scrollLeft > 1);
+    setCanRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  };
+
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    // Меняется число или ширина вкладок (счётчики подгрузились) — стрелки
+    // должны пересчитаться, хотя размер самого контейнера прежний.
+    const mo = new MutationObserver(measure);
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => { ro.disconnect(); mo.disconnect(); };
+  }, []);
+
+  // Колесо: вертикальный жест превращается в горизонтальную прокрутку. Слушатель
+  // нативный и не пассивный — в React-овском onWheel preventDefault не работает.
+  // На краю колесо отдаётся странице, иначе панель «залипала» бы под курсором.
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const onWheel = (e) => {
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;  // тачпад сам едет вбок
+      const max = el.scrollWidth - el.clientWidth;
+      if (max <= 0) return;
+      const dir = Math.sign(e.deltaY);
+      if ((dir < 0 && el.scrollLeft <= 0) || (dir > 0 && el.scrollLeft >= max - 1)) return;
+      e.preventDefault();
+      // deltaMode 1 — строки (Firefox): приводим к пикселям.
+      el.scrollLeft += e.deltaY * (e.deltaMode === 1 ? 16 : 1);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  useEffect(() => {
+    const active = scrollerRef.current?.querySelector("[data-active=true]");
+    active?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "smooth" });
+  }, [activeKey]);
+
+  const onPointerDown = (e) => {
+    if (e.pointerType !== "mouse" || e.button !== 0) return;
+    dragRef.current = { x: e.clientX, left: scrollerRef.current.scrollLeft, moved: false };
+  };
+  const onPointerMove = (e) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = e.clientX - d.x;
+    if (!d.moved) {
+      if (Math.abs(dx) < 4) return;   // меньше порога — это ещё клик по вкладке
+      d.moved = true;
+      scrollerRef.current.setPointerCapture(e.pointerId);
+      setDragging(true);
+    }
+    scrollerRef.current.scrollLeft = d.left - dx;
+  };
+  const endDrag = (e) => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    if (!d?.moved) return;
+    // Отпускание после перетаскивания даёт click на вкладке под курсором —
+    // гасим его, чтобы вкладка не переключилась.
+    suppressClick.current = true;
+    setTimeout(() => { suppressClick.current = false; }, 0);
+    try { scrollerRef.current.releasePointerCapture(e.pointerId); } catch {}
+    setDragging(false);
+  };
+
+  const scrollByPage = (dir) => {
+    const el = scrollerRef.current;
+    el.scrollBy({ left: dir * Math.max(80, el.clientWidth * 0.7), behavior: "smooth" });
+  };
+
+  const arrow = (side, visible) => (
+    <button type="button" tabIndex={-1} aria-label={side === "left" ? "Прокрутить влево" : "Прокрутить вправо"}
+      onClick={() => scrollByPage(side === "left" ? -1 : 1)}
+      className={"absolute top-0 bottom-0 z-10 w-8 flex items-center transition-opacity " +
+        (side === "left" ? "left-0 justify-start pl-0.5" : "right-0 justify-end pr-0.5") + " " +
+        (visible ? "opacity-100" : "opacity-0 pointer-events-none")}
+      style={{ background: `linear-gradient(${side === "left" ? "to right" : "to left"}, ${edge} 55%, transparent)` }}>
+      <span className="w-5 h-5 rounded-full bg-[#1a1a24] border border-[#2a2a3a] text-[#9ca3af] hover:text-[#f1f1f5] hover:border-[#4F8EF7]/50 flex items-center justify-center">
+        <Icon name={side === "left" ? "chevronLeft" : "chevronRight"} className="w-3 h-3" strokeWidth={2.5} />
+      </span>
+    </button>
+  );
+
+  return (
+    <div className="relative shrink-0">
+      {arrow("left", canLeft)}
+      <div ref={scrollerRef}
+        onScroll={measure}
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+        onPointerUp={endDrag} onPointerCancel={endDrag}
+        onClickCapture={(e) => { if (suppressClick.current) { e.stopPropagation(); e.preventDefault(); } }}
+        className={"flex overflow-x-auto no-scrollbar select-none " +
+          (dragging ? "cursor-grabbing " : "cursor-grab ") + className}>
+        {children}
+      </div>
+      {arrow("right", canRight)}
+    </div>
   );
 }
 

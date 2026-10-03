@@ -2012,11 +2012,12 @@ function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmi
   const tabs = [
     { id: "profile",   label: "Профиль" },
     { id: "keys",      label: "Ключи",    count: data?.keys?.length },
-    { id: "referrals", label: "Рефералы", count: data?.referrals?.length },
-    // «История» разъехалась надвое: прошлые обращения — это тикеты, а
-    // «Действия» — что происходило с самим аккаунтом клиента.
-    { id: "tickets",   label: "Обращения", count: (conv.tickets || []).length },
+    // «История» разъехалась надвое: «Действия» — что происходило с самим
+    // аккаунтом клиента, а прошлые обращения — это тикеты. Действия стоят
+    // сразу после ключей: оператор заходит туда чаще, чем в рефералы.
     { id: "activity",  label: "Действия" },
+    { id: "referrals", label: "Рефералы", count: data?.referrals?.length },
+    { id: "tickets",   label: "Обращения", count: (conv.tickets || []).length },
   ];
 
   return (
@@ -2053,12 +2054,13 @@ function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmi
         )}
       </div>
 
-      {/* Вкладки. scrollbar-thin, а не no-scrollbar: панель узкая (320px), и
-          когда вкладки не помещаются, скрытый скроллбар не давал понять, что
-          часть вкладок обрезана, а не просто отсутствует. */}
-      <div className="flex px-1 border-b border-[#2a2a3a] shrink-0 overflow-x-auto scrollbar-thin">
+      {/* Вкладки. Панель узкая (320px), и вкладки в неё не помещаются. Тонкий
+          скроллбар трудно поймать мышью, поэтому ряд листается колесом,
+          перетаскиванием и стрелками по краям (ScrollTabs): стрелка и
+          затухание показывают, что часть вкладок скрыта, а не отсутствует. */}
+      <ScrollTabs activeKey={tab} className="px-1 border-b border-[#2a2a3a]">
         {tabs.map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)}
+          <button key={t.id} onClick={() => setTab(t.id)} data-active={tab === t.id}
                   className={"shrink-0 px-1.5 py-2 text-xs font-medium border-b-2 -mb-px whitespace-nowrap transition " +
                     (tab === t.id
                       ? "border-[#4F8EF7] text-[#7BA8F9]"
@@ -2067,7 +2069,7 @@ function UserInfoPanel({ conv, showToast, onTicketClick, compact = false, isAdmi
             {t.count > 0 && <span className="ml-1 opacity-60 font-mono">{t.count}</span>}
           </button>
         ))}
-      </div>
+      </ScrollTabs>
 
       <div className="p-4 space-y-4 min-h-0">
         {loading && !data && (
