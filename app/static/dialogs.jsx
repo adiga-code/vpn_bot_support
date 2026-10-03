@@ -252,7 +252,7 @@ function MessageBubble({ msg, onImageClick, compact = false }) {
   }
   if (msg.kind === "ai") {
     return (
-      <div className="flex justify-start">
+      <div className="flex justify-end">
         <div className={wide}>
           <div className="bg-[#4F8EF7]/12 border border-[#4F8EF7]/25 text-[#f1f1f5] px-3.5 py-2.5 rounded-2xl rounded-tl-md text-sm leading-relaxed relative">
             <div className="absolute -top-2 left-3 flex items-center gap-1 bg-[#4F8EF7] text-white text-[9px] font-bold px-1.5 py-0.5 rounded">
