@@ -1792,8 +1792,14 @@ function ScheduleSection({ showToast }) {
   );
 }
 
+// Темы по умолчанию — те же, что DEFAULT_TOPICS в app/classifier.py.
+const DEFAULT_TOPICS = ["Оплата и подписка", "Подключение и настройка", "Скорость и качество связи",
+                        "Отмена и возврат", "Технические проблемы", "Другое"];
+const FALLBACK_TOPIC = "Другое";
+
 function AISection({ showToast, service }) {
   const [settings, setSettings] = useStateT(null);
+  const [newTopic, setNewTopic] = useStateT("");
 
   useEffectT(() => {
     setSettings(null);
@@ -1804,7 +1810,24 @@ function AISection({ showToast, service }) {
     try {
       await window.apiFetch("PUT", "/api/settings/ai" + svcQuery(service), settings);
       showToast("Настройки ИИ сохранены");
-    } catch { showToast("Ошибка сохранения"); }
+    } catch (e) {
+      showToast(typeof e?.detail === "string" ? e.detail : "Ошибка сохранения");
+    }
+  }
+
+  // Темы обращений: «Другое» — запасная, она всегда последняя и не удаляется.
+  const topicList = (settings?.topics || DEFAULT_TOPICS).filter((t) => t !== FALLBACK_TOPIC);
+  const setTopics = (list) => setSettings((s) => ({ ...s, topics: [...list, FALLBACK_TOPIC] }));
+  function addTopic() {
+    const t = newTopic.replace(/\s+/g, " ").trim();
+    if (!t) return;
+    if (t.length > 40) { showToast("Тема длиннее 40 символов"); return; }
+    if (topicList.length >= 19) { showToast("Тем не больше 20"); return; }
+    if (topicList.some((x) => x.toLowerCase() === t.toLowerCase()) || t.toLowerCase() === FALLBACK_TOPIC.toLowerCase()) {
+      setNewTopic(""); return;
+    }
+    setTopics([...topicList, t]);
+    setNewTopic("");
   }
 
   if (!settings) return <div className="p-6 text-[#6b7280] text-sm">Загрузка...</div>;
@@ -1849,6 +1872,44 @@ function AISection({ showToast, service }) {
             onChange={(e) => setSettings((s) => ({ ...s, temperature: parseFloat(e.target.value) }))}
             className="w-full accent-[#4F8EF7]" />
         </div>
+      </div>
+      <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl divide-y divide-[#2a2a3a]/60">
+        <SettingsRow title="Темы обращений для статистики"
+          desc="ИИ определяет тему первого сообщения в каждом тикете — из этого строится «Топ частых вопросов»"
+          control={<Switch on={settings.classification_enabled !== false}
+                           onChange={() => setSettings((s) => ({ ...s, classification_enabled: s.classification_enabled === false }))} />} />
+        {settings.classification_enabled !== false && (
+          <div className="px-5 py-4 space-y-3">
+            <div className="text-xs text-[#6b7280]">
+              Темы этого ВПН-а. ИИ относит обращение к одной из них, остальное попадает в «{FALLBACK_TOPIC}».
+              Сохраняется общей кнопкой ниже. Старые обращения остаются со старыми названиями тем.
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {topicList.map((t) => (
+                <span key={t} className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full text-xs bg-[#4F8EF7]/10 text-[#7BA8F9] border border-[#4F8EF7]/30">
+                  {t}
+                  <button type="button" onClick={() => setTopics(topicList.filter((x) => x !== t))}
+                    aria-label={"Убрать тему " + t}
+                    className="w-4 h-4 rounded-full flex items-center justify-center hover:bg-[#4F8EF7]/25">
+                    <Icon name="x" className="w-3 h-3" strokeWidth={2.5} />
+                  </button>
+                </span>
+              ))}
+              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs bg-[#1a1a24] text-[#6b7280] border border-[#2a2a3a]"
+                    title="Запасная тема, удалить нельзя">{FALLBACK_TOPIC}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <input value={newTopic} onChange={(e) => setNewTopic(e.target.value)} maxLength={40}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addTopic(); } }}
+                placeholder="Новая тема, например «Блокировки РКН»"
+                className="flex-1 min-w-0 bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-[#f1f1f5] focus:outline-none focus:border-[#4F8EF7]/50 placeholder:text-[#6b7280]" />
+              <button type="button" onClick={addTopic}
+                className="px-3 py-2 rounded-lg bg-[#4F8EF7]/10 hover:bg-[#4F8EF7]/20 text-[#7BA8F9] text-xs font-semibold border border-[#4F8EF7]/30">Добавить</button>
+              <button type="button" onClick={() => setSettings((s) => ({ ...s, topics: [...DEFAULT_TOPICS] }))}
+                className="px-3 py-2 rounded-lg text-xs text-[#6b7280] hover:text-[#f1f1f5] hover:bg-[#1a1a24]">Стандартные</button>
+            </div>
+          </div>
+        )}
       </div>
       <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl p-5">
         <div className="text-sm font-medium text-[#f1f1f5] mb-1">Системный промпт</div>
@@ -2080,6 +2141,8 @@ function KBSection({ service, isAdmin = false }) {
   const [catFilter,  setCatFilter]  = useStateT("all");
   const [editor,     setEditor]     = useStateT(null);  // {} — новая статья, объект — правка
   const [exporting,  setExporting]  = useStateT(false);
+  const [syncing,    setSyncing]    = useStateT(false);
+  const [syncMsg,    setSyncMsg]    = useStateT(null);
   const fileRef = React.createRef();
 
   function reload() {
@@ -2148,6 +2211,23 @@ function KBSection({ service, isAdmin = false }) {
     } catch {
     } finally {
       setDeleting(null);
+    }
+  }
+
+  // Вернуть статьи, которые есть в Qdrant сервиса, а в списке пропали.
+  async function handleSync() {
+    setSyncing(true);
+    setUploadErr(null);
+    try {
+      const res = await window.apiFetch("POST", "/api/kb/sync" + svcQuery(service));
+      await reload();
+      setSyncMsg(res.restored > 0 ? `Восстановлено статей: ${res.restored}`
+                                  : "Список совпадает с Qdrant — восстанавливать нечего");
+      setTimeout(() => setSyncMsg(null), 6000);
+    } catch (e) {
+      setUploadErr(kbErrorText(e, "Не удалось синхронизировать с Qdrant"));
+    } finally {
+      setSyncing(false);
     }
   }
 
@@ -2227,6 +2307,14 @@ function KBSection({ service, isAdmin = false }) {
               {exporting ? "Выгрузка..." : "Скачать .md"}
             </button>
           )}
+          {isAdmin && (
+            <button onClick={handleSync} disabled={syncing}
+              title="Вернуть статьи, которые есть в Qdrant этого сервиса, а в списке пропали"
+              className="px-3 py-2 rounded-lg bg-[#1a1a24] hover:bg-[#22222e] text-[#c4c4d0] text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 border border-[#2a2a3a]">
+              <Icon name="refresh" className={"w-3.5 h-3.5 " + (syncing ? "animate-spin" : "")} strokeWidth={2.5} />
+              {syncing ? "Синхронизация..." : "Синхронизировать с Qdrant"}
+            </button>
+          )}
           {isAdmin && articles && articles.length > 0 && (
             <button onClick={handleReset} disabled={resetting}
               className="px-3 py-2 rounded-lg bg-[#ef4444]/10 hover:bg-[#ef4444]/20 text-[#ef4444] text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 border border-[#ef4444]/20">
@@ -2257,6 +2345,11 @@ function KBSection({ service, isAdmin = false }) {
       {uploadErr && (
         <div className="text-sm text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-4 py-2">
           {uploadErr}
+        </div>
+      )}
+      {syncMsg && (
+        <div className="text-sm text-[#4ade80] bg-[#22c55e]/10 border border-[#22c55e]/20 rounded-lg px-4 py-2">
+          {syncMsg}
         </div>
       )}
 

@@ -13,12 +13,13 @@ from pydantic import BaseModel, Field
 
 from app.ai_client import make_chat_client, make_kb_chat_client
 from app.auth import create_token, decode_token, hash_password, verify_password
+from app.classifier import DEFAULT_TOPICS, classify_message, normalize_topics
 from app.config import Settings
 from app.database import DatabaseManager, validate_slug as _validate_slug
 from app.dialogs import parse_ai_enabled, resolve_service, user_info_from
 from app.kb import (
     CATEGORY_LABELS, compose_content, delete_from_qdrant, export_markdown, index_article,
-    make_slug, process_document, split_content, split_number,
+    make_slug, process_document, restore_service_kb, split_content, split_number,
 )
 from app.media import internalize
 from app.redact import mask_tail, mask_url, redact
@@ -58,7 +59,10 @@ _AI_DEFAULTS = {
     "temperature": 0.7,
     "auto_reply": True,
     "handoff_enabled": True,
-    "classification_enabled": False,
+    # Тема каждого нового обращения для «Топа вопросов» в статистике; список
+    # тем у каждого ВПН-а свой и правится в «ИИ-настройках».
+    "classification_enabled": True,
+    "topics": list(DEFAULT_TOPICS),
 }
 
 # Блок «временная проблема» — дописывается в конец промпта ответчика, пока
@@ -136,7 +140,8 @@ class AISettingsBody(BaseModel):
     temperature: float
     auto_reply: bool
     handoff_enabled: bool
-    classification_enabled: bool = False
+    classification_enabled: bool = True
+    topics: list[str] = list(DEFAULT_TOPICS)
 
 class NotifPrefsBody(BaseModel):
     new_dialog:      bool = True
@@ -1053,7 +1058,90 @@ def build_app(
                         operator: dict = Depends(require_auth)):
         if operator["role"] != "admin":
             raise HTTPException(403, "Admin only")
-        return await db.get_stats(days, await _stats_scope(service_id, operator))
+        ids = await _stats_scope(service_id, operator)
+        stats = await db.get_stats(days, ids)
+        # Откуда пустой «Топ вопросов»: классификация выключена у сервиса или
+        # прошлые обращения просто не размечены.
+        on_ids, off_names = [], []
+        for sid in ids:
+            ai = await db.get_setting_json("ai_settings", None, sid) or {}
+            if ai.get("classification_enabled", True):
+                on_ids.append(sid)
+            else:
+                off_names.append((await db.get_service(sid))["name"])
+        stats["classification"] = {
+            "off_services": off_names,
+            "unclassified": await db.count_unclassified_tickets(days, on_ids) if on_ids else 0,
+        }
+        return stats
+
+    # Разметка прошлых обращений темами: дорогая (вызов модели на тикет), поэтому
+    # только по кнопке, фоном и не больше _CLASSIFY_LIMIT за раз.
+    _CLASSIFY_LIMIT = 1000
+    _classify_state = {"running": False, "done": 0, "total": 0}
+
+    @app.post("/api/stats/classify-history")
+    async def classify_history(days: int = 30, service_id: Optional[int] = None,
+                               operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        has_key = settings.CHAT_PROVIDER == "gemini" or bool(settings.OPENAI_API_KEY)
+        if not chat_client or not has_key:
+            raise HTTPException(400, "Для разметки нужен ключ модели (OPENAI_API_KEY)")
+        if _classify_state["running"]:
+            return {"queued": 0, "running": True, **_classify_state}
+        jobs, skipped = [], []
+        for sid in await _stats_scope(service_id, operator):
+            ai = await db.get_setting_json("ai_settings", None, sid) or {}
+            if not ai.get("classification_enabled", True):
+                skipped.append((await db.get_service(sid))["name"])
+                continue
+            room = _CLASSIFY_LIMIT - len(jobs)
+            if room <= 0:
+                break
+            for m in await db.get_unclassified_first_messages(days, sid, room):
+                jobs.append((m["id"], m["text"], ai.get("topics")))
+        if jobs:
+            asyncio.create_task(_run_classify(jobs))
+        return {"queued": len(jobs), "skipped_services": skipped, "running": bool(jobs)}
+
+    async def _run_classify(jobs: list):
+        _classify_state.update(running=True, done=0, total=len(jobs))
+        sem = asyncio.Semaphore(5)
+
+        async def one(msg_id, text, topics):
+            async with sem:
+                try:
+                    category = await classify_message(text, chat_client, topics)
+                    if category:
+                        await db.update_message_category(msg_id, category)
+                except Exception as e:
+                    print(f"[classifier] history error: {e}")
+                finally:
+                    _classify_state["done"] += 1
+
+        try:
+            await asyncio.gather(*(one(*j) for j in jobs))
+            print(f"[classifier] история размечена: {len(jobs)} тикетов")
+        finally:
+            _classify_state["running"] = False
+
+    @app.get("/api/stats/ratings")
+    async def get_rating_stats(days: int = 30, service_id: Optional[int] = None,
+                               operator: dict = Depends(require_auth)):
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        ids = await _stats_scope(service_id, operator)
+        data = await db.get_rating_stats(days, ids)
+        # Без включённого «запроса оценки» клиенты её не ставят — подсказываем,
+        # где включить, вместо немого «нет данных».
+        off = []
+        for sid in ids:
+            auto = await db.get_setting_json("automation", None, sid) or {}
+            if not auto.get("rating_enabled"):
+                off.append((await db.get_service(sid))["name"])
+        data["rating_off_services"] = off
+        return data
 
     @app.get("/api/stats/times")
     async def get_time_stats(days: int = 30, service_id: Optional[int] = None,
@@ -1812,6 +1900,10 @@ def build_app(
             raise HTTPException(403, "Admin only")
         service = await require_service(service_id, operator)
         data = body.model_dump()
+        try:
+            data["topics"] = normalize_topics(data["topics"])
+        except ValueError as e:
+            raise HTTPException(422, str(e))
         await db.set_setting_json("ai_settings", data, service["id"])
         await _sync_ai_settings_to_redis(data, service)
         return {"ok": True}
@@ -1915,7 +2007,7 @@ def build_app(
         chunk = _kb_chunk(body, "")
         # Слаг — как у загрузки: номер раздела префиксом + транслит заголовка.
         num, rest = split_number(chunk["title"])
-        chunk["id"] = make_slug(rest or chunk["title"], await db.kb_article_ids(),
+        chunk["id"] = make_slug(rest or chunk["title"], await db.kb_article_ids(service["id"]),
                                 prefix=num.replace(".", "-") + "-" if num else "")
         await _kb_index(chunk, service)
         await db.save_kb_article(
@@ -1970,6 +2062,21 @@ def build_app(
                 c["content"], service["id"], c.get("position", 0),
             )
         return {"chunks_created": len(chunks), "ids": [c["id"] for c in chunks]}
+
+    @app.post("/api/kb/sync")
+    async def sync_kb_from_qdrant(service_id: Optional[int] = None,
+                                  operator: dict = Depends(require_auth)):
+        """Вернуть в список статьи, которые есть в Qdrant сервиса, а в панели
+        пропали (например, после старой ошибки с общим ключом статей)."""
+        if operator["role"] != "admin":
+            raise HTTPException(403, "Admin only")
+        service = await require_service(service_id, operator)
+        try:
+            restored = await restore_service_kb(db, service, settings.QDRANT_URL)
+        except Exception as e:
+            print(f"[KB] sync failed: {e}")
+            raise HTTPException(502, f"Qdrant недоступен: {e}")
+        return {"restored": restored}
 
     @app.delete("/api/kb")
     async def reset_kb_all(service_id: Optional[int] = None,

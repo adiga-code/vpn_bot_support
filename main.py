@@ -14,6 +14,7 @@ from app.database import DatabaseManager
 from app.fallback_sender import FallbackSenderService
 from app.history_export import HistoryExporter
 from app.health import ServiceHealthMonitor, load_plugins
+from app.kb import restore_all_kb_once
 from app.n8n_client import N8NClient
 from app.rabbitmq_consumer import RabbitMQConsumer
 from app.redact import redact
@@ -156,12 +157,19 @@ async def main():
 
     print(f"Helpdesk starting on http://{settings.WEB_HOST}:{settings.WEB_PORT}")
 
+    async def restore_kb():
+        try:
+            await restore_all_kb_once(db, settings.QDRANT_URL)
+        except Exception as e:
+            print(f"[kb] восстановление пропущено: {e}")
+
     try:
         await asyncio.gather(
             server.serve(),
             consumer.consume(),
             health_monitor.run_forever(),
             routing.sweep_forever(),
+            restore_kb(),
         )
     finally:
         await history_exporter.close()

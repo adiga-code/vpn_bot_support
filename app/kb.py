@@ -431,6 +431,90 @@ async def ensure_collection(qdrant_url: str, collection: str):
     await client.close()
 
 
+async def read_from_qdrant(qdrant_url: str, collection: str) -> list[dict]:
+    """Все статьи коллекции в формате чанков БД (без векторов). Нужна, чтобы
+    вернуть в панель статьи, которые в Qdrant есть, а в таблице kb_articles
+    пропали. Коллекции нет — пустой список. Ошибка связи пробрасывается:
+    «Qdrant недоступен» и «в коллекции пусто» — разные вещи."""
+    client = AsyncQdrantClient(url=qdrant_url)
+    try:
+        try:
+            await client.get_collection(collection)
+        except Exception:
+            if await _collection_missing(client, collection):
+                return []
+            raise
+        chunks, offset = [], None
+        while True:
+            points, offset = await client.scroll(
+                collection_name=collection, limit=256, offset=offset,
+                with_payload=True, with_vectors=False,
+            )
+            for p in points:
+                payload = p.payload or {}
+                meta = payload.get("metadata") or {}
+                article_id, content = meta.get("article_id"), payload.get("content")
+                if not article_id or not content:
+                    continue
+                chunks.append({
+                    "id":       article_id,
+                    "title":    meta.get("title") or article_id,
+                    "category": meta.get("category") or "faq",
+                    "keywords": meta.get("keywords") or [],
+                    "content":  content,
+                })
+            if offset is None:
+                break
+    finally:
+        await client.close()
+    # Порядок документа: по номеру в начале заголовка, статьи без номера — в
+    # конце в порядке Qdrant. get_kb_articles всё равно сортирует по номеру,
+    # position нужен только как запасной порядок.
+    chunks.sort(key=lambda c: (0, number_key(c["title"])) if number_key(c["title"]) is not None
+                else (1, ()))
+    for i, c in enumerate(chunks):
+        c["position"] = i
+    return chunks
+
+
+async def restore_service_kb(db, service: dict, qdrant_url: str) -> int:
+    """Вернуть в панель статьи сервиса, которые есть в его коллекции Qdrant, а
+    в таблице пропали. Ничего не удаляет и не перезаписывает. Возвращает число
+    восстановленных статей."""
+    chunks = await read_from_qdrant(qdrant_url, service["qdrant_collection"])
+    return await db.restore_kb_articles(service["id"], chunks) if chunks else 0
+
+
+async def restore_all_kb_once(db, qdrant_url: str):
+    """Разовое восстановление после смены первичного ключа kb_articles:
+    у сервисов, чьи статьи были «перевешены» чужой загрузкой, список в панели
+    пуст при полном Qdrant. Флаг ставится только если Qdrant ответил по всем
+    сервисам — иначе попытка повторится при следующем старте. Запускается
+    после старта, чтобы недоступный Qdrant не задерживал панель."""
+    if await db.get_setting("kb_restore_v1"):
+        return
+    ok = True
+    for service in await db.get_services(only_active=False):
+        try:
+            restored = await restore_service_kb(db, service, qdrant_url)
+            if restored:
+                print(f"[kb] восстановлено из Qdrant: {restored} статей "
+                      f"сервиса '{service['slug']}'")
+        except Exception as e:
+            ok = False
+            print(f"[kb] восстановление '{service['slug']}' не удалось: {e}")
+    if ok:
+        await db.set_setting("kb_restore_v1", "1")
+
+
+async def _collection_missing(client, collection: str) -> bool:
+    try:
+        names = {c.name for c in (await client.get_collections()).collections}
+    except Exception:
+        return False
+    return collection not in names
+
+
 async def delete_collection(qdrant_url: str, collection: str):
     """Полный сброс базы знаний одного сервиса."""
     client = AsyncQdrantClient(url=qdrant_url)

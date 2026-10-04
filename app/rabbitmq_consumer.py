@@ -163,7 +163,8 @@ class RabbitMQConsumer:
         is_new = await self.db.get_user_message_count(dialog_id) == 1
 
         if text and file_type == "text":
-            asyncio.create_task(self._classify_later(msg_row["id"], text, service["id"]))
+            asyncio.create_task(
+                self._classify_later(msg_row["id"], text, service["id"], dialog_id))
 
         if operator_called:
             await self.db.update_operator_called(dialog_id, True)
@@ -215,12 +216,18 @@ class RabbitMQConsumer:
             if count == n:
                 asyncio.create_task(self.n8n.send_operator_button(chat_id, dialog_id, updated))
 
-    async def _classify_later(self, msg_id: int, text: str, service_id: int):
+    async def _classify_later(self, msg_id: int, text: str, service_id: int, dialog_id: str):
+        """Тема обращения для статистики «Топ вопросов». Размечается только
+        ПЕРВОЕ текстовое сообщение тикета: «спасибо» и уточнения вопросом не
+        считаются, а вызовов модели в разы меньше."""
         try:
-            ai_settings = await self.db.get_setting_json("ai_settings", {}, service_id)
-            if not ai_settings.get("classification_enabled") or not self.chat_client:
+            ai_settings = await self.db.get_setting_json("ai_settings", None, service_id) or {}
+            # Сервис, который ни разу не сохранял ИИ-настройки, тоже размечается.
+            if not ai_settings.get("classification_enabled", True) or not self.chat_client:
                 return
-            category = await classify_message(text, self.chat_client)
+            if await self.db.count_user_text_messages(dialog_id) != 1:
+                return
+            category = await classify_message(text, self.chat_client, ai_settings.get("topics"))
             if category:
                 await self.db.update_message_category(msg_id, category)
                 print(f"[classifier] msg {msg_id} → {category}")

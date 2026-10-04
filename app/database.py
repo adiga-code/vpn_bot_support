@@ -203,6 +203,8 @@ class DatabaseManager:
             ("dialogs", "summary",              "TEXT"),
             ("dialogs", "rating",               "SMALLINT"),
             ("dialogs", "closed_at",            "TIMESTAMPTZ"),
+            # Когда клиент поставил оценку — для статистики оценок по периодам.
+            ("dialogs", "rated_at",             "TIMESTAMPTZ"),
             ("dialogs", "assigned_operator",    "TEXT"),
             ("dialogs", "waiting_reason",       "TEXT"),
             ("dialogs", "sla_seconds_total",    "INTEGER NOT NULL DEFAULT 0"),
@@ -401,6 +403,49 @@ class DatabaseManager:
         # Диалог и статья БЗ всегда принадлежат сервису (после бэкфилла NULL-ов нет).
         await conn.execute("ALTER TABLE dialogs     ALTER COLUMN service_id SET NOT NULL")
         await conn.execute("ALTER TABLE kb_articles ALTER COLUMN service_id SET NOT NULL")
+
+        # Статья БЗ принадлежит сервису: ключ (service_id, id), а не один id.
+        # Слаги считаются из заголовков, поэтому один и тот же документ в двух
+        # сервисах даёт одинаковые id — при ключе по одному id загрузка во второй
+        # сервис «перевешивала» строки первого на второй, и у первого список в
+        # панели пустел, хотя векторы в его коллекции Qdrant оставались.
+        kb_pk = await conn.fetchval("""
+            SELECT COUNT(*) FROM information_schema.key_column_usage
+            WHERE table_schema='public' AND table_name='kb_articles'
+              AND constraint_name='kb_articles_pkey'
+        """)
+        if kb_pk == 1:
+            await conn.execute("ALTER TABLE kb_articles DROP CONSTRAINT kb_articles_pkey")
+            await conn.execute("ALTER TABLE kb_articles ADD PRIMARY KEY (service_id, id)")
+            print("[migrate] kb_articles: первичный ключ теперь (service_id, id)")
+
+        # «Классификация обращений» питает «Топ вопросов» в статистике, но
+        # переключателя в панели не было вовсе, и в сохранённых ИИ-настройках
+        # лежал дефолтный False — не выбор админа. Включаем один раз; дальше
+        # переключатель в «ИИ-настройках» решает сам админ.
+        if not await conn.fetchval(
+            "SELECT value FROM settings WHERE key='classification_on_v1' AND service_id=$1",
+            GLOBAL_SERVICE_ID,
+        ):
+            for row in await conn.fetch(
+                "SELECT service_id, value FROM settings WHERE key='ai_settings'"
+            ):
+                try:
+                    data = json.loads(row["value"])
+                except Exception:
+                    continue
+                if isinstance(data, dict) and data.get("classification_enabled") is False:
+                    data["classification_enabled"] = True
+                    await conn.execute(
+                        "UPDATE settings SET value=$1, updated_at=NOW() "
+                        "WHERE key='ai_settings' AND service_id=$2",
+                        json.dumps(data, ensure_ascii=False), row["service_id"],
+                    )
+            await conn.execute(
+                "INSERT INTO settings (key, value, service_id) "
+                "VALUES ('classification_on_v1', '1', $1) ON CONFLICT DO NOTHING",
+                GLOBAL_SERVICE_ID,
+            )
 
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS dialogs_service_status_idx ON dialogs (service_id, status)"
@@ -1219,21 +1264,141 @@ class DatabaseManager:
             "daily": daily,
             "hourly": hourly,
             "operators": operators,
-            "top_questions": await self._get_top_questions(sids),
+            "top_questions": await self._get_top_questions(days, sids),
+            "top_meta": await self._get_top_meta(days, sids),
         }
 
-    async def _get_top_questions(self, service_ids: list[int]) -> list[dict]:
+    # Тема обращения — это category ПЕРВОГО текстового сообщения тикета
+    # (см. rabbitmq_consumer._classify_later), поэтому считаем тикеты, а не
+    # сообщения. Период — по дате создания тикета и тот же, что выбран в
+    # статистике.
+    async def _get_top_questions(self, days: int, service_ids: list[int]) -> list[dict]:
         rows = await self.pool.fetch(
-            """SELECT m.category AS q, COUNT(*) AS count
+            """SELECT m.category AS q, COUNT(DISTINCT m.dialog_id) AS count
                FROM messages m
                JOIN dialogs d ON d.dialog_id = m.dialog_id
                WHERE d.service_id = ANY($1::int[])
                  AND m.kind='user' AND m.category IS NOT NULL
-                 AND m.created_at >= NOW() - '30 days'::interval
-               GROUP BY m.category ORDER BY count DESC LIMIT 10""",
-            service_ids,
+                 AND d.created_at >= NOW() - make_interval(days => $2)
+               GROUP BY m.category ORDER BY count DESC, m.category LIMIT 10""",
+            service_ids, days,
         )
         return [{"q": r["q"], "count": r["count"]} for r in rows]
+
+    async def _get_top_meta(self, days: int, service_ids: list[int]) -> dict:
+        """Сколько тикетов периода уже получили тему из скольких."""
+        total = await self.pool.fetchval(
+            "SELECT COUNT(*) FROM dialogs WHERE service_id = ANY($1::int[]) "
+            "AND created_at >= NOW() - make_interval(days => $2)", service_ids, days) or 0
+        classified = await self.pool.fetchval(
+            """SELECT COUNT(DISTINCT m.dialog_id) FROM messages m
+               JOIN dialogs d ON d.dialog_id = m.dialog_id
+               WHERE d.service_id = ANY($1::int[]) AND m.category IS NOT NULL
+                 AND d.created_at >= NOW() - make_interval(days => $2)""",
+            service_ids, days) or 0
+        return {"total_tickets": total, "classified": classified}
+
+    _FIRST_TEXT_UNCLASSIFIED = """
+        FROM messages m JOIN dialogs d ON d.dialog_id = m.dialog_id
+        WHERE d.service_id = ANY($1::int[])
+          AND d.created_at >= NOW() - make_interval(days => $2)
+          AND m.kind='user' AND m.file_type IS NULL AND COALESCE(m.text,'') <> ''
+          AND NOT EXISTS (SELECT 1 FROM messages x
+                          WHERE x.dialog_id = m.dialog_id AND x.category IS NOT NULL)
+    """
+
+    async def count_unclassified_tickets(self, days: int, service_ids: list[int]) -> int:
+        """Тикеты периода с текстом клиента, которым ещё не присвоена тема."""
+        return await self.pool.fetchval(
+            "SELECT COUNT(DISTINCT m.dialog_id) " + self._FIRST_TEXT_UNCLASSIFIED,
+            service_ids, days) or 0
+
+    async def get_unclassified_first_messages(
+        self, days: int, service_id: int, limit: int,
+    ) -> list[dict]:
+        """Первое текстовое сообщение каждого тикета периода без темы."""
+        rows = await self.pool.fetch(
+            "SELECT DISTINCT ON (m.dialog_id) m.id, m.text " + self._FIRST_TEXT_UNCLASSIFIED
+            + " ORDER BY m.dialog_id, m.created_at ASC, m.id ASC LIMIT $3",
+            [service_id], days, limit)
+        return [dict(r) for r in rows]
+
+    async def get_rating_stats(self, days: int, service_ids: list[int]) -> dict:
+        """Оценки, которые клиенты ставят после закрытия тикета (1–5).
+
+        Кто «получил» оценку: оператор тикета (assigned_operator, а если его
+        сняли — тот, кто писал клиенту последним). Нет ни того ни другого —
+        тикет отработал ИИ. Флаг operator_called для этого не годится: закрытие
+        его сбрасывает."""
+        sids = service_ids or []
+        rows = await self.pool.fetch(
+            """SELECT d.dialog_id, d.rating, d.service_id, s.name AS service_name,
+                      COALESCE(d.rated_at, d.closed_at, d.updated_at) AS at,
+                      d.user_name, d.user_username, d.last_message_text,
+                      COALESCE(d.assigned_operator,
+                               (SELECT m.operator_name FROM messages m
+                                 WHERE m.dialog_id = d.dialog_id AND m.kind='operator'
+                                   AND m.operator_name IS NOT NULL
+                                 ORDER BY m.created_at DESC LIMIT 1)) AS operator
+               FROM dialogs d JOIN services s ON s.id = d.service_id
+               WHERE d.service_id = ANY($1::int[]) AND d.rating IS NOT NULL
+                 AND COALESCE(d.rated_at, d.closed_at, d.updated_at)
+                       >= NOW() - make_interval(days => $2)
+               ORDER BY at DESC""",
+            sids, days,
+        )
+        closed = await self.pool.fetchval(
+            "SELECT COUNT(*) FROM dialogs WHERE service_id = ANY($1::int[]) AND NOT imported "
+            "AND status='closed' "
+            "AND COALESCE(closed_at, updated_at) >= NOW() - make_interval(days => $2)",
+            sids, days) or 0
+
+        count = len(rows)
+        dist = {i: 0 for i in range(1, 6)}
+        by_op: dict[str, dict] = {}
+        by_day: dict[str, list[int]] = {}
+        for r in rows:
+            score = int(r["rating"])
+            if score in dist:
+                dist[score] += 1
+            name = r["operator"] or "ИИ"
+            o = by_op.setdefault(name, {"name": name, "ai": name == "ИИ", "count": 0,
+                                        "sum": 0, "low": 0})
+            o["count"] += 1
+            o["sum"] += score
+            o["low"] += 1 if score <= 2 else 0
+            by_day.setdefault(str(r["at"].date()), []).append(score)
+
+        today = date.today()
+        daily = []
+        for i in range(days):
+            d = str(today - timedelta(days=days - 1 - i))
+            v = by_day.get(d)
+            daily.append({"d": d, "count": len(v) if v else 0,
+                          "avg": round(sum(v) / len(v), 2) if v else None})
+
+        operators = sorted(
+            ({"name": o["name"], "ai": o["ai"], "count": o["count"], "low": o["low"],
+              "avg": round(o["sum"] / o["count"], 2)} for o in by_op.values()),
+            key=lambda o: (-o["count"], o["name"]),
+        )
+        return {
+            "period_days": days,
+            "count": count,
+            "avg": round(sum(int(r["rating"]) for r in rows) / count, 2) if count else None,
+            "csat": round(100 * (dist[4] + dist[5]) / count) if count else None,
+            "distribution": [dist[i] for i in range(1, 6)],
+            "closed": closed,
+            "response_rate": round(100 * count / closed) if closed else None,
+            "daily": daily,
+            "operators": operators,
+            "low": [{
+                "dialog_id": r["dialog_id"], "rating": int(r["rating"]),
+                "name": r["user_name"], "username": r["user_username"],
+                "operator": r["operator"] or "ИИ", "service": r["service_name"],
+                "at": r["at"].isoformat(), "text": r["last_message_text"],
+            } for r in rows if int(r["rating"]) <= 2][:10],
+        }
 
     async def get_time_stats(self, days: int = 30, service_ids: list[int] = None) -> dict:
         interval = timedelta(days=days)
@@ -1341,12 +1506,29 @@ class DatabaseManager:
         await self.pool.execute(
             """INSERT INTO kb_articles (id, title, category, keywords, content, service_id, position)
                VALUES ($1,$2,$3,$4,$5,$6,$7)
-               ON CONFLICT (id) DO UPDATE SET
+               ON CONFLICT (service_id, id) DO UPDATE SET
                  title=EXCLUDED.title, category=EXCLUDED.category,
                  keywords=EXCLUDED.keywords, content=EXCLUDED.content,
-                 service_id=EXCLUDED.service_id, position=EXCLUDED.position""",
+                 position=EXCLUDED.position""",
             id, title, category, keywords, content, service_id, position,
         )
+
+    async def restore_kb_articles(self, service_id: int, chunks: list[dict]) -> int:
+        """Вернуть в БД статьи, которые есть в Qdrant сервиса, а в панели
+        пропали. Существующие строки не трогает. Возвращает число добавленных."""
+        added = 0
+        for c in chunks:
+            result = await self.pool.execute(
+                """INSERT INTO kb_articles (id, title, category, keywords, content, service_id, position)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7)
+                   ON CONFLICT (service_id, id) DO NOTHING""",
+                c["id"], c["title"], c["category"],
+                json.dumps(c.get("keywords") or [], ensure_ascii=False),
+                c["content"], service_id, c.get("position", 0),
+            )
+            if result == "INSERT 0 1":
+                added += 1
+        return added
 
     async def get_kb_articles(self, service_id: int) -> list[dict]:
         """Статьи в порядке разделов документа. Сначала — по номеру в начале
@@ -1374,9 +1556,10 @@ class DatabaseManager:
         )
         return dict(row) if row else None
 
-    async def kb_article_ids(self) -> set[str]:
-        # id — первичный ключ на всю таблицу, общий для всех сервисов.
-        rows = await self.pool.fetch("SELECT id FROM kb_articles")
+    async def kb_article_ids(self, service_id: int) -> set[str]:
+        # id уникален внутри сервиса: у двух ВПН могут быть одинаковые статьи.
+        rows = await self.pool.fetch(
+            "SELECT id FROM kb_articles WHERE service_id=$1", service_id)
         return {r["id"] for r in rows}
 
     async def next_kb_position(self, service_id: int) -> int:
@@ -1446,6 +1629,13 @@ class DatabaseManager:
             new_name, old_name, service_id,
         )
 
+    async def count_user_text_messages(self, dialog_id: str) -> int:
+        """Текстовые сообщения клиента в тикете (без вложений)."""
+        return await self.pool.fetchval(
+            "SELECT COUNT(*) FROM messages WHERE dialog_id=$1 AND kind='user' "
+            "AND file_type IS NULL AND COALESCE(text, '') <> ''", dialog_id
+        ) or 0
+
     async def get_user_message_count(self, dialog_id: str) -> int:
         return await self.pool.fetchval(
             "SELECT COUNT(*) FROM messages WHERE dialog_id=$1 AND kind='user'", dialog_id
@@ -1453,7 +1643,7 @@ class DatabaseManager:
 
     async def set_dialog_rating(self, dialog_id: str, rating: int):
         await self.pool.execute(
-            "UPDATE dialogs SET rating=$1 WHERE dialog_id=$2", rating, dialog_id
+            "UPDATE dialogs SET rating=$1, rated_at=NOW() WHERE dialog_id=$2", rating, dialog_id
         )
 
     async def get_all_chat_ids(self, service_id: int) -> list:
