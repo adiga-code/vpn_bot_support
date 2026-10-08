@@ -1,0 +1,542 @@
+"""Резервный канал доставки ответа оператора.
+
+Штатно ответ уходит через n8n в business-чат Telegram. Иногда Telegram отвечает
+`400 BUSINESS_PEER_USAGE_MISSING` — сообщение просто теряется, и оператор видит
+красный крестик, ничего не в силах сделать. Тогда панель пробует ещё раз, но уже
+напрямую по MTProto, от того же аккаунта поддержки: клиент получает сообщение в
+той же переписке, а не в чате с ботом, который выдаёт ключи.
+
+Настройка пер-сервисная (`fallback_sender` в таблице settings), как `customer` и
+`monitoring`:
+
+    {"enabled": true,
+     "config": {"app_id": 123456, "app_hash": "…", "phone": "+7…",
+                "session": "<StringSession>", "account": "@support"}}
+
+`app_id` и `app_hash` берутся на my.telegram.org. Строку сессии выдаёт
+авторизация из формы сервиса (код из Телеграм плюс, если стоит, пароль 2FA);
+её же можно вставить готовой, если она сгенерирована снаружи.
+
+Telethon импортируется лениво, внутри методов: панель обязана подниматься и без
+установленного пакета — просто без резервного канала.
+"""
+import asyncio
+import json
+import time
+
+import aiohttp
+
+from app.redact import redact
+
+FALLBACK_DEFAULTS = {"enabled": False, "config": {}}
+
+# Незавершённые авторизации живут в памяти процесса: между «отправить код» и
+# «ввести код» проходят секунды, и класть недо-сессию в базу незачем.
+_PENDING_TTL = 600
+
+# Сообщение, отправленное самим business-аккаунтом, Telegram тут же присылает
+# боту как business_message, и n8n передаёт его в панель как реплику клиента.
+# Сколько ждать такое эхо после резервной отправки.
+_ECHO_TTL = 180
+
+# Telethon сам не ограничивает время на подключение: за фаерволом, который не
+# пускает к серверам Telegram, форма крутилась бы вечно, а оператор ждал бы
+# ответа на недоставленное сообщение. Лучше внятная ошибка.
+_CONNECT_TIMEOUT = 30
+_SEND_TIMEOUT = 60
+
+
+class _Timeout(RuntimeError):
+    """Отдельный тип, чтобы отличить «Telegram недоступен» от отказа Telegram."""
+
+    def __init__(self, what: str):
+        super().__init__(f"Telegram не отвечает ({what}) — проверьте, "
+                         f"что сервер панели ходит наружу")
+
+
+def _human_error(e: Exception) -> str | None:
+    """Ошибки Telegram при входе — по-русски и с тем, что делать дальше.
+    None — ошибка не из узнаваемых, отдаём как есть."""
+    name = type(e).__name__
+    if name == "PhoneCodeInvalidError":
+        return "Неверный код — проверьте и введите ещё раз"
+    if name == "PasswordHashInvalidError":
+        return "Неверный пароль двухфакторки — введите ещё раз"
+    if name == "PhoneCodeExpiredError":
+        return ("Код истёк. Telegram сразу гасит код входа, если его переслать или "
+                "вставить в любой чат Telegram, — запросите новый и перепишите "
+                "его вручную из уведомления")
+    if name in ("FloodWaitError", "PhoneNumberFloodError"):
+        seconds = getattr(e, "seconds", None)
+        return (f"Telegram просит подождать {seconds} с перед новой попыткой"
+                if seconds else "Слишком много попыток — Telegram просит подождать")
+    if name == "PhoneNumberInvalidError":
+        return "Неверный номер телефона — нужен формат +79990000000"
+    if name in ("ApiIdInvalidError", "ApiIdPublishedFloodError"):
+        return "app_id/app_hash не подходят — проверьте их на my.telegram.org"
+    if name == "PhoneNumberBannedError":
+        return "Этот номер заблокирован в Telegram"
+    return None
+
+
+def _describe_sent(sent) -> str:
+    """Куда Telegram отправил код входа: без этого «код отправлен» при
+    пустом SMS выглядит как поломка, а код лежит в приложении или на почте."""
+    kind = type(getattr(sent, "type", None)).__name__
+    if kind == "SentCodeTypeApp":
+        return ("Код отправлен в приложение Telegram: сообщение от официального "
+                "чата «Telegram» (с синей галочкой) в самом аккаунте поддержки "
+                "на телефоне или компьютере, где он открыт. SMS не будет")
+    if kind in ("SentCodeTypeSms", "SentCodeTypeFirebaseSms",
+                "SentCodeTypeSmsWord", "SentCodeTypeSmsPhrase"):
+        return "Код отправлен по SMS на телефон"
+    if kind in ("SentCodeTypeCall", "SentCodeTypeFlashCall", "SentCodeTypeMissedCall"):
+        return "Telegram позвонит на телефон: код — последние цифры номера или продиктуют"
+    if kind == "SentCodeTypeEmailCode":
+        pattern = getattr(sent.type, "email_pattern", "") or "почту аккаунта"
+        return f"Код отправлен на почту {pattern}"
+    if kind == "SentCodeTypeFragmentSms":
+        return "Код придёт через Fragment (номер куплен на fragment.com)"
+    if kind == "SentCodeTypeSetUpEmailRequired":
+        return ("Telegram требует сначала привязать почту к аккаунту: откройте "
+                "Telegram → Настройки → Конфиденциальность → Почта для входа, "
+                "затем запросите код снова")
+    return "Код отправлен"
+
+
+def _install_hint(error: Exception) -> str:
+    return (f"Telethon не установлен ({error}). Добавьте telethon в requirements.txt "
+            f"и пересоберите образ.")
+
+
+class TelethonSender:
+    """Один аккаунт Telegram на один ВПН-сервис.
+
+    Клиент создаётся лениво и переиспользуется: авторизация по MTProto стоит
+    несколько секунд, а фолбек может понадобиться на каждом втором сообщении,
+    пока business-подключение не починят.
+    """
+
+    def __init__(self, config: dict):
+        self.config = config or {}
+        self._client = None
+        self._lock = asyncio.Lock()
+        # chat_id → InputPeer: access_hash клиента, найденный один раз, живёт
+        # до переподключения — второй поиск по чатам на каждое сообщение незачем.
+        self._peers: dict[int, object] = {}
+
+    @property
+    def account(self) -> str:
+        return self.config.get("account") or ""
+
+    async def _connect(self):
+        if self._client is not None and self._client.is_connected():
+            return self._client
+        async with self._lock:
+            if self._client is not None and self._client.is_connected():
+                return self._client
+            from telethon import TelegramClient
+            from telethon.sessions import StringSession
+            session = self.config.get("session") or ""
+            if not session:
+                raise RuntimeError("аккаунт не авторизован")
+            client = TelegramClient(
+                StringSession(session),
+                int(self.config.get("app_id") or 0),
+                str(self.config.get("app_hash") or ""),
+            )
+            try:
+                await asyncio.wait_for(client.connect(), _CONNECT_TIMEOUT)
+                authorized = await asyncio.wait_for(client.is_user_authorized(),
+                                                    _CONNECT_TIMEOUT)
+            except asyncio.TimeoutError:
+                await client.disconnect()
+                raise _Timeout("подключение")
+            if not authorized:
+                await client.disconnect()
+                raise RuntimeError("сессия больше не действует — авторизуйтесь заново")
+            self._client = client
+            return client
+
+    async def close(self):
+        self._peers.clear()
+        if self._client is not None:
+            try:
+                await self._client.disconnect()
+            except Exception:
+                pass
+            self._client = None
+
+    async def _resolve_peer(self, client, peer_id: int, username: str = None):
+        """InputPeer клиента. По голому числовому id Telethon писать не умеет:
+        нужен access_hash, а в StringSession кэша сущностей нет, и сразу после
+        подключения он пуст («Could not find the input entity for PeerUser»).
+        Достаём его по username, а без него — из списка чатов аккаунта: клиент
+        писал в business-чат, значит переписка лежит у аккаунта поддержки."""
+        cached = self._peers.get(peer_id)
+        if cached is not None:
+            return cached
+        try:
+            peer = await client.get_input_entity(peer_id)
+            self._peers[peer_id] = peer
+            return peer
+        except (ValueError, TypeError):
+            pass
+
+        name = (username or "").strip().lstrip("@")
+        if name and not name.isdigit():
+            try:
+                entity = await asyncio.wait_for(client.get_entity(name), _SEND_TIMEOUT)
+                if getattr(entity, "id", None) == peer_id:
+                    peer = await client.get_input_entity(entity)
+                    self._peers[peer_id] = peer
+                    return peer
+            except asyncio.TimeoutError:
+                raise
+            except Exception as e:
+                # Username мог смениться — ищем дальше по чатам.
+                print(f"[fallback] @{name} не резолвится: {type(e).__name__}: {redact(e)}")
+
+        async def scan():
+            # Попутно Telethon кладёт в кэш сессии всех собеседников, так что
+            # следующие клиенты находятся уже первым get_input_entity.
+            async for d in client.iter_dialogs():
+                if d.id == peer_id:
+                    return d.input_entity
+            return None
+
+        try:
+            peer = await asyncio.wait_for(scan(), _SEND_TIMEOUT)
+        except Exception as e:
+            human = _human_error(e)
+            if human:
+                raise RuntimeError(human) from e
+            raise
+        if peer is None:
+            raise RuntimeError(
+                f"клиент {peer_id} не найден среди чатов аккаунта "
+                f"{self.account or 'поддержки'}: переписки с ним в аккаунте нет"
+                + ("" if name else ", а username у клиента не указан"))
+        self._peers[peer_id] = peer
+        return peer
+
+    async def send(self, chat_id: str, text: str,
+                   file_url: str = None, username: str = None) -> tuple[bool, str]:
+        """(получилось, пояснение). Исключений не бросает: неудача резервного
+        канала — это результат, который надо показать оператору, а не сбой
+        панели."""
+        try:
+            client = await self._connect()
+        except ImportError as e:
+            return False, _install_hint(e)
+        except Exception as e:
+            return False, redact(e)[:200]
+
+        try:
+            peer = int(str(chat_id).strip())
+        except ValueError:
+            return False, f"нечисловой chat_id {chat_id!r}"
+
+        try:
+            peer = await self._resolve_peer(client, peer, username)
+            if file_url:
+                data = await self._download(file_url)
+                if data is None:
+                    return False, f"не удалось скачать вложение {file_url}"
+                blob, name = data
+                await asyncio.wait_for(
+                    client.send_file(peer, blob, caption=text or None,
+                                     file_name=name, force_document=False),
+                    _SEND_TIMEOUT)
+            else:
+                if not text:
+                    return False, "пустое сообщение"
+                await asyncio.wait_for(client.send_message(peer, text), _SEND_TIMEOUT)
+        except asyncio.TimeoutError:
+            await self.close()
+            return False, str(_Timeout("отправка"))
+        except Exception as e:
+            # Сессия могла протухнуть между вызовами — следующий заход
+            # переподключится с нуля.
+            await self.close()
+            return False, redact(e)[:200]
+        return True, f"доставлено с аккаунта {self.account or 'поддержки'}"
+
+    @staticmethod
+    async def _download(url: str):
+        """Вложение уже лежит у нас (или в S3) — качаем в память: файлы в чате
+        поддержки небольшие, ради них не стоит городить временные файлы."""
+        try:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession(timeout=timeout) as s:
+                async with s.get(url) as r:
+                    if r.status >= 400:
+                        return None
+                    return await r.read(), url.rstrip("/").split("/")[-1] or "file"
+        except Exception as e:
+            print(f"[fallback] не скачалось {url}: {e}")
+            return None
+
+
+class FallbackSenderService:
+    """Резервные отправители по сервисам: кэш, настройки и авторизация.
+
+    Устроено как CustomerService.provider_for — объект пересоздаётся только
+    когда админ поменял настройки.
+    """
+
+    def __init__(self, db):
+        self.db = db
+        self._senders: dict[int, tuple[str, TelethonSender]] = {}
+        self._pending: dict[int, dict] = {}
+        # (service_id, chat_id) → [(ключ сообщения, monotonic)]: что ушло по
+        # MTProto и вот-вот вернётся эхом через бота (см. consume_echo).
+        self._echoes: dict[tuple[int, str], list[tuple[str, float]]] = {}
+
+    # ── Настройки ─────────────────────────────────────────────────────────────
+
+    async def settings(self, service_id: int) -> dict:
+        stored = await self.db.get_setting_json("fallback_sender", None, service_id) or {}
+        return {**FALLBACK_DEFAULTS, **stored}
+
+    async def save(self, service_id: int, data: dict) -> None:
+        await self.db.set_setting_json("fallback_sender", data, service_id)
+        self.invalidate(service_id)
+
+    def invalidate(self, service_id: int) -> None:
+        cached = self._senders.pop(service_id, None)
+        if cached:
+            asyncio.create_task(cached[1].close())
+
+    async def sender_for(self, service_id: int) -> TelethonSender | None:
+        """Настроенный и включённый отправитель либо None."""
+        cfg = await self.settings(service_id)
+        config = cfg.get("config") or {}
+        if not cfg.get("enabled") or not config.get("session"):
+            return None
+        key = json.dumps(config, sort_keys=True, ensure_ascii=False)
+        cached = self._senders.get(service_id)
+        if cached and cached[0] == key:
+            return cached[1]
+        if cached:
+            await cached[1].close()
+        sender = TelethonSender(config)
+        self._senders[service_id] = (key, sender)
+        return sender
+
+    async def send(self, service_id: int, chat_id: str, text: str,
+                   file_url: str = None, username: str = None) -> tuple[bool, str]:
+        """(получилось, пояснение). Не настроен — «выключен», и это не ошибка:
+        большинству установок резервный канал не нужен."""
+        sender = await self.sender_for(service_id)
+        if not sender:
+            return False, ""
+        # Ждём эхо ДО отправки: апдейт от бота может прийти раньше, чем
+        # Telethon вернёт управление.
+        entry = self._expect_echo(service_id, chat_id, text, "document" if file_url else "text")
+        ok, detail = await sender.send(chat_id, text, file_url, username)
+        if not ok:
+            self._drop_echo(service_id, chat_id, entry)
+        return ok, detail
+
+    # ── Эхо резервной отправки ────────────────────────────────────────────────
+
+    @staticmethod
+    def _echo_key(text: str, file_type: str = None) -> str:
+        """Текст (или подпись) без лишних пробелов; у вложения без подписи —
+        просто «файл»: тип Telegram может определить иначе, чем мы."""
+        norm = " ".join((text or "").split())
+        if norm:
+            return "t:" + norm
+        return "f:" if file_type and file_type != "text" else ""
+
+    def _expect_echo(self, service_id: int, chat_id: str, text: str, file_type: str):
+        key = self._echo_key(text, file_type)
+        if not key:
+            return None
+        now = time.monotonic()
+        bucket = [e for e in self._echoes.get((service_id, str(chat_id)), [])
+                  if now - e[1] < _ECHO_TTL]
+        entry = (key, now)
+        bucket.append(entry)
+        self._echoes[(service_id, str(chat_id))] = bucket
+        return entry
+
+    def _drop_echo(self, service_id: int, chat_id: str, entry) -> None:
+        bucket = self._echoes.get((service_id, str(chat_id)))
+        if bucket and entry in bucket:
+            bucket.remove(entry)
+            if not bucket:
+                self._echoes.pop((service_id, str(chat_id)), None)
+
+    def consume_echo(self, service_id: int, chat_id: str, text: str,
+                     file_type: str = None) -> bool:
+        """Входящее «от клиента» — на самом деле наш же ответ, ушедший по
+        MTProto? Тогда оно уже есть в тикете как сообщение оператора, и второй
+        раз его сохранять (да ещё от имени клиента) нельзя."""
+        key = self._echo_key(text, file_type)
+        bucket = self._echoes.get((service_id, str(chat_id)))
+        if not key or not bucket:
+            return False
+        now = time.monotonic()
+        for entry in bucket:
+            if entry[0] == key and now - entry[1] < _ECHO_TTL:
+                self._drop_echo(service_id, chat_id, entry)
+                return True
+        return False
+
+    # ── Авторизация из админки ────────────────────────────────────────────────
+
+    def _sweep_pending(self) -> None:
+        now = time.monotonic()
+        for sid, item in list(self._pending.items()):
+            if now - item["at"] > _PENDING_TTL:
+                asyncio.create_task(self._drop_pending(sid))
+
+    async def _drop_pending(self, service_id: int) -> None:
+        item = self._pending.pop(service_id, None)
+        if item:
+            try:
+                await item["client"].disconnect()
+            except Exception:
+                pass
+
+    async def send_code(self, service_id: int, app_id: int, app_hash: str,
+                        phone: str) -> dict:
+        """Шаг 1: попросить Telegram выслать код на телефон аккаунта поддержки."""
+        self._sweep_pending()
+        await self._drop_pending(service_id)
+        try:
+            from telethon import TelegramClient
+            from telethon.sessions import StringSession
+        except ImportError as e:
+            raise RuntimeError(_install_hint(e))
+        client = TelegramClient(StringSession(), int(app_id), str(app_hash))
+        try:
+            await asyncio.wait_for(client.connect(), _CONNECT_TIMEOUT)
+            sent = await asyncio.wait_for(client.send_code_request(phone), _CONNECT_TIMEOUT)
+        except asyncio.TimeoutError:
+            await client.disconnect()
+            raise _Timeout("запрос кода")
+        except Exception as e:
+            await client.disconnect()
+            print(f"[fallback] send-code сервиса {service_id}: "
+                  f"{type(e).__name__}: {redact(e)}")
+            human = _human_error(e)
+            if human:
+                raise RuntimeError(human) from e
+            raise
+        self._pending[service_id] = {
+            "client": client, "phone": phone, "hash": sent.phone_code_hash,
+            "app_id": int(app_id), "app_hash": str(app_hash), "at": time.monotonic(),
+        }
+        return {"ok": True, "needsCode": True, "delivery": _describe_sent(sent),
+                "canResend": getattr(sent, "next_type", None) is not None}
+
+    async def resend_code(self, service_id: int) -> dict:
+        """Код не пришёл — просим Telegram отправить его следующим способом
+        (обычно SMS или звонок). Повторный send_code_request того же клиента
+        Telethon сам превращает в ResendCodeRequest."""
+        item = self._pending.get(service_id)
+        if not item:
+            raise RuntimeError("Код устарел — запросите новый")
+        client = item["client"]
+        try:
+            sent = await asyncio.wait_for(client.send_code_request(item["phone"]),
+                                          _CONNECT_TIMEOUT)
+        except asyncio.TimeoutError:
+            raise _Timeout("повторная отправка кода")
+        except Exception as e:
+            print(f"[fallback] resend-code сервиса {service_id}: "
+                  f"{type(e).__name__}: {redact(e)}")
+            human = _human_error(e)
+            if type(e).__name__ == "SendCodeUnavailableError":
+                human = ("Другие способы доставки кода исчерпаны — ищите код в "
+                         "приложении Telegram или подождите и запросите заново")
+            if human:
+                raise RuntimeError(human) from e
+            raise
+        item["hash"] = sent.phone_code_hash
+        item["at"] = time.monotonic()
+        return {"ok": True, "delivery": _describe_sent(sent),
+                "canResend": getattr(sent, "next_type", None) is not None}
+
+    async def sign_in(self, service_id: int, code: str, password: str = "") -> dict:
+        """Шаг 2: код (и пароль 2FA, если он стоит). На успехе сохраняем строку
+        сессии в настройку сервиса."""
+        item = self._pending.get(service_id)
+        if not item:
+            raise RuntimeError("Код устарел — запросите новый")
+        client = item["client"]
+        try:
+            from telethon.errors import SessionPasswordNeededError
+        except ImportError as e:
+            raise RuntimeError(_install_hint(e))
+        try:
+            if password:
+                await asyncio.wait_for(client.sign_in(password=password), _CONNECT_TIMEOUT)
+            else:
+                await asyncio.wait_for(
+                    client.sign_in(item["phone"], code, phone_code_hash=item["hash"]),
+                    _CONNECT_TIMEOUT)
+        except asyncio.TimeoutError:
+            await self._drop_pending(service_id)
+            raise _Timeout("вход")
+        except SessionPasswordNeededError:
+            # Клиента не отпускаем: пароль придёт следующим запросом.
+            item["at"] = time.monotonic()
+            return {"ok": False, "needs2fa": True}
+        except Exception as e:
+            print(f"[fallback] sign-in сервиса {service_id}: "
+                  f"{type(e).__name__}: {redact(e)}")
+            human = _human_error(e)
+            if type(e).__name__ in ("PhoneCodeInvalidError", "PasswordHashInvalidError"):
+                # Опечатка — не повод жечь код: Telegram даёт ввести его ещё
+                # раз, и форма остаётся на том же шаге.
+                item["at"] = time.monotonic()
+                raise RuntimeError(human) from e
+            await self._drop_pending(service_id)
+            if human:
+                raise RuntimeError(human) from e
+            raise
+
+        me = await asyncio.wait_for(client.get_me(), _CONNECT_TIMEOUT)
+        account = ("@" + me.username) if getattr(me, "username", None) else str(me.id)
+        session = client.session.save()
+        await client.disconnect()
+        self._pending.pop(service_id, None)
+
+        stored = await self.settings(service_id)
+        await self.save(service_id, {
+            **stored, "enabled": True,
+            "config": {**(stored.get("config") or {}),
+                       "app_id": item["app_id"], "app_hash": item["app_hash"],
+                       "phone": item["phone"], "session": session, "account": account},
+        })
+        return {"ok": True, "account": account}
+
+    async def check(self, service_id: int) -> dict:
+        """От какого аккаунта уйдут сообщения — проверка перед боем."""
+        cfg = await self.settings(service_id)
+        config = cfg.get("config") or {}
+        if not config.get("session"):
+            return {"ok": False, "error": "Аккаунт не авторизован"}
+        sender = TelethonSender(config)
+        try:
+            client = await sender._connect()
+            me = await asyncio.wait_for(client.get_me(), _CONNECT_TIMEOUT)
+            account = ("@" + me.username) if getattr(me, "username", None) else str(me.id)
+            return {"ok": True, "account": account}
+        except ImportError as e:
+            return {"ok": False, "error": _install_hint(e)}
+        except Exception as e:
+            return {"ok": False, "error": redact(e)[:200]}
+        finally:
+            await sender.close()
+
+    async def close(self) -> None:
+        for _, sender in list(self._senders.values()):
+            await sender.close()
+        self._senders.clear()
+        for sid in list(self._pending):
+            await self._drop_pending(sid)

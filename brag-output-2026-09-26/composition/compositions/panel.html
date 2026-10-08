@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="ru">
+  <head><meta charset="UTF-8" /></head>
+  <body>
+    <template>
+      <style>
+        @font-face {
+          font-family: 'Inter';
+          font-style: normal; font-weight: 100 900; font-display: block;
+          src: url(assets/fonts/Inter-var-cyrillic.woff2) format('woff2');
+          unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+        }
+        @font-face {
+          font-family: 'Inter';
+          font-style: normal; font-weight: 100 900; font-display: block;
+          src: url(assets/fonts/Inter-var-latin.woff2) format('woff2');
+          unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+            U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+            U+FEFF, U+FFFD;
+        }
+        @font-face {
+          font-family: 'JetBrains Mono';
+          font-style: normal; font-weight: 100 800; font-display: block;
+          src: url(assets/fonts/JetBrainsMono-var-cyrillic.woff2) format('woff2');
+          unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+        }
+        @font-face {
+          font-family: 'JetBrains Mono';
+          font-style: normal; font-weight: 100 800; font-display: block;
+          src: url(assets/fonts/JetBrainsMono-var-latin.woff2) format('woff2');
+          unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+            U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+            U+FEFF, U+FFFD;
+        }
+
+        #root {
+          position: absolute; inset: 0; overflow: hidden;
+          background: #0d0d12; color: #f1f1f5;
+          font-family: 'Inter', system-ui, sans-serif;
+        }
+        #pn-glow {
+          position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+          background: radial-gradient(ellipse at 68% 45%, rgba(79,142,247,0.28), transparent 62%);
+          opacity: 0.05; pointer-events: none;
+        }
+        #pn-shell { position: absolute; inset: 0; display: flex; opacity: 0; }
+
+        /* ── left: header + ticket list ─────────────────────────────────── */
+        #pn-left { width: 620px; flex: 0 0 620px; border-right: 1px solid #2a2a3a; display: flex; flex-direction: column; }
+        #pn-head { height: 108px; flex: 0 0 108px; border-bottom: 1px solid #2a2a3a; background: #13131a;
+                   display: flex; align-items: center; gap: 16px; padding: 0 32px; }
+        #pn-brand { width: 42px; height: 42px; border-radius: 12px; background: linear-gradient(135deg,#4f8ef7,#a855f7);
+                    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 20px; color: #fff; flex: none; }
+        #pn-head-txt { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }
+        #pn-head-sub { font-size: 15px; color: #868d99; margin-top: 2px; }
+        #pn-list { flex: 1 1 auto; padding: 14px; overflow: hidden; }
+        .pn-card { position: relative; padding: 16px 18px; border-radius: 14px; opacity: 0; }
+        .pn-card.active { background: #1a1a24; box-shadow: inset 0 0 0 1px rgba(79,142,247,0.35); }
+        .pn-dotbar { position: absolute; left: 6px; top: 14px; bottom: 14px; width: 4px; border-radius: 3px; background: #ef4444; }
+        .pn-row1 { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .pn-name { font-size: 19px; font-weight: 600; }
+        .pn-time { font-size: 14px; color: #868d99; }
+        .pn-preview { font-size: 15px; color: #868d99; margin-top: 6px; max-width: 480px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .pn-badges { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+        .pn-badge { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
+        .pn-badge.ai { background: rgba(79,142,247,0.16); color: #7ba8f9; }
+        .pn-badge.progress { background: rgba(234,179,8,0.16); color: #eab308; opacity: 0; }
+        .pn-dot { width: 8px; height: 8px; border-radius: 999px; background: #ef4444; }
+
+        /* ── right: chat pane ────────────────────────────────────────────── */
+        #pn-right { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+        #pn-chat-head { height: 108px; flex: 0 0 108px; border-bottom: 1px solid #2a2a3a; background: #13131a;
+                        display: flex; align-items: center; gap: 18px; padding: 0 44px; }
+        #pn-chat-av { width: 52px; height: 52px; border-radius: 999px; background: linear-gradient(135deg,#2a2a3a,#1a1a24);
+                      border: 1px solid #2a2a3a; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 600; }
+        #pn-chat-name { font-size: 22px; font-weight: 600; letter-spacing: -0.015em; }
+        #pn-chat-sub { font-size: 15px; color: #868d99; margin-top: 3px; }
+        #pn-log { flex: 1 1 auto; padding: 150px 44px 28px; display: flex; flex-direction: column; gap: 18px; overflow: hidden; }
+        .pn-row { display: flex; }
+        .pn-row.out { justify-content: flex-end; }
+        .pn-col { max-width: 640px; }
+        .pn-bub { font-size: 20px; line-height: 1.42; letter-spacing: -0.005em; padding: 16px 20px; border-radius: 18px 18px 18px 6px; }
+        .pn-bub.client { background: #1a1a24; color: #f1f1f5; }
+        .pn-bub.ai { position: relative; background: rgba(79,142,247,0.12); border: 1px solid rgba(79,142,247,0.28); color: #f1f1f5; }
+        .pn-bub.op { position: relative; background: rgba(168,85,247,0.15); border: 1px solid rgba(168,85,247,0.32); border-radius: 18px 18px 6px 18px; color: #f1f1f5; }
+        .pn-ai-tag { position: absolute; top: -12px; left: 16px; background: #4f8ef7; color: #0d0d12;
+                     font-size: 12px; font-weight: 700; letter-spacing: 0.02em; padding: 2px 9px; border-radius: 7px; }
+        .pn-meta { font-size: 13px; color: #868d99; margin-top: 7px; }
+        .pn-meta.right { text-align: right; margin-right: 4px; }
+        .pn-meta.left { margin-left: 4px; }
+        .pn-tick { margin-left: 6px; font-weight: 700; }
+        .pn-tick.grey { color: #868d99; }
+        .pn-tick.ok { color: #4f8ef7; }
+        .pn-tick.fallback { color: #eab308; }
+        .pn-errline { font-size: 13px; color: #ef4444; margin-top: 4px; text-align: right; margin-right: 4px; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+        .pn-fallline { font-size: 13px; color: #eab308; margin-top: 4px; text-align: right; margin-right: 4px; }
+        #pn-typing { font-size: 15px; color: #868d99; opacity: 0; }
+
+        /* ── claim / templates overlay row (compact inline, above composer) */
+        #pn-actionbar { position: absolute; left: 620px; right: 0; bottom: 0; height: 118px; border-top: 1px solid #2a2a3a;
+                        background: #13131a; display: flex; align-items: center; gap: 16px; padding: 0 44px; }
+        #pn-claim-btn { padding: 12px 22px; border-radius: 12px; background: #4f8ef7; color: #fff; font-size: 17px; font-weight: 600; opacity: 1; }
+        #pn-claim-btn.done { background: #1a1a24; color: #868d99; box-shadow: inset 0 0 0 1px #2a2a3a; }
+        #pn-cursor { position: absolute; width: 26px; height: 26px; opacity: 0; z-index: 20; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); }
+        #pn-tmpl { position: absolute; left: 620px; right: 0; bottom: 118px; height: 220px; background: #13131a;
+                   border-top: 1px solid #2a2a3a; padding: 20px 44px; opacity: 0; display: flex; flex-direction: column; gap: 10px; }
+        .pn-tmpl-row { padding: 12px 16px; border-radius: 10px; background: #1a1a24; font-size: 16px; color: #f1f1f5; }
+        .pn-tmpl-row.sel { box-shadow: inset 0 0 0 1px #4f8ef7; background: rgba(79,142,247,0.12); }
+        #pn-tmpl-hd { font-size: 13px; color: #868d99; font-family: 'JetBrains Mono', ui-monospace, monospace; margin-bottom: 4px; }
+      </style>
+
+      <div id="root" data-composition-id="panel" data-width="1920" data-height="1080">
+        <div id="pn-glow"></div>
+        <div id="pn-shell">
+          <div id="pn-left">
+            <div id="pn-head">
+              <div id="pn-brand">Х</div>
+              <div>
+                <div id="pn-head-txt">Хелпдеск</div>
+                <div id="pn-head-sub">Диалоги · GruVPN</div>
+              </div>
+            </div>
+            <div id="pn-list">
+              <div class="pn-card active" id="pn-card1">
+                <div class="pn-dotbar"></div>
+                <div class="pn-row1">
+                  <div class="pn-name">Алексей К.</div>
+                  <div class="pn-time">21:47</div>
+                </div>
+                <div class="pn-preview" id="pn-preview">По Wi-Fi работает, а на мобильном нет</div>
+                <div class="pn-badges">
+                  <span class="pn-dot" id="pn-dot"></span>
+                  <span class="pn-badge ai" id="pn-badge-ai">ИИ</span>
+                  <span class="pn-badge progress" id="pn-badge-progress">В работе · Оператор</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="pn-right">
+            <div id="pn-chat-head">
+              <div id="pn-chat-av">А</div>
+              <div>
+                <div id="pn-chat-name">Алексей К.</div>
+                <div id="pn-chat-sub">@alexey_k · GruVPN</div>
+              </div>
+            </div>
+            <div id="pn-log">
+              <div class="pn-row" id="pn-msg-client1">
+                <div class="pn-col">
+                  <div class="pn-bub client">По Wi-Fi работает, а на мобильном нет</div>
+                  <div class="pn-meta left">21:47</div>
+                </div>
+              </div>
+              <div class="pn-row" id="pn-typing">ИИ печатает…</div>
+              <div class="pn-row" id="pn-msg-ai" style="opacity:0">
+                <div class="pn-col">
+                  <div class="pn-bub ai"><div class="pn-ai-tag">ИИ</div>Мобильные сети иногда блокируют VPN-порт — включите режим TCP-обход в настройках.</div>
+                  <div class="pn-meta left">21:47</div>
+                </div>
+              </div>
+              <div class="pn-row" id="pn-msg-client2" style="opacity:0">
+                <div class="pn-col">
+                  <div class="pn-bub client">Уже пробовал. Не помогло.</div>
+                  <div class="pn-meta left">21:48</div>
+                </div>
+              </div>
+              <div class="pn-row out" id="pn-msg-op" style="opacity:0">
+                <div class="pn-col">
+                  <div class="pn-bub op">Попробуйте отключить экономию трафика и переключить сервер — обновили инструкцию.</div>
+                  <div class="pn-meta right">Оператор · 21:49<span class="pn-tick grey" id="pn-tick">✓</span></div>
+                  <div class="pn-errline" id="pn-errline" style="opacity:0">✗ 400 BUSINESS_PEER_USAGE_MISSING</div>
+                  <div class="pn-fallline" id="pn-fallline" style="opacity:0">доставлено резервным каналом</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="pn-actionbar">
+            <div id="pn-claim-btn">Взять в работу</div>
+          </div>
+          <div id="pn-tmpl">
+            <div id="pn-tmpl-hd">Шаблоны · «/»</div>
+            <div class="pn-tmpl-row">Проверьте обновление приложения</div>
+            <div class="pn-tmpl-row sel" id="pn-tmpl-sel">Отключите экономию трафика, смените сервер</div>
+            <div class="pn-tmpl-row">Переустановите профиль VPN</div>
+          </div>
+          <svg id="pn-cursor" viewBox="0 0 24 24" fill="none"><path d="M4 2l14 6.2-5.6 2-2 5.6L4 2z" fill="#f1f1f5" stroke="#0d0d12" stroke-width="1"/></svg>
+        </div>
+      </div>
+
+      <script>
+        (function () {
+          var tl = gsap.timeline({ paused: true });
+          tl.set("#pn-cursor", { opacity: 0, x: 900, y: 520, scale: 1 }, 0);
+
+          // ── phase 0: shell settles in ─────────────────────────────────
+          tl.fromTo("#pn-shell", { opacity: 0 }, { opacity: 1, duration: 0.32, ease: "power2.out" }, 0.0);
+
+          // ── phase 1: ticket lands (global ~4.03s = local 0.85) ────────
+          tl.fromTo("#pn-card1", { opacity: 0, y: -10 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 0.85);
+          tl.fromTo("#pn-msg-client1", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 1.0);
+
+          // ── phase 2: AI answers from the knowledge base (S3) ──────────
+          tl.to("#pn-typing", { opacity: 1, duration: 0.2 }, 2.1);
+          tl.to("#pn-typing", { opacity: 0, duration: 0.2 }, 2.7);
+          tl.fromTo("#pn-msg-ai", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.42, ease: "power3.out" }, 2.8);
+
+          // second client message mirrors the phone (global 9.20 = local 6.02)
+          tl.fromTo("#pn-msg-client2", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 6.02);
+
+          // ── phase 3: operator claims + templates (S4) ──────────────────
+          // cursor glides to the claim button
+          tl.to("#pn-cursor", { opacity: 1, x: 660, y: 992, duration: 0.5, ease: "power2.inOut" }, 6.3);
+          tl.to("#pn-cursor", { scale: 0.82, duration: 0.08, ease: "power1.in" }, 6.8);
+          tl.to("#pn-cursor", { scale: 1, duration: 0.1, ease: "power1.out" }, 6.88);
+          tl.to("#pn-claim-btn", { backgroundColor: "#1a1a24", color: "#868d99", boxShadow: "inset 0 0 0 1px #2a2a3a", duration: 0.18 }, 6.82);
+          tl.to("#pn-badge-progress", { opacity: 1, duration: 0.22 }, 6.82);
+          tl.to("#pn-badge-ai", { opacity: 0, duration: 0.22 }, 6.82);
+
+          // templates panel slides up, a template is picked
+          tl.fromTo("#pn-tmpl", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.34, ease: "power2.out" }, 7.82);
+          tl.to("#pn-cursor", { x: 700, y: 830, duration: 0.45, ease: "power2.inOut" }, 8.05);
+          tl.to("#pn-tmpl-sel", { boxShadow: "inset 0 0 0 2px #4f8ef7", duration: 0.16 }, 8.5);
+          tl.to("#pn-tmpl", { opacity: 0, duration: 0.22 }, 8.9);
+          tl.to("#pn-cursor", { opacity: 0, duration: 0.2 }, 8.9);
+
+          // operator reply appears, sending state (grey single check)
+          tl.fromTo("#pn-msg-op", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.36, ease: "power2.out" }, 9.12);
+
+          // ── phase 4: delivery fails, then the reserve channel saves it (S5) ──
+          // fail: grey -> red, error line appears (global 14.5 = local 11.32)
+          tl.to("#pn-tick", { color: "#ef4444", duration: 0.12 }, 11.32);
+          tl.call(function () { document.getElementById("pn-tick").textContent = "✗"; }, [], 11.32);
+          tl.to("#pn-errline", { opacity: 1, duration: 0.16 }, 11.36);
+
+          // hold ~1.5s — then the reserve channel resolves it
+          // beat-locked: 16.86s (global) = local 13.64
+          tl.call(function () { document.getElementById("pn-tick").textContent = "✓✓"; }, [], 13.64);
+          tl.to("#pn-tick", { color: "#eab308", duration: 0.14 }, 13.64);
+          tl.to("#pn-errline", { opacity: 0, duration: 0.14 }, 13.64);
+          tl.to("#pn-fallline", { opacity: 1, duration: 0.2 }, 13.7);
+
+          // ── audio-reactive: the panel's own ambient glow breathes with RMS.
+          // Subtle by design — no bars, no strobe, nothing on text. Frame
+          // index offset by this slot's global start (3.18s) since the
+          // shared AUDIO_DATA is indexed in global (root) time.
+          var A = window.AUDIO_DATA;
+          if (A && A.totalFrames) {
+            var glow = document.getElementById("pn-glow");
+            var base = Math.round(3.18 * A.fps);
+            var slotFrames = Math.round(20.52 * A.fps);
+            var apply = function (i) {
+              return function () { glow.style.opacity = (0.04 + A.rms[i] * 0.07).toFixed(4); };
+            };
+            for (var f = 0; f < slotFrames; f++) {
+              var gi = base + f;
+              if (gi < A.totalFrames) { tl.call(apply(gi), [], f / A.fps); }
+            }
+          }
+
+          window.__timelines["panel"] = tl;
+        })();
+      </script>
+    </template>
+  </body>
+</html>

@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ru" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>VPN Хелпдеск — возможности</title>
+    <script src="assets/gsap.min.js"></script>
+    <script src="assets/audio-data.js"></script>
+    <style>
+      /* ── Local fonts ───────────────────────────────────────────────────── */
+      @font-face {
+        font-family: 'Inter';
+        font-style: normal; font-weight: 100 900; font-display: block;
+        src: url(assets/fonts/Inter-var-cyrillic.woff2) format('woff2');
+        unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+      }
+      @font-face {
+        font-family: 'Inter';
+        font-style: normal; font-weight: 100 900; font-display: block;
+        src: url(assets/fonts/Inter-var-latin.woff2) format('woff2');
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+          U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+          U+FEFF, U+FFFD;
+      }
+      @font-face {
+        font-family: 'JetBrains Mono';
+        font-style: normal; font-weight: 100 800; font-display: block;
+        src: url(assets/fonts/JetBrainsMono-var-cyrillic.woff2) format('woff2');
+        unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+      }
+      @font-face {
+        font-family: 'JetBrains Mono';
+        font-style: normal; font-weight: 100 800; font-display: block;
+        src: url(assets/fonts/JetBrainsMono-var-latin.woff2) format('woff2');
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+          U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+          U+FEFF, U+FFFD;
+      }
+
+      /* ── Palette from app/static/ (muted raised for WCAG AA) ───────────── */
+      :root {
+        --bg: #0d0d12;
+        --surface: #13131a;
+        --raise: #1a1a24;
+        --line: #2a2a3a;
+        --text: #f1f1f5;
+        --muted: #868d99;
+        --accent: #4f8ef7;
+        --accent-lt: #7ba8f9;
+        --violet: #a855f7;
+        --ok: #3ddc84;
+        --warn: #eab308;
+        --danger: #ef4444;
+      }
+
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: #0d0d12; }
+      #root {
+        position: relative; width: 100%; height: 100%; overflow: hidden;
+        background: var(--bg); color: var(--text);
+        font-family: 'Inter', system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* shared helpers used by the scene sub-compositions */
+      .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+      .card { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; }
+      .scr-head { display: flex; align-items: flex-end; justify-content: space-between; }
+      .scr-title { font-size: 44px; font-weight: 600; letter-spacing: -0.025em; }
+      .scr-sub { font-size: 22px; color: var(--muted); margin-top: 6px; }
+
+      /* ── Caption band ──────────────────────────────────────────────────── */
+      #topband {
+        position: absolute; top: 0; left: 0; width: 1920px; height: 120px;
+        background: var(--bg); border-bottom: 1px solid var(--raise); z-index: 5;
+      }
+      #topband > .clip { position: absolute; inset: 0; }
+
+      /* ── Stage: every screen mounts here as a sub-composition ──────────── */
+      #stage {
+        position: absolute; top: 120px; left: 0; width: 1920px; height: 960px;
+        overflow: hidden; background: var(--bg); z-index: 1;
+      }
+      #stage > .clip { position: absolute; inset: 0; }
+      #ar-glow {
+        position: absolute; left: 0; top: 0; width: 1920px; height: 960px;
+        background: radial-gradient(ellipse at 50% 55%, rgba(79, 142, 247, 0.5), transparent 68%);
+        opacity: 0; pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="25"
+      data-width="1920"
+      data-height="1080"
+      data-fps="30"
+    >
+      <div id="stage">
+        <div id="ar-glow"></div>
+
+        <div id="scr-stats" class="clip"
+             data-composition-id="scr-stats" data-composition-src="compositions/stats.html"
+             data-start="0" data-duration="5.28" data-track-index="0"
+             data-width="1920" data-height="960"></div>
+
+        <div id="scr-chat" class="clip"
+             data-composition-id="scr-chat" data-composition-src="compositions/chat.html"
+             data-start="5.28" data-duration="3.16" data-track-index="1"
+             data-width="1920" data-height="960"></div>
+
+        <div id="scr-kb" class="clip"
+             data-composition-id="scr-kb" data-composition-src="compositions/kb.html"
+             data-start="8.44" data-duration="2.1" data-track-index="2"
+             data-width="1920" data-height="960"></div>
+
+        <div id="scr-tmpl" class="clip"
+             data-composition-id="scr-tmpl" data-composition-src="compositions/templates.html"
+             data-start="10.54" data-duration="3.16" data-track-index="3"
+             data-width="1920" data-height="960"></div>
+
+        <div id="scr-customer" class="clip"
+             data-composition-id="scr-customer" data-composition-src="compositions/customer.html"
+             data-start="13.7" data-duration="7.37" data-track-index="4"
+             data-width="1920" data-height="960"></div>
+
+        <div id="scr-outro" class="clip"
+             data-composition-id="scr-outro" data-composition-src="compositions/outro.html"
+             data-start="21.07" data-duration="3.93" data-track-index="5"
+             data-width="1920" data-height="960"></div>
+      </div>
+
+      <div id="topband">
+        <div id="scr-captions" class="clip"
+             data-composition-id="scr-captions" data-composition-src="compositions/captions.html"
+             data-start="0" data-duration="25" data-track-index="6"
+             data-width="1920" data-height="120"></div>
+      </div>
+
+      <!-- ══ audio ══════════════════════════════════════════════════════ -->
+      <audio
+        id="bgm"
+        src="assets/music/happy-beats-business-moves-vol-11-by-ende-dot-app.mp3"
+        data-start="0" data-duration="25" data-track-index="10"
+        data-automation='{"version":1,"lanes":[{"target":"volume","points":[{"t":0,"v":0},{"t":0.5,"v":0.28},{"t":5.28,"v":0.3},{"t":17.91,"v":0.33},{"t":21.07,"v":0.3},{"t":23.4,"v":0.26},{"t":25,"v":0}]}]}'
+      ></audio>
+
+      <!-- Scene 1 — one soft drop per metric card, a weightier hit on the chart -->
+      <audio id="sfx-card1" src="assets/sfx/interface/drop_002.ogg" data-start="1.58" data-duration="0.191" data-track-index="11" data-volume="0.55"></audio>
+      <audio id="sfx-card2" src="assets/sfx/interface/drop_002.ogg" data-start="2.10" data-duration="0.191" data-track-index="11" data-volume="0.55"></audio>
+      <audio id="sfx-card3" src="assets/sfx/interface/drop_002.ogg" data-start="2.63" data-duration="0.191" data-track-index="11" data-volume="0.55"></audio>
+      <audio id="sfx-card4" src="assets/sfx/interface/drop_002.ogg" data-start="3.16" data-duration="0.191" data-track-index="11" data-volume="0.55"></audio>
+      <audio id="sfx-chart" src="assets/sfx/impact/impactSoft_medium_001.ogg" data-start="3.68" data-duration="0.183" data-track-index="12" data-volume="0.6"></audio>
+      <!-- Scene 2 — the AI reply lands -->
+      <audio id="sfx-ai" src="assets/sfx/interface/drop_001.ogg" data-start="5.78" data-duration="0.11" data-track-index="11" data-volume="0.6"></audio>
+      <!-- Scene 3 — the matching knowledge-base chunk lights up -->
+      <audio id="sfx-kb" src="assets/sfx/interface/bong_001.ogg" data-start="8.94" data-duration="0.123" data-track-index="11" data-volume="0.6"></audio>
+      <!-- Scene 4 — template picked, then sent -->
+      <audio id="sfx-pick" src="assets/sfx/interface/select_008.ogg" data-start="12.63" data-duration="0.047" data-track-index="11" data-volume="0.55"></audio>
+      <audio id="sfx-send" src="assets/sfx/ui/click2.ogg" data-start="13.16" data-duration="0.056" data-track-index="12" data-volume="0.55"></audio>
+      <!-- Scene 5 — the operator changes the customer's account -->
+      <audio id="sfx-act" src="assets/sfx/ui/click2.ogg" data-start="18.94" data-duration="0.056" data-track-index="11" data-volume="0.65"></audio>
+      <audio id="sfx-done" src="assets/sfx/impact/impactSoft_medium_001.ogg" data-start="20.00" data-duration="0.183" data-track-index="12" data-volume="0.6"></audio>
+      <!-- Scene 6 — the mark -->
+      <audio id="sfx-logo" src="assets/sfx/impact/impactBell_heavy_000.ogg" data-start="21.57" data-duration="1.48" data-track-index="11" data-volume="0.6"></audio>
+    </div>
+
+    <script>
+      (function () {
+        function build() {
+          var tl = gsap.timeline({ paused: true });
+
+          // The screens cut on the beat (114.84 BPM) rather than dissolving —
+          // each one animates its own chrome in, so the cut reads as a wipe.
+          // Only the opening rises out of black.
+          tl.fromTo("#scr-stats", { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power2.out" }, 0.1);
+
+          // ── Audio-reactive: the stage's own ambient glow breathes with RMS.
+          // Subtle by design — no bars, no strobe, nothing on text.
+          var A = window.AUDIO_DATA;
+          if (A && A.totalFrames) {
+            var glow = document.getElementById("ar-glow");
+            var apply = function (i) {
+              return function () { glow.style.opacity = (0.035 + A.rms[i] * 0.075).toFixed(4); };
+            };
+            for (var f = 0; f < A.totalFrames; f++) {
+              tl.call(apply(f), [], f / A.fps);
+            }
+          }
+
+          window.__timelines["main"] = tl;
+          if (window.__hfForceTimelineRebind) window.__hfForceTimelineRebind();
+        }
+
+        if (document.fonts && document.fonts.ready) { document.fonts.ready.then(build); } else { build(); }
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,826 @@
+<!doctype html>
+<html lang="ru" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>VPN Хелпдеск — brag</title>
+    <script src="assets/gsap.min.js"></script>
+    <script src="assets/audio-data.js"></script>
+    <style>
+      /* ── Local fonts (lint: font_family_without_font_face) ──────────────── */
+      @font-face {
+        font-family: 'Inter';
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: block;
+        src: url(assets/fonts/Inter-var-cyrillic.woff2) format('woff2');
+        unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+      }
+      @font-face {
+        font-family: 'Inter';
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: block;
+        src: url(assets/fonts/Inter-var-latin.woff2) format('woff2');
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+          U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+          U+FEFF, U+FFFD;
+      }
+      @font-face {
+        font-family: 'JetBrains Mono';
+        font-style: normal;
+        font-weight: 100 800;
+        font-display: block;
+        src: url(assets/fonts/JetBrainsMono-var-cyrillic.woff2) format('woff2');
+        unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+      }
+      @font-face {
+        font-family: 'JetBrains Mono';
+        font-style: normal;
+        font-weight: 100 800;
+        font-display: block;
+        src: url(assets/fonts/JetBrainsMono-var-latin.woff2) format('woff2');
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+          U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+          U+FEFF, U+FFFD;
+      }
+
+      /* ── Palette lifted verbatim from app/static/ ───────────────────────── */
+      :root {
+        --bg: #0d0d12;
+        --surface: #13131a;
+        --raise: #1a1a24;
+        --line: #2a2a3a;
+        --text: #f1f1f5;
+        --muted: #868d99;
+        --accent: #4f8ef7;
+        --violet: #a855f7;
+        --warn: #eab308;
+        --danger: #ef4444;
+      }
+
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); }
+      #root {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font-family: 'Inter', system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+      /* ── Caption band (frame furniture, never covered by the panel) ─────── */
+      #topband {
+        position: absolute;
+        top: 0; left: 0;
+        width: 1920px; height: 120px;
+        background: var(--bg);
+        border-bottom: 1px solid var(--raise);
+        z-index: 5;
+      }
+      #band-slug {
+        position: absolute;
+        right: 80px; top: 50px;
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        font-size: 19px; font-weight: 400; color: var(--muted);
+        letter-spacing: 0.04em;
+      }
+      .caption {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        padding-left: 80px;
+      }
+      .caption-inner { display: flex; align-items: center; gap: 22px; opacity: 0; }
+      .caption-dot {
+        width: 12px; height: 12px; border-radius: 999px;
+        background: var(--accent);
+        box-shadow: 0 0 18px rgba(79, 142, 247, 0.65);
+        flex: 0 0 auto;
+      }
+      .caption-text {
+        font-size: 36px; font-weight: 500; letter-spacing: -0.015em; color: var(--text);
+        white-space: nowrap; max-width: 1600px;
+      }
+
+      /* ── Stage: the window the camera moves the panel behind ───────────── */
+      #stage {
+        position: absolute;
+        top: 120px; left: 0;
+        width: 1920px; height: 960px;
+        overflow: hidden;
+        background: var(--bg);
+        z-index: 1;
+      }
+      #stage > .clip { position: absolute; inset: 0; }
+
+      /* ── Scene 1: the hook ─────────────────────────────────────────────── */
+      #sc1 { background: var(--bg); }
+      #sc1-wrap {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding-left: 220px;
+        padding-right: 220px;
+      }
+      #sc1-bubble {
+        background: var(--raise);
+        border-radius: 32px 32px 32px 10px;
+        padding: 34px 44px;
+        font-size: 52px; font-weight: 400; line-height: 1.35; letter-spacing: -0.02em;
+        color: var(--text);
+        align-self: flex-start;
+        max-width: 1180px;
+      }
+      #sc1-bubble .ch { opacity: 0; }
+      #sc1-caret {
+        display: inline-block;
+        width: 3px; height: 50px;
+        background: var(--accent);
+        vertical-align: -7px;
+        margin-left: 4px;
+      }
+      #sc1-meta {
+        margin-top: 26px; margin-left: 14px;
+        font-size: 24px; color: var(--muted); font-weight: 400;
+      }
+
+      /* ── The panel (1920×960, driven by #camera) ───────────────────────── */
+      #camera {
+        position: absolute;
+        top: 0; left: 0;
+        width: 1920px; height: 960px;
+        transform-origin: 0 0;
+      }
+      #panel {
+        position: absolute; inset: 0;
+        background: var(--bg);
+        display: flex; flex-direction: column;
+      }
+
+      /* top bar */
+      #topbar {
+        height: 56px; flex: 0 0 56px;
+        border-bottom: 1px solid var(--line);
+        display: flex; align-items: center; gap: 40px;
+        padding: 0 28px;
+        background: var(--surface);
+      }
+      #brandmark {
+        width: 34px; height: 34px; border-radius: 10px;
+        background: linear-gradient(135deg, var(--accent), var(--violet));
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 700; font-size: 19px; color: #fff;
+      }
+      #brandname { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+      .nav { display: flex; gap: 30px; font-size: 18px; color: var(--muted); }
+      .nav .on { color: var(--text); font-weight: 500; }
+      #topbar-right {
+        margin-left: auto; display: flex; align-items: center; gap: 18px;
+        font-size: 18px; color: var(--muted);
+      }
+      #opavatar {
+        width: 32px; height: 32px; border-radius: 999px;
+        background: var(--raise); border: 1px solid var(--line);
+        display: flex; align-items: center; justify-content: center;
+        font-size: 15px; font-weight: 600; color: var(--text);
+      }
+
+      /* service pills */
+      #pills {
+        height: 48px; flex: 0 0 48px;
+        border-bottom: 1px solid var(--line);
+        display: flex; align-items: center; gap: 12px;
+        padding: 0 28px;
+        background: var(--bg);
+      }
+      .pill {
+        display: flex; align-items: center; gap: 10px;
+        height: 32px; padding: 0 16px; border-radius: 999px;
+        border: 1px solid var(--line); background: var(--raise);
+        font-size: 17px; color: var(--muted); white-space: nowrap;
+      }
+      .pill.on { color: var(--text); border-color: rgba(79, 142, 247, 0.45); }
+      .pill .n {
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        font-size: 15px; font-weight: 500; color: var(--text);
+        background: rgba(79, 142, 247, 0.16); border-radius: 6px; padding: 2px 8px;
+      }
+
+      /* columns */
+      #cols { flex: 1 1 auto; display: flex; min-height: 0; }
+      #colL { width: 460px; flex: 0 0 460px; border-right: 1px solid var(--line); display: flex; flex-direction: column; }
+      #colC { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+      #colR { width: 460px; flex: 0 0 460px; border-left: 1px solid var(--line); padding: 24px; }
+
+      /* left column */
+      #search {
+        margin: 16px; height: 44px; border-radius: 12px;
+        background: var(--raise); border: 1px solid var(--line);
+        display: flex; align-items: center; padding: 0 16px; gap: 12px;
+        font-size: 18px; color: var(--muted);
+      }
+      #chips { display: flex; gap: 10px; padding: 0 16px 14px; }
+      .chip {
+        height: 34px; padding: 0 14px; border-radius: 10px;
+        background: var(--raise); border: 1px solid var(--line);
+        display: flex; align-items: center; gap: 8px;
+        font-size: 17px; color: var(--muted); white-space: nowrap;
+      }
+      .chip.on { color: var(--text); background: rgba(79, 142, 247, 0.12); border-color: rgba(79, 142, 247, 0.35); }
+      #rows { flex: 1 1 auto; overflow: hidden; }
+      .row {
+        position: relative;
+        height: 92px; padding: 16px 18px 16px 22px;
+        border-bottom: 1px solid rgba(42, 42, 58, 0.55);
+        display: flex; flex-direction: column; justify-content: center; gap: 7px;
+      }
+      .row .bar { position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: transparent; }
+      .row.active { background: var(--raise); }
+      .row.active .bar { background: var(--accent); }
+      .row-top { display: flex; align-items: center; gap: 10px; }
+      .row-name { font-size: 21px; font-weight: 600; letter-spacing: -0.01em; }
+      .row-time { margin-left: auto; font-size: 15px; color: var(--muted); font-family: 'JetBrains Mono', ui-monospace, monospace; }
+      .row-prev { font-size: 18px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .dot { width: 9px; height: 9px; border-radius: 999px; background: var(--danger); flex: 0 0 auto; }
+      .svc {
+        font-size: 14px; color: var(--muted); border: 1px solid var(--line);
+        border-radius: 6px; padding: 1px 7px;
+      }
+
+      /* conversation header */
+      #convhead {
+        height: 68px; flex: 0 0 68px;
+        border-bottom: 1px solid var(--line);
+        display: flex; align-items: center; gap: 16px; padding: 0 26px;
+        background: var(--surface);
+      }
+      #convavatar {
+        width: 40px; height: 40px; border-radius: 999px;
+        background: linear-gradient(135deg, #2a2a3a, #1a1a24);
+        border: 1px solid var(--line);
+        display: flex; align-items: center; justify-content: center;
+        font-size: 17px; font-weight: 600;
+      }
+      #convname { font-size: 21px; font-weight: 600; letter-spacing: -0.01em; }
+      #convsub { position: relative; height: 22px; margin-top: 2px; font-size: 16px; color: var(--muted); }
+      #convsub span { position: absolute; left: 0; top: 0; white-space: nowrap; }
+      #convsub-b { opacity: 0; }
+      #convhead-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+      #take-btn {
+        height: 40px; padding: 0 20px; border-radius: 10px;
+        background: var(--accent); color: #0d0d12;
+        font-size: 18px; font-weight: 600;
+        display: flex; align-items: center;
+      }
+      #status-pill {
+        height: 34px; padding: 0 16px; border-radius: 999px;
+        background: rgba(234, 179, 8, 0.12); border: 1px solid rgba(234, 179, 8, 0.35);
+        color: var(--warn); font-size: 17px; font-weight: 500;
+        display: flex; align-items: center; opacity: 0;
+      }
+
+      /* messages */
+      #msgs {
+        flex: 1 1 auto; min-height: 0;
+        padding: 24px 40px 18px;
+        display: flex; flex-direction: column; justify-content: flex-end; gap: 20px;
+        overflow: hidden;
+      }
+      .m { display: flex; }
+      .m.left { justify-content: flex-start; }
+      .m.right { justify-content: flex-end; }
+      .m-col { max-width: 620px; }
+      .bub {
+        font-size: 25px; line-height: 1.4; letter-spacing: -0.01em;
+        padding: 16px 22px; color: var(--text);
+      }
+      .bub.client { background: var(--raise); border-radius: 22px 22px 22px 8px; }
+      .bub.ai {
+        position: relative;
+        background: rgba(79, 142, 247, 0.12);
+        border: 1px solid rgba(79, 142, 247, 0.25);
+        border-radius: 22px 22px 22px 8px;
+      }
+      #ai-badge {
+        position: absolute; top: -13px; left: 16px;
+        background: var(--accent); color: #0d0d12;
+        font-size: 14px; font-weight: 700; letter-spacing: 0.02em;
+        padding: 2px 9px; border-radius: 6px;
+      }
+      .bub.op {
+        background: rgba(168, 85, 247, 0.15);
+        border: 1px solid rgba(168, 85, 247, 0.3);
+        border-radius: 22px 22px 8px 22px;
+      }
+      .meta { font-size: 16px; color: var(--muted); margin-top: 8px; }
+      .meta.r { text-align: right; margin-right: 8px; }
+      .meta.l { margin-left: 8px; }
+      .tick { font-weight: 700; margin-left: 6px; }
+      #tick-sent { color: var(--muted); }
+      #tick-fail { color: var(--danger); opacity: 0; }
+      #tick-ok { color: var(--warn); opacity: 0; }
+      #err-line {
+        font-size: 17px; color: var(--danger); text-align: right; margin-right: 8px; margin-top: 5px;
+        font-family: 'JetBrains Mono', ui-monospace, monospace; opacity: 0;
+      }
+      #sys-line { font-size: 17px; color: var(--muted); text-align: right; margin-right: 8px; margin-top: 5px; opacity: 0; }
+      #fb-line { font-size: 17px; color: var(--warn); text-align: right; margin-right: 8px; margin-top: 5px; opacity: 0; }
+      #daydiv { align-self: center; font-size: 15px; color: var(--muted); background: rgba(26, 26, 36, 0.7); padding: 5px 16px; border-radius: 999px; }
+
+      /* composer */
+      #composer {
+        flex: 0 0 120px; border-top: 1px solid var(--line);
+        padding: 22px 40px; position: relative; background: var(--bg);
+      }
+      #cbox {
+        height: 62px; border-radius: 14px;
+        background: var(--raise); border: 1px solid var(--line);
+        display: flex; align-items: center; padding: 0 20px; gap: 14px;
+        font-size: 22px; color: var(--muted);
+      }
+      #ctext { position: relative; flex: 1 1 auto; height: 30px; color: var(--text); }
+      #ctext span { position: absolute; left: 0; top: 0; white-space: nowrap; }
+      #ctext-slash, #ctext-full { opacity: 0; }
+      #csend {
+        margin-left: auto; width: 40px; height: 40px; border-radius: 10px;
+        background: rgba(79, 142, 247, 0.16); color: #7ba8f9;
+        display: flex; align-items: center; justify-content: center; font-size: 19px;
+      }
+      #tmpl {
+        position: absolute; left: 40px; right: 40px; bottom: 100px;
+        background: var(--surface); border: 1px solid var(--line);
+        border-radius: 14px; overflow: hidden;
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+        opacity: 0;
+      }
+      #tmpl-head { padding: 14px 20px; font-size: 19px; color: var(--muted); border-bottom: 1px solid var(--line); }
+      .tmpl-row { position: relative; padding: 14px 20px; font-size: 20px; color: var(--text); opacity: 0; }
+      .tmpl-sel { position: absolute; inset: 0; background: var(--raise); opacity: 0; }
+      .tmpl-row span { position: relative; }
+
+      /* right column */
+      .cardline { display: flex; justify-content: space-between; font-size: 18px; padding: 11px 0; border-bottom: 1px solid rgba(42, 42, 58, 0.5); }
+      .cardline .k { color: var(--muted); }
+      .cardline .v { color: var(--text); font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 17px; }
+      #card-head { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+      #card-av {
+        width: 48px; height: 48px; border-radius: 999px;
+        background: linear-gradient(135deg, #2a2a3a, #1a1a24); border: 1px solid var(--line);
+        display: flex; align-items: center; justify-content: center; font-size: 19px; font-weight: 600;
+      }
+      #card-title { font-size: 20px; font-weight: 600; }
+      #card-sub { font-size: 16px; color: var(--muted); margin-top: 2px; }
+      #card-notes {
+        margin-top: 20px; height: 120px; border-radius: 12px;
+        background: var(--raise); border: 1px solid var(--line);
+        padding: 14px 16px; font-size: 17px; color: var(--muted);
+      }
+
+      /* audio-reactive layer + cursor */
+      #glow {
+        position: absolute; left: 460px; top: 104px; width: 1000px; height: 856px;
+        background: radial-gradient(ellipse at 50% 60%, rgba(79, 142, 247, 0.22), transparent 62%);
+        opacity: 0; pointer-events: none;
+      }
+      #cursor { position: absolute; left: 0; top: 0; width: 30px; height: 30px; opacity: 0; }
+
+      /* ── Outro ─────────────────────────────────────────────────────────── */
+      #outro { z-index: 10; }
+      #scrim { position: absolute; inset: 0; background: var(--bg); opacity: 0; }
+      #outro-wrap {
+        position: absolute; inset: 0;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 30px;
+      }
+      #logo-tile {
+        width: 132px; height: 132px; border-radius: 34px;
+        background: linear-gradient(135deg, var(--accent), var(--violet));
+        display: flex; align-items: center; justify-content: center;
+        font-size: 66px; font-weight: 700; color: #fff;
+        opacity: 0;
+      }
+      #logo-name { font-size: 62px; font-weight: 600; letter-spacing: -0.03em; opacity: 0; }
+      #logo-tag { font-size: 34px; font-weight: 400; color: var(--muted); letter-spacing: -0.01em; opacity: 0; }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="24.5"
+      data-width="1920"
+      data-height="1080"
+      data-fps="30"
+    >
+      <!-- ══ stage ══════════════════════════════════════════════════════ -->
+      <div id="stage">
+        <!-- panel first: it sits UNDER the hook so the hook can dissolve off it -->
+        <section id="panel-clip" class="clip" data-start="4" data-duration="17" data-track-index="1">
+          <div id="camera" data-layout-allow-overflow="true" data-layout-allow-occlusion="true" data-layout-allow-overlap="true">
+            <div id="panel">
+              <div id="topbar">
+                <div id="brandmark">Х</div>
+                <div id="brandname">Хелпдеск</div>
+                <div class="nav">
+                  <span class="on">Диалоги</span><span>Состояние</span><span>Статистика</span><span>Настройки</span>
+                </div>
+                <div id="topbar-right">
+                  <span>Марина</span>
+                  <div id="opavatar">М</div>
+                </div>
+              </div>
+
+              <div id="pills">
+                <div class="pill on" id="pill-1">Все сервисы <span class="n">12</span></div>
+                <div class="pill" id="pill-2">GruVPN <span class="n">7</span></div>
+                <div class="pill" id="pill-3">NordSky <span class="n">5</span></div>
+              </div>
+
+              <div id="cols">
+                <div id="colL">
+                  <div id="search">Поиск по диалогам...</div>
+                  <div id="chips">
+                    <div class="chip on">В работе</div>
+                    <div class="chip">Ожидание</div>
+                    <div class="chip">Очередь</div>
+                    <div class="chip">ИИ</div>
+                    <div class="chip">Закрытые</div>
+                  </div>
+                  <div id="rows">
+                    <div class="row active" id="row-new">
+                      <div class="bar"></div>
+                      <div class="row-top">
+                        <div class="dot" id="row-dot"></div>
+                        <div class="row-name">Алексей К.</div>
+                        <div class="svc">GruVPN</div>
+                        <div class="row-time">21:47</div>
+                      </div>
+                      <div class="row-prev">По Wi-Fi работает, а на мобильном нет</div>
+                    </div>
+                    <div class="row">
+                      <div class="bar"></div>
+                      <div class="row-top">
+                        <div class="row-name">Ирина В.</div>
+                        <div class="svc">NordSky</div>
+                        <div class="row-time">21:41</div>
+                      </div>
+                      <div class="row-prev">Спасибо, всё заработало</div>
+                    </div>
+                    <div class="row">
+                      <div class="bar"></div>
+                      <div class="row-top">
+                        <div class="row-name">Дмитрий С.</div>
+                        <div class="svc">GruVPN</div>
+                        <div class="row-time">21:33</div>
+                      </div>
+                      <div class="row-prev">Не приходит ключ после оплаты</div>
+                    </div>
+                    <div class="row">
+                      <div class="bar"></div>
+                      <div class="row-top">
+                        <div class="row-name">Пользователь 5512</div>
+                        <div class="svc">GruVPN</div>
+                        <div class="row-time">21:28</div>
+                      </div>
+                      <div class="row-prev">Как подключить на телевизоре?</div>
+                    </div>
+                    <div class="row">
+                      <div class="bar"></div>
+                      <div class="row-top">
+                        <div class="row-name">Олег Р.</div>
+                        <div class="svc">NordSky</div>
+                        <div class="row-time">21:19</div>
+                      </div>
+                      <div class="row-prev">Продлил подписку, всё ок</div>
+                    </div>
+                    <div class="row">
+                      <div class="bar"></div>
+                      <div class="row-top">
+                        <div class="row-name">Марк Т.</div>
+                        <div class="svc">GruVPN</div>
+                        <div class="row-time">21:02</div>
+                      </div>
+                      <div class="row-prev">Медленно на вечернем пике</div>
+                    </div>
+                    <div class="row">
+                      <div class="bar"></div>
+                      <div class="row-top">
+                        <div class="row-name">Анна Ж.</div>
+                        <div class="svc">NordSky</div>
+                        <div class="row-time">20:54</div>
+                      </div>
+                      <div class="row-prev">Можно счёт на компанию?</div>
+                    </div>
+                    <div class="row">
+                      <div class="bar"></div>
+                      <div class="row-top">
+                        <div class="row-name">Павел Н.</div>
+                        <div class="svc">GruVPN</div>
+                        <div class="row-time">20:47</div>
+                      </div>
+                      <div class="row-prev">Сменил телефон, что делать</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="colC">
+                  <div id="convhead">
+                    <div id="convavatar">А</div>
+                    <div>
+                      <div id="convname">Алексей К.</div>
+                      <div id="convsub">
+                        <span id="convsub-a">@alexey_k · GruVPN · в очереди</span>
+                        <span id="convsub-b">@alexey_k · GruVPN · в работе</span>
+                      </div>
+                    </div>
+                    <div id="convhead-right">
+                      <div id="status-pill">В работе · Марина</div>
+                      <div id="take-btn">Взять в работу</div>
+                    </div>
+                  </div>
+
+                  <div id="msgs">
+                    <div id="daydiv">сегодня</div>
+                    <div class="m left" id="m1">
+                      <div class="m-col">
+                        <div class="bub client">По Wi-Fi работает, а на мобильном нет</div>
+                        <div class="meta l">21:47</div>
+                      </div>
+                    </div>
+                    <div class="m left" id="m2">
+                      <div class="m-col">
+                        <div class="bub ai"><div id="ai-badge">ИИ</div>Проверьте подключение и перезапустите приложение.</div>
+                        <div class="meta l">21:47</div>
+                      </div>
+                    </div>
+                    <div class="m left" id="m3">
+                      <div class="m-col">
+                        <div class="bub client">Уже пробовал. Не помогло.</div>
+                        <div class="meta l">21:48</div>
+                      </div>
+                    </div>
+                    <div class="m right" id="m4">
+                      <div class="m-col">
+                        <div class="bub op" id="op-bub">Отправляю инструкцию подключения WhiteList — на мобильном заработает.</div>
+                        <div class="meta r">Марина · 21:49<span class="tick" id="tick-sent">✓</span><span class="tick" id="tick-fail">✗</span><span class="tick" id="tick-ok">✓✓</span></div>
+                        <div id="err-line">✗ 400 BUSINESS_PEER_USAGE_MISSING</div>
+                        <div id="sys-line">повтор резервным каналом</div>
+                        <div id="fb-line">доставлено резервным каналом</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div id="composer">
+                    <div id="tmpl">
+                      <div id="tmpl-head">Поиск шаблонов...</div>
+                      <div class="tmpl-row" id="tmpl-1"><div class="tmpl-sel" id="tmpl-1-sel"></div><span>WhiteList — подключение на мобильном</span></div>
+                      <div class="tmpl-row" id="tmpl-2"><div class="tmpl-sel"></div><span>Сброс ключа и переустановка</span></div>
+                    </div>
+                    <div id="cbox">
+                      <span id="ctext"><span id="ctext-slash">/</span><span id="ctext-full">Отправляю инструкцию подключения WhiteList…</span></span>
+                      <div id="csend">➤</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="colR">
+                  <div id="card-head">
+                    <div id="card-av">А</div>
+                    <div>
+                      <div id="card-title">Алексей К.</div>
+                      <div id="card-sub">@alexey_k</div>
+                    </div>
+                  </div>
+                  <div class="cardline"><span class="k">Сервис</span><span class="v">GruVPN</span></div>
+                  <div class="cardline"><span class="k">Тариф</span><span class="v">12 мес.</span></div>
+                  <div class="cardline"><span class="k">Активен до</span><span class="v">14.07.2026</span></div>
+                  <div class="cardline"><span class="k">Трафик</span><span class="v">318 ГБ</span></div>
+                  <div class="cardline"><span class="k">Устройств</span><span class="v">3 / 5</span></div>
+                  <div class="cardline"><span class="k">Обращений</span><span class="v">2</span></div>
+                  <div id="card-notes">Заметки об этом пользователе...</div>
+                </div>
+              </div>
+            </div>
+
+            <div id="glow"></div>
+
+            <svg id="cursor" viewBox="0 0 24 24" fill="none">
+              <path d="M5 2.5L19 12.2L12.4 13.3L9.9 20.2L5 2.5Z" fill="#f1f1f5" stroke="#0d0d12" stroke-width="1.2" stroke-linejoin="round" />
+            </svg>
+          </div>
+        </section>
+
+        <!-- hook sits on top of the panel and dissolves off it -->
+        <section id="sc1" class="clip" data-start="0" data-duration="4.2" data-track-index="0">
+          <div id="sc1-wrap" data-layout-allow-overlap="true">
+            <div id="sc1-bubble"><span id="sc1-chars"></span><span id="sc1-caret"></span></div>
+            <div id="sc1-meta">21:47 · Telegram</div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ══ caption band ═══════════════════════════════════════════════ -->
+      <div id="topband">
+        <div id="band-slug">vpn_bot_support</div>
+        <div class="caption clip" id="cap2" data-start="6.2" data-duration="2.0" data-track-index="2">
+          <div class="caption-inner"><span class="caption-dot"></span><span class="caption-text">Из Telegram — в панель</span></div>
+        </div>
+        <div class="caption clip" id="cap3" data-start="9.83" data-duration="2.37" data-track-index="2">
+          <div class="caption-inner"><span class="caption-dot"></span><span class="caption-text">ИИ не справился — зовёт оператора</span></div>
+        </div>
+        <div class="caption clip" id="cap4" data-start="17.7" data-duration="1.9" data-track-index="2">
+          <div class="caption-inner"><span class="caption-dot"></span><span class="caption-text">Telegram отказал. Ответ дошёл.</span></div>
+        </div>
+      </div>
+
+      <!-- ══ outro (root-level clip: covers the whole frame) ════════════ -->
+      <section id="outro" class="clip" data-start="20" data-duration="4.5" data-track-index="3">
+        <div id="scrim"></div>
+        <div id="outro-wrap" data-layout-allow-overlap="true">
+          <div id="logo-tile">Х</div>
+          <div id="logo-name">VPN Хелпдеск</div>
+          <div id="logo-tag">Тикеты из Telegram. Ответы из панели.</div>
+        </div>
+      </section>
+
+      <!-- ══ audio ══════════════════════════════════════════════════════ -->
+      <audio
+        id="bgm"
+        src="assets/music/happy-beats-business-moves-vol-12-by-ende-dot-app.mp3"
+        data-start="0"
+        data-duration="24.5"
+        data-track-index="10"
+        data-automation='{"version":1,"lanes":[{"target":"volume","points":[{"t":0,"v":0},{"t":0.6,"v":0.26},{"t":4,"v":0.28},{"t":12,"v":0.3},{"t":17.4,"v":0.32},{"t":20.19,"v":0.3},{"t":22.9,"v":0.24},{"t":24.5,"v":0}]}]}'
+      ></audio>
+
+      <audio id="kp1" src="assets/sfx/keyboard/keypress-003.wav" data-start="0.50" data-duration="0.25" data-track-index="11" data-volume="0.35"></audio>
+      <audio id="kp2" src="assets/sfx/keyboard/keypress-011.wav" data-start="0.70" data-duration="0.25" data-track-index="12" data-volume="0.32"></audio>
+      <audio id="kp3" src="assets/sfx/keyboard/keypress-007.wav" data-start="0.92" data-duration="0.25" data-track-index="11" data-volume="0.35"></audio>
+      <audio id="kp4" src="assets/sfx/keyboard/keypress-019.wav" data-start="1.12" data-duration="0.25" data-track-index="12" data-volume="0.32"></audio>
+      <audio id="kp5" src="assets/sfx/keyboard/keypress-015.wav" data-start="1.32" data-duration="0.25" data-track-index="11" data-volume="0.35"></audio>
+      <audio id="kp6" src="assets/sfx/keyboard/keypress-023.wav" data-start="1.50" data-duration="0.25" data-track-index="12" data-volume="0.30"></audio>
+
+      <audio id="sfx-ticket" src="assets/sfx/interface/drop_001.ogg" data-start="5.96" data-duration="0.11" data-track-index="11" data-volume="0.5"></audio>
+      <audio id="sfx-click" src="assets/sfx/ui/click2.ogg" data-start="9.27" data-duration="0.056" data-track-index="12" data-volume="0.55"></audio>
+      <audio id="sfx-select" src="assets/sfx/interface/select_008.ogg" data-start="12.0" data-duration="0.047" data-track-index="11" data-volume="0.45"></audio>
+      <audio id="sfx-fail" src="assets/sfx/impact/impactSoft_medium_001.ogg" data-start="13.09" data-duration="0.183" data-track-index="12" data-volume="0.5"></audio>
+      <audio id="sfx-payoff" src="assets/sfx/impact/impactBell_heavy_000.ogg" data-start="17.45" data-duration="1.48" data-track-index="11" data-volume="0.55"></audio>
+      <audio id="sfx-logo" src="assets/sfx/interface/bong_001.ogg" data-start="20.73" data-duration="0.123" data-track-index="12" data-volume="0.5"></audio>
+    </div>
+
+    <script>
+      (function () {
+        var HOOK = "По Wi-Fi работает, а на мобильном нет";
+        var TYPE_FROM = 0.4;
+        var TYPE_TO = 1.55;
+
+        // Build the hook's per-character spans up front, so the layout is final
+        // before the timeline measures anything.
+        var host = document.getElementById("sc1-chars");
+        var chars = [];
+        for (var i = 0; i < HOOK.length; i++) {
+          var s = document.createElement("span");
+          s.className = "ch";
+          s.textContent = HOOK[i] === " " ? " " : HOOK[i];
+          host.appendChild(s);
+          chars.push(s);
+        }
+
+        function build() {
+          var tl = gsap.timeline({ paused: true });
+
+          // ── Camera: one continuous move through the real panel ──────────
+          // pan right (ticket list → conversation), pan down (→ composer),
+          // push in (→ delivery status), pull back (→ the whole panel).
+          var cam = "#camera";
+          tl.set(cam, { scale: 1.4, x: 0, y: 0 }, 0);
+          tl.to(cam, { x: -384, y: -52, duration: 0.45, ease: "power3.inOut" }, 7.7);
+          tl.to(cam, { y: -384, duration: 0.5, ease: "power2.inOut" }, 10.0);
+          tl.to(cam, { scale: 2.0, x: -1340, y: -900, duration: 0.55, ease: "power3.inOut" }, 12.2);
+          tl.to(cam, { scale: 1.0, x: 0, y: 0, duration: 0.8, ease: "power2.inOut" }, 18.5);
+
+          // ── Scene 1 — the hook: one real message from the knowledge base ─
+          tl.fromTo("#sc1-bubble", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }, 0.15);
+          var step = (TYPE_TO - TYPE_FROM) / chars.length;
+          for (var c = 0; c < chars.length; c++) {
+            tl.set(chars[c], { opacity: 1 }, TYPE_FROM + c * step);
+          }
+          // finite blink, finished before the caret is retired (no overlap)
+          tl.to("#sc1-caret", { opacity: 0, duration: 0.3, ease: "steps(1)", repeat: 3, yoyo: true }, 0.4);
+          tl.set("#sc1-caret", { opacity: 0 }, 1.7);
+          tl.fromTo("#sc1-meta", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.4, ease: "power2.out" }, 1.75);
+          tl.to("#sc1-wrap", { opacity: 0, duration: 0.35, ease: "power2.inOut" }, 3.85);
+
+          // ── Scene 2 — the ticket lands in the panel ─────────────────────
+          tl.fromTo("#panel", { opacity: 0, scale: 1.02 }, { opacity: 1, scale: 1, duration: 0.5, ease: "power2.out" }, 4.0);
+          // beat-grid: service pills at 4.39s / 4.91s / 5.34s (110 BPM grid)
+          tl.fromTo("#pill-1", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 4.39);
+          tl.fromTo("#pill-2", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 4.91);
+          tl.fromTo("#pill-3", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 5.34);
+          // beat-grid: the new ticket arrives on the 6.00s beat
+          tl.fromTo("#row-new", { opacity: 0, x: -34 }, { opacity: 1, x: 0, duration: 0.42, ease: "power3.out" }, 6.0);
+          tl.fromTo("#row-dot", { scale: 0 }, { scale: 1, duration: 0.3, ease: "back.out(2.2)" }, 6.12);
+          // finite pulse on the "operator called" dot: 0.6s half-cycle, 6.4 → 20.8
+          tl.to("#row-dot", { opacity: 0.35, duration: 0.6, ease: "sine.inOut", repeat: 23, yoyo: true }, 6.4);
+          tl.fromTo("#cap2 .caption-inner", { opacity: 0, x: -10 }, { opacity: 1, x: 0, duration: 0.32, ease: "power2.out" }, 6.25);
+          tl.to("#cap2 .caption-inner", { opacity: 0, duration: 0.25, ease: "power2.in" }, 7.9);
+
+          // ── Scene 3 — the AI answers, then hands the ticket over ────────
+          // beat-grid: 8.19s — the AI's own reply, badge and all
+          tl.fromTo("#m2", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.4, ease: "power2.out" }, 8.19);
+          // beat-grid: 8.74s — the client pushes back, so the AI is done here
+          tl.fromTo("#m3", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.4, ease: "power2.out" }, 8.74);
+          // the cursor travels to «Взять в работу»
+          tl.fromTo("#cursor", { opacity: 0, x: 1010, y: 430 }, { opacity: 1, duration: 0.25 }, 8.55);
+          tl.to("#cursor", { x: 1318, y: 140, duration: 0.6, ease: "power2.inOut" }, 8.6);
+          // beat-locked: 9.29s (strong cue 0.97) — the handoff itself
+          tl.to("#take-btn", { scale: 0.94, duration: 0.09, ease: "power2.in" }, 9.29);
+          tl.to("#take-btn", { scale: 1, duration: 0.12, ease: "power2.out" }, 9.38);
+          tl.to("#take-btn", { opacity: 0, scale: 0.9, duration: 0.28, ease: "power2.in" }, 9.55);
+          tl.to("#convsub-a", { opacity: 0, duration: 0.22 }, 9.6);
+          tl.to("#convsub-b", { opacity: 1, duration: 0.22 }, 9.7);
+          tl.fromTo("#status-pill", { opacity: 0, x: 14 }, { opacity: 1, x: 0, duration: 0.32, ease: "power2.out" }, 9.7);
+          tl.to("#cursor", { opacity: 0, duration: 0.3 }, 9.8);
+          tl.fromTo("#cap3 .caption-inner", { opacity: 0, x: -10 }, { opacity: 1, x: 0, duration: 0.32, ease: "power2.out" }, 9.88);
+          tl.to("#cap3 .caption-inner", { opacity: 0, duration: 0.25, ease: "power2.in" }, 11.9);
+          // beat-grid: 10.37s — «/» opens the template palette
+          tl.to("#ctext-slash", { opacity: 1, duration: 0.01 }, 10.37);
+          tl.fromTo("#tmpl", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 10.37);
+          // beat-grid: 10.93s / 11.46s — template rows, one per beat
+          tl.fromTo("#tmpl-1", { opacity: 0, x: -12 }, { opacity: 1, x: 0, duration: 0.26, ease: "power2.out" }, 10.93);
+          tl.fromTo("#tmpl-2", { opacity: 0, x: -12 }, { opacity: 1, x: 0, duration: 0.26, ease: "power2.out" }, 11.46);
+          // beat-grid: 12.02s — the WhiteList template is picked
+          tl.to("#tmpl-1-sel", { opacity: 1, duration: 0.14, ease: "power2.out" }, 12.02);
+          tl.to("#tmpl", { opacity: 0, y: 10, duration: 0.22, ease: "power2.in" }, 12.14);
+          tl.to("#ctext-slash", { opacity: 0, duration: 0.01 }, 12.14);
+          tl.to("#ctext-full", { opacity: 1, duration: 0.01 }, 12.14);
+
+          // ── Scene 4 — the delivery that should not have arrived ─────────
+          tl.to("#ctext-full", { opacity: 0, duration: 0.01 }, 12.5);
+          tl.fromTo("#m4", { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: 0.38, ease: "power3.out" }, 12.5);
+          // beat-locked: 13.11s (strong cue 0.98) — Telegram refuses the message
+          tl.to("#tick-sent", { opacity: 0, duration: 0.01 }, 13.11);
+          tl.to("#tick-fail", { opacity: 1, duration: 0.01 }, 13.11);
+          tl.to("#op-bub", { borderColor: "rgba(239,68,68,0.6)", duration: 0.25, ease: "power2.out" }, 13.11);
+          tl.fromTo("#err-line", { opacity: 0, y: -6 }, { opacity: 1, y: 0, duration: 0.28, ease: "power2.out" }, 13.15);
+          // beat-grid: 15.29s — the fallback channel takes over (MTProto retry)
+          tl.fromTo("#sys-line", { opacity: 0, y: -6 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 15.29);
+          // beat-locked: 17.47s (strong cue 0.99) — the payoff
+          tl.to("#tick-fail", { opacity: 0, duration: 0.01 }, 17.47);
+          tl.to("#tick-ok", { opacity: 1, duration: 0.01 }, 17.47);
+          tl.to("#op-bub", { borderColor: "rgba(234,179,8,0.5)", duration: 0.3, ease: "power2.out" }, 17.47);
+          tl.to("#err-line", { opacity: 0.45, duration: 0.3 }, 17.47);
+          tl.fromTo("#fb-line", { opacity: 0, y: -6 }, { opacity: 1, y: 0, duration: 0.32, ease: "power2.out" }, 17.5);
+          tl.fromTo("#cap4 .caption-inner", { opacity: 0, x: -10 }, { opacity: 1, x: 0, duration: 0.32, ease: "power2.out" }, 17.75);
+          tl.to("#cap4 .caption-inner", { opacity: 0, duration: 0.25, ease: "power2.in" }, 19.3);
+
+          // ── Scene 5 — the whole panel, then the mark ────────────────────
+          // the whole panel holds clean for ~0.9s, then goes to black
+          tl.to("#scrim", { opacity: 1, duration: 0.56, ease: "power2.inOut" }, 20.19);
+          // beat-grid: 20.75s / 21.28s / 21.84s
+          tl.fromTo("#logo-tile", { opacity: 0, scale: 0.84 }, { opacity: 1, scale: 1, duration: 0.42, ease: "back.out(1.5)" }, 20.75);
+          tl.fromTo("#logo-name", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.38, ease: "power2.out" }, 21.28);
+          tl.fromTo("#logo-tag", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.4, ease: "power2.out" }, 21.84);
+
+          // ── Subtle audio-reactive layer ─────────────────────────────────
+          // bass → the active row's accent bar glow; rms → conversation
+          // presence; treble → the mark's halo. No bars, no strobe, no text.
+          var A = window.AUDIO_DATA;
+          if (A && A.totalFrames) {
+            var bar = document.querySelector("#row-new .bar");
+            var glow = document.getElementById("glow");
+            var tile = document.getElementById("logo-tile");
+            var apply = function (i) {
+              return function () {
+                var b = A.bass[i], r = A.rms[i], t = A.treble[i];
+                bar.style.boxShadow = "0 0 " + (8 + b * 20).toFixed(1) + "px rgba(79,142,247," + (0.3 + b * 0.4).toFixed(3) + ")";
+                glow.style.opacity = (0.1 + r * 0.2).toFixed(3);
+                tile.style.boxShadow = "0 0 " + (26 + t * 64).toFixed(1) + "px rgba(79,142,247," + (0.18 + t * 0.3).toFixed(3) + ")";
+              };
+            };
+            for (var f = 0; f < A.totalFrames; f++) {
+              tl.call(apply(f), [], f / A.fps);
+            }
+          }
+
+          window.__timelines["main"] = tl;
+          if (window.__hfForceTimelineRebind) window.__hfForceTimelineRebind();
+        }
+
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(build);
+        } else {
+          build();
+        }
+      })();
+    </script>
+  </body>
+</html>
