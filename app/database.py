@@ -1210,9 +1210,12 @@ class DatabaseManager:
             "SELECT COUNT(*) FROM dialogs WHERE service_id = ANY($1::int[]) AND NOT imported "
             "AND status='closed' AND updated_at::date = CURRENT_DATE", sids
         ) or 0
+        # operator_called тут не годится: move_to_closed его обнуляет, и «решено
+        # ИИ» выходило 100 %. Передачу людям видно по сообщениям тикета.
         ai_resolved = await self.pool.fetchval(
-            "SELECT COUNT(*) FROM dialogs WHERE service_id = ANY($1::int[]) AND NOT imported "
-            "AND status='closed' AND operator_called=FALSE AND updated_at::date = CURRENT_DATE", sids
+            "SELECT COUNT(*) FROM dialogs d WHERE d.service_id = ANY($1::int[]) AND NOT d.imported "
+            "AND d.status='closed' AND d.updated_at::date = CURRENT_DATE "
+            f"AND NOT {self._HANDED_OFF_SQL}", sids
         ) or 0
         ai_pct = int(ai_resolved / today_closed * 100) if today_closed else 0
 
@@ -1267,6 +1270,42 @@ class DatabaseManager:
             "top_questions": await self._get_top_questions(days, sids),
             "top_meta": await self._get_top_meta(days, sids),
         }
+
+    # Тикет побывал у людей: оператор писал клиенту, ИИ передал его (в очередь
+    # или оператору — routing.handoff_from_ai) или его взяли в работу вручную
+    # (routing.take_in_work), или его переоткрыли после закрытия. Тексты
+    # системных сообщений — те, что пишет панель (app/routing.py).
+    _HANDED_OFF_SQL = """EXISTS (
+        SELECT 1 FROM messages m WHERE m.dialog_id = d.dialog_id AND (
+            m.kind = 'operator'
+            OR (m.kind = 'system' AND (m.text LIKE 'ИИ передал диалог%'
+                                       OR m.text LIKE 'Диалог взят в работу%'
+                                       OR m.text LIKE 'Диалог переоткрыт%'))))"""
+    # Автозакрытие тикета на ИИ по тишине (routing.auto_close_idle_ai).
+    _AUTO_CLOSED_SQL = """EXISTS (
+        SELECT 1 FROM messages m WHERE m.dialog_id = d.dialog_id
+          AND m.kind = 'system' AND m.text LIKE 'Диалог закрыт автоматически%')"""
+
+    async def get_ai_outcome_stats(self, days: int, service_ids: list[int]) -> dict:
+        """Чем закончились тикеты, закрытые за период: переданы людям, закрыты
+        по тишине после последнего сообщения или закрыты без участия оператора
+        (оператор закрыл тикет ИИ, не написав клиенту)."""
+        row = await self.pool.fetchrow(
+            f"""SELECT COUNT(*) FILTER (WHERE handed)                     AS handed,
+                       COUNT(*) FILTER (WHERE NOT handed AND auto)        AS timeout,
+                       COUNT(*) FILTER (WHERE NOT handed AND NOT auto)    AS no_human
+                FROM (SELECT {self._HANDED_OFF_SQL} AS handed,
+                             {self._AUTO_CLOSED_SQL} AS auto
+                      FROM dialogs d
+                      WHERE d.service_id = ANY($1::int[]) AND NOT d.imported
+                        AND d.status = 'closed'
+                        AND COALESCE(d.closed_at, d.updated_at)
+                            >= NOW() - make_interval(days => $2)) t""",
+            service_ids, days,
+        )
+        handed, timeout, no_human = (int(row[k] or 0) for k in ("handed", "timeout", "no_human"))
+        return {"total": handed + timeout + no_human,
+                "handed": handed, "timeout": timeout, "no_human": no_human}
 
     # Тема обращения — это category ПЕРВОГО текстового сообщения тикета
     # (см. rabbitmq_consumer._classify_later), поэтому считаем тикеты, а не

@@ -21,6 +21,13 @@ def fmt_time(dt: datetime) -> str:
     return dt_utc.strftime("%d.%m")
 
 
+def iso_utc(dt: datetime) -> str:
+    """ISO с поясом: браузер сам переведёт в локальное время оператора."""
+    if dt is None:
+        return ""
+    return (dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt).isoformat()
+
+
 def fmt_dialog(row: dict, tickets: list = None) -> dict:
     did = row["dialog_id"]
     name = row.get("user_name") or did
@@ -55,6 +62,9 @@ def fmt_dialog(row: dict, tickets: list = None) -> dict:
         },
         "preview": row.get("last_message_text") or "",
         "time": fmt_time(row.get("last_message_time")),
+        # По нему список сортируется и подписывается — порядок совпадает с
+        # тем, что видит оператор.
+        "lastMessageAt": iso_utc(row.get("last_message_time")),
         "assignedOperator": row.get("assigned_operator"),
         "updatedAt": row["updated_at"].isoformat() if row.get("updated_at") else "",
         "rating": row.get("rating"),

@@ -22,6 +22,35 @@ function fmtDayLabel(iso) {
   return d.toLocaleDateString("ru-RU", opts);
 }
 
+// Время в строке списка: по нему же список и отсортирован. В локальном поясе
+// оператора и с часами даже для старых диалогов — «Вчера» без времени не
+// позволял понять, какой из двух вчерашних свежее.
+function fmtListTime(iso) {
+  const d = new Date(iso);
+  if (!iso || isNaN(d)) return "";
+  const label = fmtDayLabel(iso);
+  const clock = fmtClock(iso);
+  if (label === "Сегодня") return clock;
+  if (label === "Вчера") return `вчера, ${clock}`;
+  const now = new Date();
+  if (d.getFullYear() === now.getFullYear()) {
+    return `${d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }).replace(".", "")}, ${clock}`;
+  }
+  return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "2-digit" });
+}
+
+function fmtFullTime(iso) {
+  const d = new Date(iso);
+  if (!iso || isNaN(d)) return "";
+  return d.toLocaleString("ru-RU", { day: "numeric", month: "long", year: "numeric",
+                                      hour: "2-digit", minute: "2-digit" });
+}
+
+function convTs(c) {
+  const t = Date.parse(c.lastMessageAt || c.updatedAt || "");
+  return isNaN(t) ? 0 : t;
+}
+
 function msgTime(msg) {
   return msg.createdAt ? fmtClock(msg.createdAt) : msg.time;
 }
@@ -118,7 +147,10 @@ function ConvCard({ conv, active, onClick, showServiceTag = false, flat = false,
               )}
               <div className="text-sm font-medium text-[#f1f1f5] truncate">{conv.name}</div>
             </div>
-            <div className="text-[10px] text-[#6b7280] shrink-0">{conv.time}</div>
+            <div className="text-[10px] text-[#6b7280] shrink-0 whitespace-nowrap"
+                 title={fmtFullTime(conv.lastMessageAt)}>
+              {fmtListTime(conv.lastMessageAt) || conv.time}
+            </div>
           </div>
           <div className="text-[10px] text-[#6b7280]/70 truncate -mt-0.5 mb-0.5">{conv.username}</div>
           <div className="text-xs text-[#6b7280] truncate mb-1.5">{conv.preview}</div>
@@ -686,11 +718,10 @@ function DialogsScreen({
           || String(c.chatId || "").includes(q)
       );
     }
-    return [...list].sort((a, b) => {
-      const ta = a.updatedAt || "";
-      const tb = b.updatedAt || "";
-      return tb.localeCompare(ta);
-    });
+    // Свежие сверху — по времени последнего сообщения, тому же, что подписано
+    // в строке. updatedAt дёргается от смены статуса, папки, оценки, и список
+    // прыгал без видимой причины.
+    return [...list].sort((a, b) => convTs(b) - convTs(a) || String(b.id).localeCompare(String(a.id)));
   }, [baseList, filter, searchQ]);
 
   const counts = useMemoD(() => {

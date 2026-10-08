@@ -457,6 +457,62 @@ function OperatorsTable({ operators, compact = false }) {
   );
 }
 
+// Чем закончились закрытые за период тикеты: переданы людям, закрыты по
+// тишине после последнего сообщения или закрыты без участия оператора.
+const AI_OUTCOMES = [
+  { key: "timeout",  label: "Закрыто по таймауту", color: "#22c55e",
+    hint: "ИИ отвечал, клиент перестал писать — тикет закрылся сам" },
+  { key: "handed",   label: "Передано оператору",  color: "#4F8EF7",
+    hint: "ИИ передал тикет, оператор взял его сам или писал клиенту" },
+  { key: "no_human", label: "Закрыто без оператора", color: "#f59e0b",
+    hint: "Оператор закрыл тикет ИИ, не написав клиенту" },
+];
+
+function AiOutcomesSection({ data, rangeLabel }) {
+  const total = data?.total || 0;
+  const pct = (n) => (total ? Math.round((n / total) * 100) : 0);
+  return (
+    <div className="bg-[#13131a] border border-[#2a2a3a]/60 rounded-xl overflow-hidden">
+      <div className="px-5 py-4 border-b border-[#2a2a3a]/60 flex items-baseline justify-between gap-3">
+        <div>
+          <div className="text-sm font-medium text-[#f1f1f5]">Чем закончились диалоги</div>
+          <div className="text-xs text-[#6b7280]">{rangeLabel} · закрытые тикеты</div>
+        </div>
+        {total > 0 && <div className="text-xs text-[#9ca3af] tabular-nums">всего {total}</div>}
+      </div>
+      {!data ? (
+        <div className="py-10 text-center text-sm text-[#6b7280]">Загрузка…</div>
+      ) : !total ? (
+        <div className="py-10 text-center text-sm text-[#9ca3af]">За период закрытых диалогов нет</div>
+      ) : (
+        <div className="p-5 space-y-4">
+          <div className="flex h-2.5 rounded-full overflow-hidden bg-[#1a1a24]">
+            {AI_OUTCOMES.map((o) => data[o.key] > 0 && (
+              <div key={o.key} style={{ width: `${(data[o.key] / total) * 100}%`, background: o.color }}
+                   title={`${o.label}: ${data[o.key]} (${pct(data[o.key])}%)`} />
+            ))}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {AI_OUTCOMES.map((o) => (
+              <div key={o.key} className="bg-[#0d0d12] border border-[#2a2a3a]/60 rounded-lg p-3" title={o.hint}>
+                <div className="flex items-center gap-2 text-xs text-[#9ca3af]">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: o.color }} />
+                  {o.label}
+                </div>
+                <div className="mt-2 flex items-baseline gap-2">
+                  <span className="text-2xl font-semibold text-[#f1f1f5] tabular-nums leading-none">{data[o.key]}</span>
+                  <span className="text-xs text-[#6b7280] tabular-nums">{pct(data[o.key])}%</span>
+                </div>
+                <div className="mt-1.5 text-[11px] text-[#6b7280] leading-snug">{o.hint}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StatisticsScreen({ serviceId = null, mobileChrome = null }) {
   const [range,  setRange]  = useStateS("14d");
   const [stats,  setStats]  = useStateS(null);
@@ -588,6 +644,8 @@ function StatisticsScreen({ serviceId = null, mobileChrome = null }) {
             <div className="text-sm font-semibold text-[#f1f1f5] tabular-nums">{fmtDuration(team.close_time_avg)}</div>
           </div>
         )}
+
+        <AiOutcomesSection data={stats?.ai_outcomes} rangeLabel={rangeLabel} />
 
         {/* Charts row */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 sm:gap-4">

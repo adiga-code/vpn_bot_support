@@ -116,6 +116,9 @@ class TelethonSender:
         self.config = config or {}
         self._client = None
         self._lock = asyncio.Lock()
+        # chat_id → InputPeer: access_hash клиента, найденный один раз, живёт
+        # до переподключения — второй поиск по чатам на каждое сообщение незачем.
+        self._peers: dict[int, object] = {}
 
     @property
     def account(self) -> str:
@@ -151,6 +154,7 @@ class TelethonSender:
             return client
 
     async def close(self):
+        self._peers.clear()
         if self._client is not None:
             try:
                 await self._client.disconnect()
@@ -158,8 +162,61 @@ class TelethonSender:
                 pass
             self._client = None
 
+    async def _resolve_peer(self, client, peer_id: int, username: str = None):
+        """InputPeer клиента. По голому числовому id Telethon писать не умеет:
+        нужен access_hash, а в StringSession кэша сущностей нет, и сразу после
+        подключения он пуст («Could not find the input entity for PeerUser»).
+        Достаём его по username, а без него — из списка чатов аккаунта: клиент
+        писал в business-чат, значит переписка лежит у аккаунта поддержки."""
+        cached = self._peers.get(peer_id)
+        if cached is not None:
+            return cached
+        try:
+            peer = await client.get_input_entity(peer_id)
+            self._peers[peer_id] = peer
+            return peer
+        except (ValueError, TypeError):
+            pass
+
+        name = (username or "").strip().lstrip("@")
+        if name and not name.isdigit():
+            try:
+                entity = await asyncio.wait_for(client.get_entity(name), _SEND_TIMEOUT)
+                if getattr(entity, "id", None) == peer_id:
+                    peer = await client.get_input_entity(entity)
+                    self._peers[peer_id] = peer
+                    return peer
+            except asyncio.TimeoutError:
+                raise
+            except Exception as e:
+                # Username мог смениться — ищем дальше по чатам.
+                print(f"[fallback] @{name} не резолвится: {type(e).__name__}: {redact(e)}")
+
+        async def scan():
+            # Попутно Telethon кладёт в кэш сессии всех собеседников, так что
+            # следующие клиенты находятся уже первым get_input_entity.
+            async for d in client.iter_dialogs():
+                if d.id == peer_id:
+                    return d.input_entity
+            return None
+
+        try:
+            peer = await asyncio.wait_for(scan(), _SEND_TIMEOUT)
+        except Exception as e:
+            human = _human_error(e)
+            if human:
+                raise RuntimeError(human) from e
+            raise
+        if peer is None:
+            raise RuntimeError(
+                f"клиент {peer_id} не найден среди чатов аккаунта "
+                f"{self.account or 'поддержки'}: переписки с ним в аккаунте нет"
+                + ("" if name else ", а username у клиента не указан"))
+        self._peers[peer_id] = peer
+        return peer
+
     async def send(self, chat_id: str, text: str,
-                   file_url: str = None) -> tuple[bool, str]:
+                   file_url: str = None, username: str = None) -> tuple[bool, str]:
         """(получилось, пояснение). Исключений не бросает: неудача резервного
         канала — это результат, который надо показать оператору, а не сбой
         панели."""
@@ -176,6 +233,7 @@ class TelethonSender:
             return False, f"нечисловой chat_id {chat_id!r}"
 
         try:
+            peer = await self._resolve_peer(client, peer, username)
             if file_url:
                 data = await self._download(file_url)
                 if data is None:
@@ -259,13 +317,13 @@ class FallbackSenderService:
         return sender
 
     async def send(self, service_id: int, chat_id: str, text: str,
-                   file_url: str = None) -> tuple[bool, str]:
+                   file_url: str = None, username: str = None) -> tuple[bool, str]:
         """(получилось, пояснение). Не настроен — «выключен», и это не ошибка:
         большинству установок резервный канал не нужен."""
         sender = await self.sender_for(service_id)
         if not sender:
             return False, ""
-        return await sender.send(chat_id, text, file_url)
+        return await sender.send(chat_id, text, file_url, username)
 
     # ── Авторизация из админки ────────────────────────────────────────────────
 

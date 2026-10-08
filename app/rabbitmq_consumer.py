@@ -361,6 +361,7 @@ class RabbitMQConsumer:
         ok, detail = await self.fallback.send(
             dialog["service_id"], dialog["chat_id"],
             row.get("text") or "", row.get("file_url"),
+            username=dialog.get("user_username"),
         )
         if not detail:                      # резервный канал не настроен
             return "failed", original_error

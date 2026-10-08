@@ -581,7 +581,8 @@ def build_app(
             status, error = "failed", "Очередь недоступна"
             if fallback:
                 ok, detail = await fallback.send(
-                    dialog["service_id"], dialog["chat_id"], body.text, body.file_url)
+                    dialog["service_id"], dialog["chat_id"], body.text, body.file_url,
+                    username=dialog.get("user_username"))
                 if detail:
                     note = ("Очередь недоступна — " +
                             (detail if ok else f"резервная отправка тоже не удалась: {detail}"))
@@ -1060,6 +1061,7 @@ def build_app(
             raise HTTPException(403, "Admin only")
         ids = await _stats_scope(service_id, operator)
         stats = await db.get_stats(days, ids)
+        stats["ai_outcomes"] = await db.get_ai_outcome_stats(days, ids)
         # Откуда пустой «Топ вопросов»: классификация выключена у сервиса или
         # прошлые обращения просто не размечены.
         on_ids, off_names = [], []
