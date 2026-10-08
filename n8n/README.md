@@ -116,6 +116,14 @@ Redis, в поле `service` и в имени коллекции.
 - Внутренние ключи Redis метятся слагом из ответа resolve.
 - Клиент везде опознаётся по `chat.id`, а не по `from.id`: в business-чате это
   разные люди — автором сообщения может быть владелец аккаунта поддержки.
+- Сообщения самого аккаунта поддержки (резервная отправка панели по MTProto,
+  ответ из приложения Telegram) Telegram тоже присылает как `business_message`.
+  Поэтому в `user_message` есть поле `from_id`: панель по нему отличает их от
+  реплик клиента — эхо своей резервной отправки пропускает, ручной ответ из
+  Telegram пишет в тикет как ответ оператора. А «Если ИИ включена для чата1»
+  пускает к ИИ только сообщения, где `from.id == chat.id`, чтобы бот не
+  отвечал аккаунту поддержки. Без переимпорта `main-input.json` панель
+  узнаёт эхо резервной отправки только по совпадению текста.
 - Ответ в business-чат Telegram принимает **только** с
   `business_connection_id`, а у встроенной ноды Telegram такого поля нет
   вообще. Поэтому в `main-output.json` три ноды отправки клиенту —
@@ -159,7 +167,7 @@ Redis, в поле `service` и в имени коллекции.
 - Очереди `vpn_bot.incoming` / `vpn_bot.outgoing`, путь вебхука
   `vpn-bot-outgoing`.
 - Имя ноды `Распарсить JSON` — на неё ссылаются по имени.
-- Поля `user_message`: `type, business_id, service, dialog_id, chat_id,
+- Поля `user_message`: `type, business_id, service, dialog_id, from_id, chat_id,
   user_username, user_name, message, ai_enabled, file_id, file_type`.
 - Поля `delivery_confirmation`: `type, message_id, dialog_id, status, error`.
   Без них в панели не появятся галочки доставки. Текст `error` панель

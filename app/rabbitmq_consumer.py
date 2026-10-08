@@ -133,9 +133,25 @@ class RabbitMQConsumer:
         # таким, каким записан BASE_URL, и схемы в нём может не быть.
         if not file_url and file_id and looks_like_url(file_id):
             file_url, file_id = file_id, None
+        # Сообщение самого аккаунта поддержки (резервная отправка по MTProto или
+        # ответ из приложения Telegram) Telegram присылает боту тем же
+        # business_message, что и реплики клиента. from_id передаёт n8n; старый
+        # воркфлоу его не шлёт — тогда узнаём эхо только по тексту.
+        from_id = str(data.get("from_id") or "").strip()
+        outgoing = bool(from_id) and from_id != chat_id
+        # Наш же ответ, ушедший по MTProto, вернулся через бота: в тикете он уже
+        # есть как сообщение оператора.
+        if ((outgoing or not from_id) and self.fallback
+                and self.fallback.consume_echo(service["id"], chat_id, text, file_type)):
+            print(f"[echo] chat={chat_id}: эхо резервной отправки, пропускаем")
+            return
         # Ссылка наружу до базы не доезжает: в ней может стоять токен бота, а
         # её подставит в <img src> браузер оператора. Забираем файл к себе.
         file_url = await self._internal_url(file_url)
+        if outgoing:
+            await self._save_outgoing(service, chat_id, text, file_id, file_type, file_url)
+            return
+
         ai_enabled = parse_ai_enabled(data.get("ai_enabled"))
         operator_called = bool(data.get("operator_called", False))
 
@@ -215,6 +231,36 @@ class RabbitMQConsumer:
             count = await self.db.get_user_message_count(dialog_id)
             if count == n:
                 asyncio.create_task(self.n8n.send_operator_button(chat_id, dialog_id, updated))
+
+    async def _save_outgoing(self, service: dict, chat_id: str, text: str,
+                             file_id, file_type: str, file_url):
+        """Кто-то ответил клиенту прямо из Telegram, от аккаунта поддержки.
+        В тикет — как ответ оператора, чтобы переписка в панели была полной;
+        статус, непрочитанные и ИИ не трогаем: панель этот ответ не отправляла."""
+        dialog = await self.db.get_active_dialog_by_chat_id(service["id"], chat_id)
+        if not dialog:
+            print(f"[outgoing] chat={chat_id}: открытого тикета нет, пропускаем")
+            return
+        account = ""
+        if self.fallback:
+            cfg = await self.fallback.settings(service["id"])
+            account = (cfg.get("config") or {}).get("account") or ""
+        msg_row = await self.db.save_message(
+            dialog["dialog_id"], "operator", text or None,
+            file_id=file_id if file_type != "text" else None,
+            file_type=file_type if file_type != "text" else None,
+            file_url=file_url,
+            operator_name=f"{account} · из Telegram" if account else "Из Telegram",
+        )
+        await self.db.update_message_delivery(msg_row["id"], "delivered", None)
+        msg_row = await self.db.get_message(msg_row["id"]) or msg_row
+        await self.db.update_last_message(dialog["dialog_id"], text or f"[{file_type}]")
+        await self.ws.broadcast({"type": "new_message", "dialog_id": dialog["dialog_id"],
+                                 "message": _fmt_message(msg_row)}, service["id"])
+        updated = await self.db.get_dialog(dialog["dialog_id"])
+        if updated:
+            await self.ws.broadcast({"type": "dialog_updated", "dialog": _fmt_dialog(updated)},
+                                    service["id"])
 
     async def _classify_later(self, msg_id: int, text: str, service_id: int, dialog_id: str):
         """Тема обращения для статистики «Топ вопросов». Размечается только

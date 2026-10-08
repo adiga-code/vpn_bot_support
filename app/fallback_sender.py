@@ -34,6 +34,11 @@ FALLBACK_DEFAULTS = {"enabled": False, "config": {}}
 # «ввести код» проходят секунды, и класть недо-сессию в базу незачем.
 _PENDING_TTL = 600
 
+# Сообщение, отправленное самим business-аккаунтом, Telegram тут же присылает
+# боту как business_message, и n8n передаёт его в панель как реплику клиента.
+# Сколько ждать такое эхо после резервной отправки.
+_ECHO_TTL = 180
+
 # Telethon сам не ограничивает время на подключение: за фаерволом, который не
 # пускает к серверам Telegram, форма крутилась бы вечно, а оператор ждал бы
 # ответа на недоставленное сообщение. Лучше внятная ошибка.
@@ -284,6 +289,9 @@ class FallbackSenderService:
         self.db = db
         self._senders: dict[int, tuple[str, TelethonSender]] = {}
         self._pending: dict[int, dict] = {}
+        # (service_id, chat_id) → [(ключ сообщения, monotonic)]: что ушло по
+        # MTProto и вот-вот вернётся эхом через бота (см. consume_echo).
+        self._echoes: dict[tuple[int, str], list[tuple[str, float]]] = {}
 
     # ── Настройки ─────────────────────────────────────────────────────────────
 
@@ -323,7 +331,59 @@ class FallbackSenderService:
         sender = await self.sender_for(service_id)
         if not sender:
             return False, ""
-        return await sender.send(chat_id, text, file_url, username)
+        # Ждём эхо ДО отправки: апдейт от бота может прийти раньше, чем
+        # Telethon вернёт управление.
+        entry = self._expect_echo(service_id, chat_id, text, "document" if file_url else "text")
+        ok, detail = await sender.send(chat_id, text, file_url, username)
+        if not ok:
+            self._drop_echo(service_id, chat_id, entry)
+        return ok, detail
+
+    # ── Эхо резервной отправки ────────────────────────────────────────────────
+
+    @staticmethod
+    def _echo_key(text: str, file_type: str = None) -> str:
+        """Текст (или подпись) без лишних пробелов; у вложения без подписи —
+        просто «файл»: тип Telegram может определить иначе, чем мы."""
+        norm = " ".join((text or "").split())
+        if norm:
+            return "t:" + norm
+        return "f:" if file_type and file_type != "text" else ""
+
+    def _expect_echo(self, service_id: int, chat_id: str, text: str, file_type: str):
+        key = self._echo_key(text, file_type)
+        if not key:
+            return None
+        now = time.monotonic()
+        bucket = [e for e in self._echoes.get((service_id, str(chat_id)), [])
+                  if now - e[1] < _ECHO_TTL]
+        entry = (key, now)
+        bucket.append(entry)
+        self._echoes[(service_id, str(chat_id))] = bucket
+        return entry
+
+    def _drop_echo(self, service_id: int, chat_id: str, entry) -> None:
+        bucket = self._echoes.get((service_id, str(chat_id)))
+        if bucket and entry in bucket:
+            bucket.remove(entry)
+            if not bucket:
+                self._echoes.pop((service_id, str(chat_id)), None)
+
+    def consume_echo(self, service_id: int, chat_id: str, text: str,
+                     file_type: str = None) -> bool:
+        """Входящее «от клиента» — на самом деле наш же ответ, ушедший по
+        MTProto? Тогда оно уже есть в тикете как сообщение оператора, и второй
+        раз его сохранять (да ещё от имени клиента) нельзя."""
+        key = self._echo_key(text, file_type)
+        bucket = self._echoes.get((service_id, str(chat_id)))
+        if not key or not bucket:
+            return False
+        now = time.monotonic()
+        for entry in bucket:
+            if entry[0] == key and now - entry[1] < _ECHO_TTL:
+                self._drop_echo(service_id, chat_id, entry)
+                return True
+        return False
 
     # ── Авторизация из админки ────────────────────────────────────────────────
 

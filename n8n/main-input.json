@@ -439,6 +439,12 @@
               "leftValue": "={{ $('Диалог: resolve').first().json.ai_enabled }}",
               "rightValue": true,
               "operator": { "type": "boolean", "operation": "equals" }
+            },
+            {
+              "id": "6f1d2c3a-8b4e-4c5d-9a7f-0e1b2c3d4e5f",
+              "leftValue": "={{ String((($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).from || {}).id) === String(($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id) }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
             }
           ],
           "combinator": "and"
@@ -455,7 +461,7 @@
       "parameters": {
         "queue": "vpn_bot.incoming",
         "sendInputData": false,
-        "message": "={{ JSON.stringify({\n  \"type\": \"user_message\",\n  \"service\": $('Диалог: resolve').first().json.service_slug,\n  \"business_id\": ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id,\n  \"dialog_id\": $json.dialog_id.toString(),\n  \"chat_id\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id.toString(),\n  \"user_username\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.username,\n  \"user_name\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.first_name,\n  \"message\": $json.message,\n  \"ai_enabled\": $('Диалог: resolve').first().json.ai_enabled,\n  \"file_id\": $json.file_id,\n  \"file_type\": $json.file_type\n}) }}",
+        "message": "={{ JSON.stringify({\n  \"type\": \"user_message\",\n  \"service\": $('Диалог: resolve').first().json.service_slug,\n  \"business_id\": ($('Telegram Trigger1').first().json.business_message || $('Telegram Trigger1').first().json.message || {}).business_connection_id,\n  \"dialog_id\": $json.dialog_id.toString(),\n  \"from_id\": String((($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).from || {}).id || \"\"),\n  \"chat_id\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.id.toString(),\n  \"user_username\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.username,\n  \"user_name\": ($('Telegram Trigger1').item.json.message || $('Telegram Trigger1').item.json.business_message).chat.first_name,\n  \"message\": $json.message,\n  \"ai_enabled\": $('Диалог: resolve').first().json.ai_enabled,\n  \"file_id\": $json.file_id,\n  \"file_type\": $json.file_type\n}) }}",
         "options": {}
       },
       "type": "n8n-nodes-base.rabbitmq",
